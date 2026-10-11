@@ -1,4 +1,4 @@
-use super::commands::entity_index;
+use super::commands::{entity_index, parse_point};
 use super::*;
 use crate::GeometryError;
 
@@ -7,6 +7,8 @@ pub(super) struct PeditInput {
     source: Option<usize>,
     conversion: bool,
     joining: bool,
+    vertex: Option<usize>,
+    moving_vertex: bool,
     undo: Vec<(usize, u64)>,
 }
 
@@ -17,6 +19,7 @@ enum Operation {
     Reverse,
     Undo,
     Join,
+    Edit,
 }
 
 impl Operation {
@@ -27,6 +30,7 @@ impl Operation {
             "REVERSE" | "R" => Self::Reverse,
             "UNDO" | "U" => Self::Undo,
             "JOIN" | "J" => Self::Join,
+            "EDIT" | "E" | "EDIT VERTEX" => Self::Edit,
             _ => return None,
         })
     }
@@ -34,20 +38,204 @@ impl Operation {
 
 impl OpenCadApp {
     pub(super) fn pedit_prompt(&self) -> &'static str {
-        if self.pedit_input.joining {
+        if self.pedit_input.moving_vertex {
+            "PEDIT Move vertex · Specify x,y[,z] or a canvas point. Relative @dx,dy[,dz] uses the marked vertex. Enter or Exit cancels this move; Escape ends PEDIT."
+        } else if self.pedit_input.vertex.is_some() {
+            "PEDIT Edit vertex · Next / Previous / Move; Enter or Exit returns to PEDIT. Escape ends the session."
+        } else if self.pedit_input.joining {
             "PEDIT Join · Select touching XY lines, arcs or open polylines; Enter joins. Source stays selected. Shift removes; All selects visible objects. Escape ends PEDIT."
         } else if self.pedit_input.conversion {
             "PEDIT · Object is not a polyline. Convert it? Yes/No <Yes>. Escape cancels."
         } else if let Some(source) = self.pedit_input.source {
             if matches!(self.editor.entities().get(source), Some(Entity::Polyline(polyline)) if polyline.is_closed())
             {
-                "PEDIT · Open / Reverse / Undo; Enter or Exit finishes. Escape ends the session."
+                "PEDIT · Open / Reverse / Undo / Edit vertex; Enter or Exit finishes. Escape ends the session."
             } else {
-                "PEDIT · Close / Reverse / Undo / Join; Enter or Exit finishes. Escape ends the session."
+                "PEDIT · Close / Reverse / Undo / Join / Edit vertex; Enter or Exit finishes. Escape ends the session."
             }
         } else {
             "PEDIT · Select one XY polyline, line or arc; or enter its object number. Escape cancels."
         }
+    }
+
+    pub(super) fn pedit_vertex_active(&self) -> bool {
+        self.tool == Tool::Pedit && self.pedit_input.vertex.is_some()
+    }
+
+    pub(super) fn pedit_awaits_point(&self) -> bool {
+        self.pedit_vertex_active() && self.pedit_input.moving_vertex
+    }
+
+    pub(super) fn pedit_marked_vertex(&self) -> Option<(usize, usize, Point3)> {
+        if self.tool != Tool::Pedit {
+            return None;
+        }
+        let source = self.pedit_input.source?;
+        let vertex = self.pedit_input.vertex?;
+        let Entity::Polyline(polyline) = self.editor.entities().get(source)? else {
+            return None;
+        };
+        Some((
+            vertex,
+            polyline.vertices().len(),
+            *polyline.vertices().get(vertex)?,
+        ))
+    }
+
+    fn pedit_vertex_message(&mut self) {
+        if let Some((vertex, count, point)) = self.pedit_marked_vertex() {
+            self.message(
+                format!(
+                    "Vertex {} of {count}: {},{},{}. {}",
+                    vertex + 1,
+                    point.x(),
+                    point.y(),
+                    point.z(),
+                    self.prompt()
+                ),
+                false,
+            );
+        }
+    }
+
+    fn pedit_start_vertex_move(&mut self) -> Result<(), String> {
+        let (_, _, point) = self
+            .pedit_marked_vertex()
+            .ok_or("Choose Edit vertex first.")?;
+        self.points = vec![point];
+        self.pedit_input.moving_vertex = true;
+        self.pedit_vertex_message();
+        Ok(())
+    }
+
+    pub(super) fn pedit_moved_polyline(&self, point: Point3) -> Result<Polyline2, String> {
+        let (vertex, _, _) = self
+            .pedit_marked_vertex()
+            .ok_or("Choose Edit vertex first.")?;
+        let source = self.pedit_input.source.expect("marked source exists");
+        let Entity::Polyline(original) = &self.editor.entities()[source] else {
+            unreachable!("marked source is a polyline");
+        };
+        let mut vertices = original.vertices().to_vec();
+        vertices[vertex] = point;
+        let segments = vertices.len() - usize::from(!original.is_closed());
+        for (index, bulge) in original.bulges().iter().take(segments).enumerate() {
+            let next = (index + 1) % vertices.len();
+            if *bulge != 0.0
+                && original.vertices()[index] != original.vertices()[next]
+                && vertices[index] == vertices[next]
+            {
+                return Err("Moving this vertex would collapse a curved segment.".into());
+            }
+        }
+        let mut replacement = original.clone();
+        replacement
+            .set_vertices(vertices)
+            .map_err(|error| error.to_string())?;
+        replacement.length().map_err(|error| error.to_string())?;
+        replacement.extrema().map_err(|error| error.to_string())?;
+        Ok(replacement)
+    }
+
+    pub(super) fn pedit_move_vertex(&mut self, point: Point3) -> Result<(), String> {
+        if !self.pedit_awaits_point() {
+            return Err("Choose Move in Edit vertex first.".into());
+        }
+        let polyline = self.pedit_moved_polyline(point)?;
+        let source = self.pedit_input.source.expect("marked source exists");
+        if self
+            .editor
+            .update(source, Entity::Polyline(polyline))
+            .map_err(|error| error.to_string())?
+        {
+            self.pedit_checkpoint(source);
+        }
+        self.pedit_input.moving_vertex = false;
+        self.points.clear();
+        self.editor.select(vec![source]);
+        self.pedit_vertex_message();
+        Ok(())
+    }
+
+    fn pedit_vertex_text(&mut self, input: &str) -> Option<Result<(), String>> {
+        if input.is_empty() || input.eq_ignore_ascii_case("EXIT") || input.eq_ignore_ascii_case("X")
+        {
+            if self.pedit_input.moving_vertex {
+                self.pedit_input.moving_vertex = false;
+                self.points.clear();
+                self.pedit_vertex_message();
+            } else {
+                self.pedit_input.vertex = None;
+                self.message(self.prompt(), false);
+            }
+            return Some(Ok(()));
+        }
+        if matches!(
+            input.to_ascii_uppercase().as_str(),
+            "NEXT" | "N" | "PREVIOUS" | "P"
+        ) {
+            return Some((|| {
+                if self.pedit_input.moving_vertex {
+                    return Err(
+                        "Specify the new vertex point, or Exit to cancel Move first.".into(),
+                    );
+                }
+                let (vertex, count, _) = self.pedit_marked_vertex().ok_or("No marked vertex.")?;
+                self.pedit_input.vertex = Some(
+                    if input.eq_ignore_ascii_case("NEXT") || input.eq_ignore_ascii_case("N") {
+                        (vertex + 1).min(count - 1)
+                    } else {
+                        vertex.saturating_sub(1)
+                    },
+                );
+                self.pedit_vertex_message();
+                Ok(())
+            })());
+        }
+        let tokens: Vec<_> = input.split_whitespace().collect();
+        if tokens.first().is_some_and(|token| {
+            token.eq_ignore_ascii_case("MOVE") || token.eq_ignore_ascii_case("M")
+        }) {
+            return Some((|| {
+                if tokens.len() > 2 {
+                    return Err("Use Move [x,y[,z]] in Edit vertex.".into());
+                }
+                let point = tokens
+                    .get(1)
+                    .map(|token| parse_point(token, self.drawing_elevation()))
+                    .transpose()?;
+                self.pedit_start_vertex_move()?;
+                if let Some(point) = point {
+                    self.pedit_move_vertex(point)?;
+                }
+                Ok(())
+            })());
+        }
+        if Operation::parse(input).is_some() {
+            return Some(Err(
+                "Exit Edit vertex before using a PEDIT operation.".into()
+            ));
+        }
+        if matches!(
+            input.to_ascii_uppercase().as_str(),
+            "INSERT"
+                | "I"
+                | "STRAIGHTEN"
+                | "S"
+                | "BREAK"
+                | "B"
+                | "TANGENT"
+                | "T"
+                | "WIDTH"
+                | "W"
+                | "REGEN"
+        ) {
+            return Some(Err(
+                "This Edit vertex option is not implemented yet; use Next, Previous, Move or Exit."
+                    .into(),
+            ));
+        }
+        None
     }
 
     pub(super) fn pedit_joining(&self) -> bool {
@@ -145,6 +333,9 @@ impl OpenCadApp {
         if self.pedit_input.joining {
             return Err("Press Enter to finish selecting Join objects first.".into());
         }
+        if self.pedit_input.vertex.is_some() {
+            return Err("Exit Edit vertex before using a PEDIT operation.".into());
+        }
         let source = self
             .pedit_input
             .source
@@ -174,6 +365,11 @@ impl OpenCadApp {
         let Some(Entity::Polyline(original)) = self.editor.entities().get(source) else {
             return Err("Confirm conversion to a polyline first.".into());
         };
+        if matches!(operation, Operation::Edit) {
+            self.pedit_input.vertex = Some(0);
+            self.pedit_vertex_message();
+            return Ok(());
+        }
         if matches!(operation, Operation::Join) {
             if original.is_closed() {
                 return Err(GeometryError::ClosedPolylineJoin.to_string());
@@ -188,7 +384,7 @@ impl OpenCadApp {
             Operation::Close => polyline.set_closed(true),
             Operation::Open => polyline.set_closed(false),
             Operation::Reverse => polyline.reverse(),
-            Operation::Undo | Operation::Join => unreachable!("handled above"),
+            Operation::Undo | Operation::Join | Operation::Edit => unreachable!("handled above"),
         }
         polyline.length().map_err(|error| error.to_string())?;
         polyline.extrema().map_err(|error| error.to_string())?;
@@ -207,6 +403,9 @@ impl OpenCadApp {
     pub(super) fn pedit_text(&mut self, input: &str) -> Option<Result<(), String>> {
         if self.tool != Tool::Pedit {
             return None;
+        }
+        if self.pedit_vertex_active() {
+            return self.pedit_vertex_text(input);
         }
         if input.eq_ignore_ascii_case("EXIT") {
             self.finish();
@@ -281,20 +480,10 @@ impl OpenCadApp {
         }
         if matches!(
             input.to_ascii_uppercase().as_str(),
-            "W" | "WIDTH"
-                | "E"
-                | "EDIT"
-                | "F"
-                | "FIT"
-                | "S"
-                | "SPLINE"
-                | "D"
-                | "DECURVE"
-                | "M"
-                | "MULTIPLE"
+            "W" | "WIDTH" | "F" | "FIT" | "S" | "SPLINE" | "D" | "DECURVE" | "M" | "MULTIPLE"
         ) {
             return Some(Err(
-                "This PEDIT option is not implemented yet; use Close, Open, Reverse, Join or Undo."
+                "This PEDIT option is not implemented yet; use Close, Open, Reverse, Join, Edit or Undo."
                     .into(),
             ));
         }
@@ -311,14 +500,19 @@ impl OpenCadApp {
             .map(|token| {
                 Operation::parse(token)
                     .filter(|operation| !matches!(operation, Operation::Undo))
-                    .ok_or("Use Close, Open, Reverse or Join after the PEDIT object number.")
+                    .ok_or("Use Close, Open, Reverse, Join or Edit after the PEDIT object number.")
             })
             .transpose()?;
         let candidates = if matches!(operation, Some(Operation::Join)) {
             self.join_indices(&tokens[2..])?
-        } else if tokens.len() > 2 {
+        } else if tokens.len() > 2
+            && !(matches!(operation, Some(Operation::Edit))
+                && tokens.len() == 3
+                && tokens[2].eq_ignore_ascii_case("VERTEX"))
+        {
             return Err(
-                "Use PEDIT [object-number [Close|Open|Reverse|Join [object-numbers...]]].".into(),
+                "Use PEDIT [object-number [Close|Open|Reverse|Edit|Join [object-numbers...]]]."
+                    .into(),
             );
         } else {
             Vec::new()

@@ -4271,6 +4271,286 @@ fn pedit_join_canvas_selects_windows_preserves_anchor_and_handles_keyboard_and_c
 }
 
 #[test]
+fn pedit_vertex_commands_traverse_closed_curves_move_with_validation_and_preserve_history() {
+    use opencad::{Circle3, Polyline2};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-vertices.dxf");
+    let p = |x, y| Point3::new(x, y, 7.0).unwrap();
+    let mut document = DxfDocument::default();
+    document.add_layer("DETAIL").unwrap();
+    document.push(Entity::Circle(Circle3::new(p(60.0, 20.0), 5.0).unwrap()));
+    document
+        .push_on_layer(
+            Entity::Polyline(
+                Polyline2::with_bulges(
+                    vec![p(-20.0, 0.0), p(0.0, 0.0), p(20.0, 0.0)],
+                    vec![1.0, -0.5, 0.25],
+                    true,
+                )
+                .unwrap(),
+            ),
+            "DETAIL",
+        )
+        .unwrap();
+    document.set_entity_color(1, 3).unwrap();
+    let original = document.to_dxf().replacen(
+        "POLYLINE\n",
+        "POLYLINE\n5\nC1\n999\nvertex-source-identity\n",
+        1,
+    );
+    fs::write(&path, &original).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut ui = DrawingUi::new();
+    ui.command(&format!("OPEN {}", path.display()));
+    ui.command("PEDIT 2 Edit vertex");
+    assert!(ui.has_text("PEDIT vertex 1 of 3: -20,0,7"));
+    ui.command("Previous");
+    assert!(ui.has_text("PEDIT vertex 1 of 3: -20,0,7"));
+    for _ in 0..3 {
+        ui.command("Next");
+    }
+    assert!(ui.has_text("PEDIT vertex 3 of 3: 20,0,7")); // Closed does not wrap.
+    ui.command("Previous");
+    ui.command("Move 0,10");
+    ui.command("SAVE");
+    let moved = read();
+    let Entity::Polyline(result) = &moved.entities()[1] else {
+        panic!("moved polyline")
+    };
+    assert_eq!(
+        result.vertices(),
+        &[p(-20.0, 0.0), p(0.0, 10.0), p(20.0, 0.0)]
+    );
+    assert_eq!(result.bulges(), &[1.0, -0.5, 0.25]);
+    assert!(result.is_closed());
+    assert_eq!(moved.entity_style(1), document.entity_style(1));
+    assert_eq!(moved.entity_layer(1), Some("DETAIL"));
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("vertex-source-identity")
+    );
+    for (index, segment) in result.segments().enumerate() {
+        let segment = segment.unwrap();
+        for (fraction, vertex) in [(0.0, index), (1.0, (index + 1) % 3)] {
+            let actual = segment.point_at_fraction(fraction).unwrap();
+            let expected = result.vertices()[vertex];
+            assert!((actual.x() - expected.x()).abs() < 1e-9);
+            assert!((actual.y() - expected.y()).abs() < 1e-9);
+        }
+    }
+    ui.command("Move 0,10"); // No-op does not add another session checkpoint.
+    ui.command("Undo");
+    assert!(ui.has_text("Exit Edit vertex before using a PEDIT operation"));
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Undo");
+    assert!(ui.has_text("No more operations in this PEDIT session."));
+    ui.command("Edit vertex");
+    ui.command("Next");
+    ui.command("Move");
+    for input in [
+        "NaN,0",
+        "0,10,8",
+        "1e308,1e308",
+        "Next",
+        "Insert",
+        "-20,0",
+        "20,0",
+    ] {
+        ui.command(input);
+    }
+    assert!(ui.has_text("Moving this vertex would collapse a curved segment."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command_with_enter(""); // Cancel only the pending move.
+    assert!(ui.has_text("PEDIT vertex 2 of 3: 0,0,7"));
+    ui.command("Previous");
+    ui.command("Move 20,0"); // Also protect the closed polyline's final arc.
+    assert!(ui.has_text("Moving this vertex would collapse a curved segment."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command_with_enter("");
+    ui.command_with_enter(""); // Leave Edit vertex.
+    ui.command("Undo");
+    assert!(ui.has_text("No more operations in this PEDIT session."));
+    ui.command("Edit");
+    ui.command("Move");
+    ui.command("@5,10");
+    ui.command("SAVE");
+    let Entity::Polyline(result) = read().entities()[1].clone() else {
+        panic!("relative vertex move")
+    };
+    assert_eq!(result.vertices()[0], p(-15.0, 10.0));
+    assert_eq!(result.bulges(), &[1.0, -0.5, 0.25]);
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Exit");
+
+    let protected_path = scratch.0.join("pedit-vertices-protected.dxf");
+    document.set_layer_locked("DETAIL", true).unwrap();
+    fs::write(&protected_path, document.to_dxf()).unwrap();
+    let protected_original = fs::read_to_string(&protected_path).unwrap();
+    let mut protected = DrawingUi::new();
+    protected.command(&format!("OPEN {}", protected_path.display()));
+    protected.command("PEDIT 2 E");
+    protected.command("Next");
+    protected.command("Move 0,10");
+    assert!(protected.has_text("unlock layer DETAIL before editing it"));
+    protected.command("SAVE");
+    assert_eq!(
+        fs::read_to_string(&protected_path).unwrap(),
+        protected_original
+    );
+
+    let conversion_path = scratch.0.join("pedit-vertices-conversion.dxf");
+    let mut converted = DrawingUi::new();
+    converted.click("New");
+    converted.command("LINE 0,0,7 10,0,7");
+    converted.command(&format!("SAVEAS {}", conversion_path.display()));
+    let before_conversion = fs::read_to_string(&conversion_path).unwrap();
+    converted.command("PE 1");
+    converted.command("Yes");
+    converted.command("E");
+    converted.command("Next");
+    converted.command("Move 10,10");
+    converted.command("Exit");
+    converted.command("Undo");
+    converted.command("SAVE");
+    let result = DxfDocument::parse(&fs::read_to_string(&conversion_path).unwrap()).unwrap();
+    assert!(matches!(result.entities()[0], Entity::Polyline(_)));
+    converted.command("Undo");
+    assert!(converted.has_text("Convert it? Yes/No <Yes>"));
+    converted.command("SAVE");
+    assert_eq!(
+        fs::read_to_string(&conversion_path).unwrap(),
+        before_conversion
+    );
+}
+
+#[test]
+fn pedit_vertex_canvas_marks_traverses_previews_snaps_moves_and_cancels() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-vertices-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("PLINE -40,-20,7 -20,0,7 20,0,7");
+    ui.replace_field("Vertex 1 bulge", "1");
+    ui.click("Apply properties");
+    ui.command("CIRCLE 40,20,7 6");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let position = |ui: &DrawingUi, x: f32, y: f32| {
+        let bounds = ui
+            .bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
+            .unwrap();
+        egui::pos2(bounds.center().x + x * 4.0, bounds.center().y - y * 4.0)
+    };
+    let click = |ui: &mut DrawingUi, x, y, modifiers| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("PE 1");
+    click(&mut ui, -40.0, -20.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::E);
+    press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::P);
+    press(&mut ui, egui::Key::P);
+    assert!(ui.has_text("PEDIT vertex 1 of 3: -40,-20,7"));
+    press(&mut ui, egui::Key::N);
+    assert!(ui.has_text("PEDIT vertex 2 of 3: -20,0,7"));
+    ui.snapshot("pedit-marked-vertex");
+    press(&mut ui, egui::Key::M);
+    let preview = position(&ui, 5.0, 15.0);
+    ui.step(vec![Event::PointerMoved(preview)]);
+    ui.snapshot("pedit-move-vertex-preview");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    click(&mut ui, 5.0, 15.0, egui::Modifiers::NONE);
+    assert!(ui.has_text("PEDIT vertex 2 of 3: 5,15,7"));
+    ui.snapshot("pedit-moved-vertex");
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[0].clone() else {
+        panic!("pointer move")
+    };
+    assert_eq!(polyline.vertices()[1], Point3::new(5.0, 15.0, 7.0).unwrap());
+    assert_eq!(polyline.bulges(), &[1.0, 0.0, 0.0]);
+    click(&mut ui, 5.0, 15.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::M);
+    click(&mut ui, 20.0, 20.0, egui::Modifiers::SHIFT);
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[0].clone() else {
+        panic!("ortho move")
+    };
+    assert_eq!(
+        polyline.vertices()[1],
+        Point3::new(20.0, 15.0, 7.0).unwrap()
+    );
+    click(&mut ui, 20.0, 15.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::M);
+    click(&mut ui, 40.4, 20.4, egui::Modifiers::NONE);
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[0].clone() else {
+        panic!("object snap move")
+    };
+    assert_eq!(
+        polyline.vertices()[1],
+        Point3::new(40.0, 20.0, 7.0).unwrap()
+    );
+    ui.command("Exit");
+    for _ in 0..3 {
+        ui.command("Undo");
+    }
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Edit");
+    click(&mut ui, -40.0, -20.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::M);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("PE 1 Edit");
+    ui.command("Move -35,-25");
+    click(&mut ui, -35.0, -25.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[0].clone() else {
+        panic!("completed move")
+    };
+    assert_eq!(
+        polyline.vertices()[0],
+        Point3::new(-35.0, -25.0, 7.0).unwrap()
+    );
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");

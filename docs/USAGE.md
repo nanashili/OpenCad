@@ -331,6 +331,24 @@ PEDIT options. `Join 2 5` applies those candidates immediately, as does
 Save retains the pending selection; Exit or Escape discards it. Completed joins
 remain editable and each join can be undone as one PEDIT operation.
 
+**Edit vertex** (`Edit` or E) marks the first vertex with an X and exposes its
+number and coordinates in the canvas accessibility description. **Next** (N)
+and **Previous** (P) traverse vertices without wrapping, including closed
+polylines. **Move** (M) starts point entry with a live preview. Enter `x,y[,z]`,
+pick a canvas point with the existing snapping controls, or use `@dx,dy[,dz]`
+relative to the marked vertex. Omitted absolute Z uses the polyline elevation;
+omitted relative Z is zero. `Move x,y[,z]` also applies an absolute point directly.
+
+In Move, Enter or **Exit** cancels the pending point and returns to Edit vertex.
+In Edit vertex, Enter or **Exit** returns to the main PEDIT options, where Undo
+can restore completed moves. Escape ends PEDIT, retaining completed operations.
+Save retains the pending stage. These Enter defaults are OpenCad's choices.
+Move preserves the closed flag and all stored bulges; neighboring arc centers
+and radii follow the new endpoints and bulges. Source identity, layer and style
+are retained. Off-plane points, protected layers, newly collapsed curved
+segments and unrepresentable geometry reject before mutation; an unchanged
+point adds no history. Coincident endpoints on straight segments remain allowed.
+
 ```text
 PE 2
 Yes
@@ -340,6 +358,12 @@ Undo
 Exit
 PEDIT 3 Open
 Join 2 5
+Edit vertex
+Next
+Move
+@5,10
+Exit
+Undo
 ```
 
 Conversion creates a zero-width legacy R12 POLYLINE with source layer/style and
@@ -362,8 +386,8 @@ its start remains open until Close is chosen. Invalid geometry in an otherwise
 eligible candidate, or a protected source/consumed layer, rejects the whole
 join before mutation. Hidden candidates are ignored by All and window selection.
 
-Multiple selection, fuzz-distance/Jointype joining, width and vertex editing
-within PEDIT, curve fitting,
+Multiple selection, fuzz-distance/Jointype joining, width, vertex Insert,
+Straighten, Break, Tangent and Regen within PEDIT, curve fitting,
 DELOBJ retention choices, PLINETYPE/PLINECONVERTMODE conversion settings and
 general UCS editing remain unfinished. Existing property controls still edit
 polyline vertices and bulges independently of PEDIT.

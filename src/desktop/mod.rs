@@ -380,6 +380,9 @@ impl OpenCadApp {
     }
 
     fn drawing_elevation(&self) -> f64 {
+        if let Some((_, _, point)) = self.pedit_marked_vertex() {
+            return point.z();
+        }
         if matches!(
             self.tool,
             Tool::Polyline | Tool::Rotate | Tool::Scale | Tool::Mirror
@@ -407,6 +410,7 @@ impl OpenCadApp {
             Tool::Offset => return self.offset_point(point),
             Tool::Break | Tool::BreakAtPoint => return self.break_point(point),
             Tool::Lengthen => return self.lengthen_point(point),
+            Tool::Pedit if self.pedit_awaits_point() => return self.pedit_move_vertex(point),
             Tool::Explode | Tool::Join | Tool::Pedit => {
                 return Err(
                     "Select objects on the canvas or enter entity numbers, then Enter.".into(),
@@ -746,8 +750,16 @@ impl OpenCadApp {
                 (Key::R, "Reverse"),
                 (Key::U, "Undo"),
                 (Key::Y, "Yes"),
-                (Key::N, "No"),
+                (
+                    Key::N,
+                    if self.pedit_vertex_active() {
+                        "Next"
+                    } else {
+                        "No"
+                    },
+                ),
                 (Key::J, "Join"),
+                (Key::E, "Edit"),
             ] {
                 if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
                     self.execute(option);
@@ -755,6 +767,13 @@ impl OpenCadApp {
             }
             if self.pedit_joining() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::A)) {
                 self.execute("All");
+            }
+            if self.pedit_vertex_active() {
+                for (key, option) in [(Key::P, "Previous"), (Key::M, "Move")] {
+                    if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
+                        self.execute(option);
+                    }
+                }
             }
         }
         if self.tool == Tool::Mirror && self.points.len() == 2 {

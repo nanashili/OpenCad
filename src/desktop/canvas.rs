@@ -141,7 +141,7 @@ impl OpenCadApp {
                 self.cursor = pointer.and_then(|position| {
                     self.camera.world(position, rect, self.drawing_elevation())
                 });
-                if !matches!(
+                if (!matches!(
                     self.tool,
                     Tool::Select
                         | Tool::Explode
@@ -155,12 +155,22 @@ impl OpenCadApp {
                         | Tool::Break
                         | Tool::BreakAtPoint
                         | Tool::Lengthen
-                ) && let Some(point) = self.cursor
+                ) || self.pedit_awaits_point())
+                    && let Some(point) = self.cursor
                 {
                     self.cursor = Some(self.snap(point, rect, ui.input(|i| i.modifiers.shift)));
                 }
                 ui.ctx().accesskit_node_builder(response.id, |node| {
                     let mut description = format!("Current tool: {}", self.tool.name());
+                    if let Some((vertex, count, point)) = self.pedit_marked_vertex() {
+                        description.push_str(&format!(
+                            "; PEDIT vertex {} of {count}: {},{},{}",
+                            vertex + 1,
+                            point.x(),
+                            point.y(),
+                            point.z()
+                        ));
+                    }
                     if let Some((_, angle)) = self.polar_guide {
                         description.push_str(&format!("; Polar guide: {angle:.2} degrees"));
                     }
@@ -192,10 +202,18 @@ impl OpenCadApp {
                             self.editor.select(hit.into_iter().collect());
                         }
                     } else if self.tool == Tool::Pedit {
-                        let result = pointer
-                            .and_then(|position| self.hit(position, rect))
-                            .ok_or_else(|| "Select an XY polyline, line or arc.".to_string())
-                            .and_then(|index| self.pedit_select(index));
+                        let result = if self.pedit_awaits_point() {
+                            self.cursor
+                                .ok_or_else(|| "Choose a finite XY point.".to_string())
+                                .and_then(|point| self.pedit_move_vertex(point))
+                        } else if self.pedit_vertex_active() {
+                            Ok(())
+                        } else {
+                            pointer
+                                .and_then(|position| self.hit(position, rect))
+                                .ok_or_else(|| "Select an XY polyline, line or arc.".to_string())
+                                .and_then(|index| self.pedit_select(index))
+                        };
                         if let Err(error) = result {
                             self.message(error, true);
                         }
@@ -372,6 +390,33 @@ impl OpenCadApp {
                 }
                 self.draw_polar_guide(&painter, rect);
                 self.draw_preview(&painter, rect);
+                if let Some((vertex, _, point)) = self.pedit_marked_vertex()
+                    && let Some(position) = self.camera.screen(point.x(), point.y(), rect)
+                    && rect.contains(position)
+                {
+                    let stroke = Stroke::new(2.0, ACCENT);
+                    painter.line_segment(
+                        [
+                            position - egui::vec2(6.0, 6.0),
+                            position + egui::vec2(6.0, 6.0),
+                        ],
+                        stroke,
+                    );
+                    painter.line_segment(
+                        [
+                            position - egui::vec2(6.0, -6.0),
+                            position + egui::vec2(6.0, -6.0),
+                        ],
+                        stroke,
+                    );
+                    painter.text(
+                        position + egui::vec2(10.0, -10.0),
+                        egui::Align2::LEFT_BOTTOM,
+                        format!("Vertex {}", vertex + 1),
+                        egui::FontId::proportional(11.0),
+                        ACCENT,
+                    );
+                }
                 if let Some(start) = self.marquee
                     && let Some(end) = pointer
                 {
@@ -675,6 +720,12 @@ impl OpenCadApp {
             return;
         };
         let stroke = Stroke::new(1.3, ACCENT);
+        if self.pedit_awaits_point() {
+            if let Ok(polyline) = self.pedit_moved_polyline(cursor) {
+                self.draw_entity(painter, &Entity::Polyline(polyline), rect, stroke);
+            }
+            return;
+        }
         if self.tool == Tool::Lengthen {
             let hit = self
                 .camera
