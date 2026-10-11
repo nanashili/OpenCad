@@ -246,6 +246,31 @@ precision. Relative endpoint comparisons use `1e-10`; these are OpenCad policies
 Polyline/ellipse/spline lengthening, 3D/UCS behavior and complete native tolerance
 parity remain unfinished.
 
+## Explode
+
+Choose **Explode** in Modify, or enter `EXPLODE` (`X`). A preselected polyline
+explodes immediately. Otherwise, click objects or drag a selection window, then
+press Enter. Picks add to the set; Shift removes. **All** selects visible
+objects. The command field accepts one-based entity numbers separated by spaces.
+Escape or **Exit** cancels a pending selection.
+
+```text
+EXPLODE 2 3
+X
+```
+
+OpenCad decomposes open or closed 2D polylines into their LINE and ARC segments,
+including a closed polyline's final edge. Bulged segments retain their circular
+shape. Source elevation, layer and style are copied to each component; the
+components receive new DXF records. Unrelated records remain unchanged. One
+undo restores the entire batch. A locked or invalid polyline rejects the batch
+before any geometry changes; simple LINE, ARC and CIRCLE sources are skipped.
+
+The current DXF reader supports legacy R12 2D POLYLINE sequences with zero
+widths. LWPOLYLINE, nonzero widths, blocks and other compound-object explosion
+remain unfinished. Segment order, degenerate edges, property copying and batch
+history are explicit OpenCad policies; exact native parity is not claimed.
+
 ## Reordering toolset panels
 
 Click **Reorder panels** at the bottom left of the Drafting toolset. Drag a panel

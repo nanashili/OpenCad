@@ -156,6 +156,15 @@ impl Polyline2 {
         })
     }
 
+    /// Decompose the centerline into independent LINE/ARC entities in segment order.
+    /// Closed polylines include the closing edge; coincident vertices yield a
+    /// zero-length line. Standalone arcs store the same locus counterclockwise.
+    pub fn explode(&self) -> Result<Vec<Entity>, GeometryError> {
+        self.segments()
+            .map(|segment| segment.map(PolylineSegment::geometry))
+            .collect()
+    }
+
     pub(crate) fn extrema(&self) -> Result<Vec<Point3>, GeometryError> {
         let mut points = self.vertices.clone();
         for segment in self.segments() {

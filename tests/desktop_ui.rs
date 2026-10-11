@@ -3176,6 +3176,270 @@ fn lengthen_canvas_uses_raw_picks_keyboard_options_and_dynamic_clicks_and_draggi
 }
 
 #[test]
+fn explode_commands_convert_selected_polylines_atomically_and_preserve_styles_on_reload() {
+    use opencad::desktop::{menu_action_status, queue_menu_action};
+    use opencad::{Circle3, Line3, Polyline2};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("explode-commands.dxf");
+    let p = |x, y| Point3::new(x, y, 7.0).unwrap();
+    let mut document = DxfDocument::default();
+    document.push(Entity::Line(Line3::new(p(-100.0, -30.0), p(-80.0, -30.0))));
+    document.push(Entity::Polyline(
+        Polyline2::with_bulges(
+            vec![p(-40.0, 0.0), p(-10.0, 0.0), p(-10.0, 20.0)],
+            vec![1.0, 0.0, 0.0],
+            false,
+        )
+        .unwrap(),
+    ));
+    document.push(Entity::Polyline(
+        Polyline2::with_bulges(
+            vec![p(20.0, 0.0), p(40.0, 0.0), p(40.0, 20.0), p(20.0, 20.0)],
+            vec![0.0, (std::f64::consts::PI / 8.0).tan(), 0.0, 0.0],
+            true,
+        )
+        .unwrap(),
+    ));
+    document.push(Entity::Circle(Circle3::new(p(80.0, 0.0), 5.0).unwrap()));
+    for (index, layer, color, scale) in [(1, "DETAIL", 3, 2.0), (2, "FRAME", 5, 0.5)] {
+        document.add_layer(layer).unwrap();
+        document.set_entity_layer(index, layer).unwrap();
+        document.set_entity_color(index, color).unwrap();
+        document.set_entity_linetype_scale(index, scale).unwrap();
+    }
+    let original = document.to_dxf();
+    fs::write(&path, &original).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command(&format!("OPEN {}", path.display()));
+    assert!(menu_action_status(&ui.ctx, "ID_Explode").enabled);
+    queue_menu_action(&ui.ctx, "ID_Explode");
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Explode"));
+    ui.command("2 3");
+    assert!(ui.has_text("2 selected"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command_with_enter("");
+    assert!(ui.has_text("2 polylines exploded into 6 components."));
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let exploded = read();
+    assert_eq!(exploded.entities().len(), 8);
+    assert!(
+        exploded
+            .entities()
+            .iter()
+            .all(|entity| !matches!(entity, Entity::Polyline(_)))
+    );
+    assert_eq!(
+        &exploded.entities()[..2],
+        &[
+            document.entities()[0].clone(),
+            document.entities()[3].clone()
+        ]
+    );
+    assert_eq!(
+        exploded
+            .entities()
+            .iter()
+            .filter(|entity| matches!(entity, Entity::Arc(_)))
+            .count(),
+        2
+    );
+    for index in 2..8 {
+        let source = if index < 4 { 1 } else { 2 };
+        assert_eq!(exploded.entity_layer(index), document.entity_layer(source));
+        assert_eq!(exploded.entity_style(index), document.entity_style(source));
+    }
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command("UNDO");
+    ui.command("SELECT 2");
+    ui.command("X"); // Existing selection executes immediately.
+    assert!(ui.has_text("1 polylines exploded into 2 components."));
+    ui.command("SAVE");
+    assert_eq!(read().entities().len(), 5);
+    ui.command("UNDO");
+    ui.command("EXPLODE 3 2 3 1"); // Deduplicate sources; leave the simple LINE unchanged.
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command("UNDO");
+    for command in [
+        "EXPLODE 0 2",
+        "EXPLODE 2 99",
+        "EXPLODE 2 not-an-index",
+        "EXPLODE 4",
+    ] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("No polylines selected; geometry unchanged."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    for (action, layer) in [("LOCK", "FRAME"), ("HIDE", "DETAIL")] {
+        ui.command(&format!("LAYER {action} {layer}"));
+        ui.command("SAVE");
+        let protected = fs::read_to_string(&path).unwrap();
+        ui.command("EXPLODE 2 3");
+        assert!(ui.has_text(if action == "LOCK" {
+            "unlock layer FRAME before editing it"
+        } else {
+            "Explode sources must be visible."
+        }));
+        ui.command("SAVE");
+        assert_eq!(fs::read_to_string(&path).unwrap(), protected);
+        ui.command("UNDO");
+    }
+    ui.command("SELECT");
+    ui.command("EXPLODE");
+    ui.command("ALL");
+    assert!(ui.has_text("4 selected"));
+    ui.command_with_enter("");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command(&format!("OPEN {}", path.display()));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn explode_canvas_selects_curves_and_windows_with_shift_removal_enter_and_escape() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("explode-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.screen_size = egui::vec2(1440.0, 1120.0);
+    ui.click("New");
+    ui.command("PLINE -40,0,7 -10,0,7 -10,20,7");
+    ui.replace_field("Vertex 1 bulge", "1");
+    ui.click("Apply properties");
+    ui.command("PLINE 20,0,7 40,0,7 40,20,7 CLOSE");
+    ui.command("CIRCLE 60,-30,7 5");
+    ui.command("SELECT");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let position = |ui: &DrawingUi, x: f64, y: f64| {
+        let bounds = ui
+            .bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
+            .unwrap();
+        egui::pos2(
+            bounds.center().x + 4.0 * x as f32,
+            bounds.center().y - 4.0 * y as f32,
+        )
+    };
+    let click = |ui: &mut DrawingUi, x: f64, y: f64, modifiers| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    let drag = |ui: &mut DrawingUi, from: (f64, f64), to: (f64, f64), modifiers| {
+        let from = position(ui, from.0, from.1);
+        let to = position(ui, to.0, to.1);
+        ui.step(vec![
+            Event::PointerMoved(from),
+            Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerMoved(to)]);
+        ui.step(vec![Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    let press = |ui: &mut DrawingUi, value: egui::Key| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    ui.click("Explode");
+    click(&mut ui, -25.0, -15.0, egui::Modifiers::NONE); // The curved locus, away from its chord.
+    click(&mut ui, 30.0, 0.0, egui::Modifiers::NONE);
+    click(&mut ui, 65.0, -30.0, egui::Modifiers::NONE);
+    assert!(ui.has_text("3 selected"));
+    click(&mut ui, 65.0, -30.0, egui::Modifiers::SHIFT);
+    click(&mut ui, -25.0, -15.0, egui::Modifiers::NONE); // Repeated picks add only once.
+    assert!(ui.has_text("2 selected"));
+    click(&mut ui, -25.0, -15.0, egui::Modifiers::SHIFT);
+    assert!(ui.has_text("1 selected"));
+    click(&mut ui, -25.0, -15.0, egui::Modifiers::NONE);
+    ui.snapshot("explode-selected-curves");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    click(&mut ui, -25.0, -15.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Enter);
+    ui.snapshot("explode-components");
+    assert!(ui.has_text("2 polylines exploded into 5 components."));
+    ui.command("SAVE");
+    assert_eq!(read().entities().len(), 6);
+    assert_eq!(
+        read()
+            .entities()
+            .iter()
+            .filter(|entity| matches!(entity, Entity::Arc(_)))
+            .count(),
+        1
+    );
+    ui.command("UNDO");
+    ui.command("SELECT");
+    ui.click("Explode");
+    drag(&mut ui, (-50.0, 30.0), (45.0, -25.0), egui::Modifiers::NONE);
+    assert!(ui.has_text("2 selected"));
+    drag(
+        &mut ui,
+        (-45.0, 25.0),
+        (-5.0, -20.0),
+        egui::Modifiers::SHIFT,
+    );
+    assert!(ui.has_text("1 selected"));
+    press(&mut ui, egui::Key::Enter);
+    ui.command("SAVE");
+    let result = read();
+    assert_eq!(result.entities().len(), 5);
+    assert!(matches!(result.entities()[0], Entity::Polyline(_)));
+    ui.command("UNDO");
+    ui.command("SELECT");
+    ui.click("Explode");
+    click(&mut ui, -25.0, -15.0, egui::Modifiers::NONE);
+    click(&mut ui, 0.0, -50.0, egui::Modifiers::NONE);
+    assert!(ui.has_text("1 selected"));
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("SELECT");
+    ui.command("EXPLODE");
+    ui.command("1 2");
+    ui.command("Exit");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");

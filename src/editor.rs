@@ -655,6 +655,45 @@ impl Editor {
         Ok(true)
     }
 
+    /// Replace selected polylines with their centerline components in one edit.
+    /// Simple entities are ignored. All fallible work precedes the checkpoint;
+    /// output records inherit source layer/style and become the new selection.
+    pub fn explode_selection(&mut self) -> Result<usize, EditError> {
+        let mut plans = Vec::new();
+        for &index in self.selection() {
+            let Entity::Polyline(polyline) = &self.entities()[index] else {
+                continue;
+            };
+            let layer = self.entity_layer(index).expect("existing source layer");
+            self.editable_layer(layer)?;
+            let parts = polyline.explode()?;
+            let style = self.entity_style(index).expect("existing source style");
+            plans.push((index, layer.to_owned(), style.clone(), parts));
+        }
+        let count = plans.len();
+        if count == 0 {
+            return Ok(0);
+        }
+        self.checkpoint();
+        for (index, ..) in plans.iter().rev() {
+            self.current
+                .document
+                .remove(*index)
+                .expect("validated source index");
+        }
+        let first = self.entities().len();
+        for (_, layer, style, parts) in plans {
+            for part in parts {
+                self.current
+                    .document
+                    .push_with_style(part, &layer, style.clone())
+                    .expect("validated source layer");
+            }
+        }
+        self.select((first..self.entities().len()).collect());
+        Ok(count)
+    }
+
     pub fn delete_selection(&mut self) -> Result<bool, LayerError> {
         if self.selection().is_empty() {
             return Ok(false);

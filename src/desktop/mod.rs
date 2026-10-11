@@ -3,6 +3,7 @@ mod canvas;
 mod catalog;
 mod commands;
 mod corners;
+mod exploding;
 mod lengthening;
 mod offsets;
 mod panels;
@@ -51,6 +52,7 @@ enum Tool {
     Break,
     BreakAtPoint,
     Lengthen,
+    Explode,
     Pan,
 }
 impl Tool {
@@ -75,6 +77,7 @@ impl Tool {
             Self::Break => "Break",
             Self::BreakAtPoint => "Break at Point",
             Self::Lengthen => "Lengthen",
+            Self::Explode => "Explode",
             Self::Pan => "Pan",
         }
     }
@@ -322,6 +325,9 @@ impl OpenCadApp {
             (Tool::Fillet | Tool::Chamfer, _) => self.corner_prompt(),
             (Tool::Break | Tool::BreakAtPoint, _) => self.break_prompt(),
             (Tool::Lengthen, _) => self.lengthen_prompt(),
+            (Tool::Explode, _) => {
+                "EXPLODE · Select objects; Enter explodes polylines. Shift removes; All selects visible objects; Escape cancels."
+            }
             (Tool::Pan, _) => "Drag to pan. Scroll to zoom; F fits the drawing.",
         }
     }
@@ -383,6 +389,11 @@ impl OpenCadApp {
             Tool::Offset => return self.offset_point(point),
             Tool::Break | Tool::BreakAtPoint => return self.break_point(point),
             Tool::Lengthen => return self.lengthen_point(point),
+            Tool::Explode => {
+                return Err(
+                    "Select objects on the canvas or enter entity numbers, then Enter.".into(),
+                );
+            }
             Tool::Trim | Tool::Extend | Tool::Fillet | Tool::Chamfer => {
                 return Err("Pick a curve on the canvas or enter entity-number x,y[,z].".into());
             }
@@ -827,6 +838,7 @@ impl OpenCadApp {
                     | Tool::Break
                     | Tool::BreakAtPoint
                     | Tool::Lengthen
+                    | Tool::Explode
             ) || (self.tool == Tool::Mirror && self.points.len() == 2)
             {
                 self.execute("");
