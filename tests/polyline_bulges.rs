@@ -421,3 +421,94 @@ fn arc_creation_rejects_incomplete_degenerate_nonplanar_and_unrepresentable_geom
             .is_err()
     );
 }
+
+// Included-angle construction must retain traversal, independent of tangent
+// inference or a through-point solver, and center construction must rotate the radius.
+#[test]
+fn signed_sweep_and_center_arcs_match_analytic_circles_at_varied_scales() {
+    let root_half = 0.5_f64.sqrt();
+    for scale in [1e-150, 1.0, 1e150] {
+        let p = |x, y| point((3.0 + x) * scale, (-2.0 + y) * scale, 7.0);
+        let center = p(0.0, 0.0);
+        let start = p(1.0, 0.0);
+        for (sweep, end, middle) in [
+            (PI / 2.0, p(0.0, 1.0), p(root_half, root_half)),
+            (-PI / 2.0, p(0.0, -1.0), p(root_half, -root_half)),
+            (PI, p(-1.0, 0.0), p(0.0, 1.0)),
+            (-PI, p(-1.0, 0.0), p(0.0, -1.0)),
+            (3.0 * PI / 2.0, p(0.0, -1.0), p(-root_half, root_half)),
+            (-3.0 * PI / 2.0, p(0.0, 1.0), p(-root_half, -root_half)),
+        ] {
+            for segment in [
+                PolylineSegment::arc_from_sweep(start, end, sweep).unwrap(),
+                PolylineSegment::arc_about(start, center, sweep).unwrap(),
+            ] {
+                near(segment.bulge(), (sweep / 4.0).tan());
+                near(segment.length().unwrap() / scale, sweep.abs());
+                for (fraction, expected) in [(0.0, start), (0.5, middle), (1.0, end)] {
+                    let actual = segment.point_at_fraction(fraction).unwrap();
+                    near(actual.x() / scale, expected.x() / scale);
+                    near(actual.y() / scale, expected.y() / scale);
+                    assert_eq!(actual.z(), 7.0);
+                }
+                let PolylineSegment::Arc { arc, clockwise } = segment else {
+                    panic!("nonzero sweep must be an arc");
+                };
+                assert_eq!(clockwise, sweep < 0.0);
+                near(arc.center().x() / scale, center.x() / scale);
+                near(arc.center().y() / scale, center.y() / scale);
+                near(arc.radius() / scale, 1.0);
+            }
+        }
+    }
+}
+
+#[test]
+fn signed_sweep_and_center_arcs_reject_invalid_and_unrepresentable_constructions() {
+    use std::f64::consts::TAU;
+    let start = point(1.0, 0.0, 7.0);
+    let end = point(0.0, 1.0, 7.0);
+    let center = point(0.0, 0.0, 7.0);
+    for sweep in [0.0, -0.0, TAU, -TAU, 3.0 * PI, -3.0 * PI] {
+        assert_eq!(
+            PolylineSegment::arc_from_sweep(start, end, sweep),
+            Err(GeometryError::InvalidArcSweep)
+        );
+        assert_eq!(
+            PolylineSegment::arc_about(start, center, sweep),
+            Err(GeometryError::InvalidArcSweep)
+        );
+    }
+    for sweep in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(
+            PolylineSegment::arc_from_sweep(start, end, sweep),
+            Err(GeometryError::NonFiniteAngle)
+        );
+        assert_eq!(
+            PolylineSegment::arc_about(start, center, sweep),
+            Err(GeometryError::NonFiniteAngle)
+        );
+    }
+    assert_eq!(
+        PolylineSegment::arc_from_sweep(start, start, PI),
+        Err(GeometryError::DegenerateCurve)
+    );
+    assert_eq!(
+        PolylineSegment::arc_about(start, start, PI),
+        Err(GeometryError::DegenerateCurve)
+    );
+    let other_plane = point(0.0, 1.0, 8.0);
+    assert_eq!(
+        PolylineSegment::arc_from_sweep(start, other_plane, PI),
+        Err(GeometryError::NonPlanarPolyline)
+    );
+    assert_eq!(
+        PolylineSegment::arc_about(start, other_plane, PI),
+        Err(GeometryError::NonPlanarPolyline)
+    );
+    assert!(PolylineSegment::arc_from_sweep(start, end, 1e-320).is_err());
+    assert!(PolylineSegment::arc_about(start, center, f64::from_bits(1)).is_err());
+    let huge = point(f64::MAX, 0.0, 7.0);
+    assert!(PolylineSegment::arc_from_sweep(start, huge, 1e-300).is_err());
+    assert!(PolylineSegment::arc_about(start, huge, PI).is_err());
+}

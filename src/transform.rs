@@ -78,7 +78,7 @@ impl Transform {
         )
     }
 
-    fn point(self, point: Point3) -> Result<Point3, GeometryError> {
+    pub(crate) fn point(self, point: Point3) -> Result<Point3, GeometryError> {
         if self.is_identity() || point == self.base {
             return Ok(point);
         }

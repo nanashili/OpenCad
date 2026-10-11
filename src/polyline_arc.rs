@@ -2,6 +2,49 @@ use crate::{GeometryError, Point3, PolylineSegment};
 use std::f64::consts::TAU;
 
 impl PolylineSegment {
+    /// Arc from `start` to `end` with a signed included angle in radians.
+    /// Positive sweeps are counterclockwise; minor and major arcs are supported.
+    pub fn arc_from_sweep(start: Point3, end: Point3, sweep: f64) -> Result<Self, GeometryError> {
+        validate_sweep(sweep)?;
+        if start.z() != end.z() {
+            return Err(GeometryError::NonPlanarPolyline);
+        }
+        if start == end {
+            return Err(GeometryError::DegenerateCurve);
+        }
+        let bulge = (sweep / 4.0).tan();
+        if bulge == 0.0 {
+            return Err(GeometryError::UnrepresentableBulge);
+        }
+        let segment = checked_segment(start, end, bulge)?;
+        if segment.length()? == 0.0 {
+            return Err(GeometryError::UnrepresentableBulge);
+        }
+        Ok(segment)
+    }
+
+    /// Arc from `start` about an explicit XY center by a signed sweep in radians.
+    /// The endpoint is the starting radius rotated counterclockwise for positive sweeps.
+    pub fn arc_about(start: Point3, center: Point3, sweep: f64) -> Result<Self, GeometryError> {
+        Self::arc_about_with_endpoint(start, center, sweep).map(|(_, segment)| segment)
+    }
+
+    pub(crate) fn arc_about_with_endpoint(
+        start: Point3,
+        center: Point3,
+        sweep: f64,
+    ) -> Result<(Point3, Self), GeometryError> {
+        validate_sweep(sweep)?;
+        if start.z() != center.z() {
+            return Err(GeometryError::NonPlanarPolyline);
+        }
+        if start == center {
+            return Err(GeometryError::DegenerateCurve);
+        }
+        let end = crate::Transform::rotate_xy(center, sweep)?.point(start)?;
+        Ok((end, Self::arc_from_sweep(start, end, sweep)?))
+    }
+
     /// Signed bulge for this segment's traversal: positive is counterclockwise.
     pub fn bulge(self) -> f64 {
         match self {
@@ -108,6 +151,16 @@ impl PolylineSegment {
             return Err(GeometryError::UnrepresentableBulge);
         }
         checked_segment(start, end, bulge)
+    }
+}
+
+fn validate_sweep(sweep: f64) -> Result<(), GeometryError> {
+    if !sweep.is_finite() {
+        Err(GeometryError::NonFiniteAngle)
+    } else if sweep == 0.0 || sweep.abs() >= TAU {
+        Err(GeometryError::InvalidArcSweep)
+    } else {
+        Ok(())
     }
 }
 

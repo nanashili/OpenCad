@@ -6603,10 +6603,8 @@ fn pline_arc_direction_second_point_errors_and_cancel_keep_drafts_atomic() {
     ui.command("Arc");
     ui.command("0,1"); // no implicit tangent is invented for the first arc
     assert!(ui.has_text("The first arc needs Direction or Second pt"));
-    for option in ["Angle", "Center", "Radius"] {
-        ui.command(option);
-        assert!(ui.has_text("construction are not supported yet"));
-    }
+    ui.command("Radius");
+    assert!(ui.has_text("PLINE Radius construction is not supported yet"));
     ui.command("Direction");
     ui.command("1,0"); // coincident tangent pick
     ui.command("1,1,8"); // nonplanar tangent pick
@@ -6692,7 +6690,7 @@ fn pline_canvas_arc_shortcuts_and_closing_arc_match_saved_geometry() {
     press(&mut ui, egui::Key::U);
     ui.canvas_click(0.6, 0.45);
     press(&mut ui, egui::Key::R); // unsupported Radius must retain the draft
-    assert!(ui.has_text("construction are not supported yet"));
+    assert!(ui.has_text("PLINE Radius construction is not supported yet"));
     press(&mut ui, egui::Key::D);
     ui.canvas_click(0.6, 0.3);
     press(&mut ui, egui::Key::Enter); // unfinished direction+endpoint construction
@@ -6732,4 +6730,220 @@ fn pline_canvas_arc_shortcuts_and_closing_arc_match_saved_geometry() {
     let length = dx.hypot(dy);
     assert!((dx / length - tangent.0).abs() < 1e-6);
     assert!((dy / length - tangent.1).abs() < 1e-6);
+}
+
+#[test]
+fn pline_signed_angle_and_center_routes_preserve_widths_and_atomic_history() {
+    use opencad::PolylineWidth;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-angle-center.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("ELEVATION 7");
+    ui.command("PLINEWID 1");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    for command in [
+        "PLINE",
+        "10,0",
+        "Arc",
+        "Width 2 4",
+        "Angle",
+        "90",
+        "0,10",
+        "Width 4 2",
+        "Center",
+        "0,0",
+        "Angle",
+        "-90",
+        "Angle",
+        "-270",
+        "Center",
+        "0,0",
+        "U",
+        "Angle",
+        "270",
+        "Center",
+    ] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("PLINE Arc · Specify center point"));
+    ui.step(vec![Event::PointerMoved(egui::pos2(950.0, 450.0))]);
+    ui.snapshot("pline-angle-center-draft");
+    for command in ["0,0", "Line", "-10,-10", "", "ZOOM EXTENTS", "SAVE"] {
+        ui.command(command);
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    assert_eq!(document.pline_width(), 1.0);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline");
+    };
+    let expected = [
+        (10.0, 0.0),
+        (0.0, 10.0),
+        (10.0, 0.0),
+        (0.0, -10.0),
+        (-10.0, -10.0),
+    ];
+    assert_eq!(polyline.vertices().len(), expected.len());
+    for (actual, (x, y)) in polyline.vertices().iter().zip(expected) {
+        assert!((actual.x() - x).abs() < 1e-10);
+        assert!((actual.y() - y).abs() < 1e-10);
+        assert_eq!(actual.z(), 7.0);
+    }
+    let quarter = (std::f64::consts::PI / 8.0).tan();
+    let major = (3.0 * std::f64::consts::PI / 8.0).tan();
+    for (actual, expected) in polyline
+        .bulges()
+        .iter()
+        .zip([quarter, -quarter, major, 0.0, 0.0])
+    {
+        assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+    assert_eq!(
+        polyline.widths(),
+        &[(2.0, 4.0), (4.0, 2.0), (2.0, 2.0), (2.0, 2.0), (2.0, 2.0)]
+            .map(|(start, end)| PolylineWidth::new(start, end).unwrap())
+    );
+    for segment in polyline.segments().take(3) {
+        let opencad::PolylineSegment::Arc { arc, .. } = segment.unwrap() else {
+            panic!("arc");
+        };
+        assert!(arc.center().x().abs() < 1e-10 && arc.center().y().abs() < 1e-10);
+        assert!((arc.radius() - 10.0).abs() < 1e-10);
+    }
+    ui.snapshot("pline-angle-center-finished");
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_angle_input_center_errors_and_cancel_leave_drafts_atomic() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-angle-errors.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("ELEVATION 7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    for command in ["PLINE", "1,0", "Arc", "Angle"] {
+        ui.command(command);
+    }
+    for invalid in [
+        "", "0", "360", "-360", "NaN", "inf", "90 180", "1,0", "5e-324",
+    ] {
+        ui.command(invalid);
+        assert!(ui.has_text("Enter one finite signed angle in degrees"));
+    }
+    ui.command("Width 2 4");
+    assert!(ui.has_text("Complete or cancel the PLINE arc construction before setting widths"));
+    ui.command("U");
+    ui.command("Close");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    for command in [
+        "90", "0,1,8", "1,0", "Radius", "Center", "1,0", "0,0,8", "SAVE",
+    ] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("0,0");
+    ui.command("Center");
+    ui.command("0,1"); // center coincides with the new start
+    ui.command("0,0");
+    ui.command("-1,0"); // center + endpoint is deliberately unfinished
+    assert!(ui.has_text("Choose Angle to complete the center construction"));
+    ui.command("Angle");
+    ui.command("360");
+    ui.command("-180");
+    // Failed overflowing center construction must retain the pending values and accepted arcs.
+    for command in ["Angle", "180", "Center", "1e308,0", "SAVE"] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("Exit");
+    for command in ["Line", "1,-1", "", "SAVE"] {
+        ui.command(command);
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline");
+    };
+    assert_eq!(polyline.vertices().len(), 4);
+    for (actual, (x, y)) in
+        polyline
+            .vertices()
+            .iter()
+            .zip([(1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (1.0, -1.0)])
+    {
+        assert!((actual.x() - x).abs() < 1e-10 && (actual.y() - y).abs() < 1e-10);
+        assert_eq!(actual.z(), 7.0);
+    }
+    let quarter = (std::f64::consts::PI / 8.0).tan();
+    for (actual, expected) in polyline.bulges().iter().zip([quarter, -1.0, 0.0, 0.0]) {
+        assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    for command in [
+        "PLINE", "0,0", "Arc", "Center", "1,0", "Angle", "Exit", "Angle", "90",
+    ] {
+        ui.command(command);
+    }
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_canvas_angle_shortcut_and_center_pick_create_signed_arcs() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-canvas-angle.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("OSNAP OFF");
+    ui.command("SNAP OFF");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let press_a = |ui: &mut DrawingUi| {
+        ui.step(vec![key(egui::Key::A, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(egui::Key::A, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("PLINE");
+    ui.canvas_click(0.5, 0.5);
+    press_a(&mut ui);
+    press_a(&mut ui);
+    assert!(ui.has_text("Included angle in degrees"));
+    ui.command("90");
+    ui.canvas_click(0.6, 0.4);
+    press_a(&mut ui);
+    ui.command("-270");
+    ui.command("CE");
+    ui.canvas_click(0.5, 0.4);
+    ui.command("");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline");
+    };
+    assert_eq!(polyline.vertices().len(), 3);
+    for (actual, expected) in polyline.bulges().iter().zip([
+        (std::f64::consts::PI / 8.0).tan(),
+        -(3.0 * std::f64::consts::PI / 8.0).tan(),
+        0.0,
+    ]) {
+        assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
 }

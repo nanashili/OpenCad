@@ -78,11 +78,21 @@ unverified. Width and Halfwidth also apply to interactive arc segments.
 
 After the first interactive PLINE point, **Arc** (`A`) enters arc mode.
 An endpoint creates an arc tangent to the preceding line or arc. A first arc
-has no preceding tangent: use **Direction** or **Second pt** to define it.
+has no preceding tangent: use **Direction**, **Second pt**, **Angle**, or
+**Center + Angle** to define it.
 
 - **Direction** (`D`): pick a point defining the starting tangent, then the arc endpoint.
 - **Second pt** (`S`, `SE`): pick a point on the arc, then its endpoint. The arc
   passes through all three points in order, including clockwise and major arcs.
+- **Angle** (`A` while in arc mode): enter a signed included angle in degrees,
+  then its endpoint. Positive angles run counterclockwise; negative angles run
+  clockwise. Minor, semicircular and major arcs are supported. Enter a finite,
+  nonzero value with magnitude less than 360 degrees.
+- **Center** (`CE`): pick the center, choose **Angle**, then enter the included
+  angle. Alternatively, choose **Angle**, enter the angle, choose **Center**,
+  then pick the center. Both routes rotate the starting radius by that signed
+  angle and add one endpoint. Center followed directly by an endpoint or Length
+  remains unfinished; the prompt requires Angle.
 - **Line** (`L`): return to straight segments within the same polyline.
 - **Width** / **Halfwidth**: set the next segment's taper, with the same carry
   behavior as straight segments. The preview shows the curved fill.
@@ -99,7 +109,7 @@ Line
 Close
 ```
 
-Direction and Second pt collect auxiliary picks without adding vertices. Exit
+Direction, Second pt and Center collect auxiliary picks without adding vertices. Exit
 cancels a construction option; Arc or Line also discards its unfinished picks.
 Enter and Close require the pending construction to be completed or canceled.
 U/Undo removes an accepted segment, restores its width pair, and keeps the current
@@ -116,9 +126,29 @@ constructions, nonplanar points and unrepresentable results are rejected without
 changing the accepted draft. These closure, tolerance and cancellation details
 are OpenCad policies whose native parity is unverified.
 
-Angle, Center, Radius and Length construction options remain unfinished and report
-that limitation. Direct point-list `PLINE ...` commands create straight segments.
-Bulge properties can still edit individual segments after creation.
+For example, a clockwise major arc about the origin:
+
+```text
+PLINE
+10,0
+Arc
+Angle
+-270
+Center
+0,0
+Line
+0,20
+
+```
+
+This angle input currently accepts decimal degrees only. It does not apply
+ANGDIR/ANGBASE or parse DMS, radians, grads or surveyor angle formats. The numeric
+range, invalid-input and cancellation rules are OpenCad policies whose native
+parity is unverified. Radius, Center + endpoint, Center + Length and line Length
+construction remain unfinished and report that limitation. Direct point-list
+`PLINE ...` commands create straight segments. Bulge properties can still edit
+individual segments after creation. Canvas **C** continues to mean Close;
+enter **CE** or **Center** in the command field to choose a center.
 
 ## Rotate, scale and mirror
 

@@ -74,6 +74,7 @@ pub enum GeometryError {
     NonFiniteRadius,
     NegativeRadius,
     NonFiniteAngle,
+    InvalidArcSweep,
     NonFiniteResult,
     NonPositiveScale,
     NonPositiveOffset,
@@ -130,6 +131,12 @@ impl fmt::Display for GeometryError {
             Self::NonFiniteRadius => write!(f, "the radius must be finite"),
             Self::NegativeRadius => write!(f, "the radius must be nonnegative"),
             Self::NonFiniteAngle => write!(f, "angles must be finite"),
+            Self::InvalidArcSweep => {
+                write!(
+                    f,
+                    "an arc's signed sweep must be nonzero and less than one full turn"
+                )
+            }
             Self::NonFiniteResult => write!(f, "the geometry result exceeds the finite range"),
             Self::NonPositiveScale => write!(f, "the scale factor must be positive"),
             Self::NonPositiveOffset => write!(f, "the offset distance must be positive"),
