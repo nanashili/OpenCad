@@ -8,8 +8,14 @@ pub(super) struct PeditInput {
     conversion: bool,
     joining: bool,
     vertex: Option<usize>,
-    moving_vertex: bool,
+    point_edit: Option<VertexPointEdit>,
     undo: Vec<(usize, u64)>,
+}
+
+#[derive(Clone, Copy)]
+enum VertexPointEdit {
+    Move,
+    Insert,
 }
 
 #[derive(Clone, Copy)]
@@ -38,10 +44,12 @@ impl Operation {
 
 impl OpenCadApp {
     pub(super) fn pedit_prompt(&self) -> &'static str {
-        if self.pedit_input.moving_vertex {
+        if matches!(self.pedit_input.point_edit, Some(VertexPointEdit::Move)) {
             "PEDIT Move vertex · Specify x,y[,z] or a canvas point. Relative @dx,dy[,dz] uses the marked vertex. Enter or Exit cancels this move; Escape ends PEDIT."
+        } else if matches!(self.pedit_input.point_edit, Some(VertexPointEdit::Insert)) {
+            "PEDIT Insert vertex · Specify x,y[,z] or a canvas point after the marked vertex. Relative @dx,dy[,dz] uses the marked vertex. Enter or Exit cancels insertion; Escape ends PEDIT."
         } else if self.pedit_input.vertex.is_some() {
-            "PEDIT Edit vertex · Next / Previous / Move; Enter or Exit returns to PEDIT. Escape ends the session."
+            "PEDIT Edit vertex · Next / Previous / Move / Insert; Enter or Exit returns to PEDIT. Escape ends the session."
         } else if self.pedit_input.joining {
             "PEDIT Join · Select touching XY lines, arcs or open polylines; Enter joins. Source stays selected. Shift removes; All selects visible objects. Escape ends PEDIT."
         } else if self.pedit_input.conversion {
@@ -63,7 +71,7 @@ impl OpenCadApp {
     }
 
     pub(super) fn pedit_awaits_point(&self) -> bool {
-        self.pedit_vertex_active() && self.pedit_input.moving_vertex
+        self.pedit_vertex_active() && self.pedit_input.point_edit.is_some()
     }
 
     pub(super) fn pedit_marked_vertex(&self) -> Option<(usize, usize, Point3)> {
@@ -98,17 +106,17 @@ impl OpenCadApp {
         }
     }
 
-    fn pedit_start_vertex_move(&mut self) -> Result<(), String> {
+    fn pedit_start_vertex_point(&mut self, edit: VertexPointEdit) -> Result<(), String> {
         let (_, _, point) = self
             .pedit_marked_vertex()
             .ok_or("Choose Edit vertex first.")?;
         self.points = vec![point];
-        self.pedit_input.moving_vertex = true;
+        self.pedit_input.point_edit = Some(edit);
         self.pedit_vertex_message();
         Ok(())
     }
 
-    pub(super) fn pedit_moved_polyline(&self, point: Point3) -> Result<Polyline2, String> {
+    pub(super) fn pedit_vertex_preview(&self, point: Point3) -> Result<Polyline2, String> {
         let (vertex, _, _) = self
             .pedit_marked_vertex()
             .ok_or("Choose Edit vertex first.")?;
@@ -117,31 +125,54 @@ impl OpenCadApp {
             unreachable!("marked source is a polyline");
         };
         let mut vertices = original.vertices().to_vec();
-        vertices[vertex] = point;
-        let segments = vertices.len() - usize::from(!original.is_closed());
-        for (index, bulge) in original.bulges().iter().take(segments).enumerate() {
-            let next = (index + 1) % vertices.len();
-            if *bulge != 0.0
-                && original.vertices()[index] != original.vertices()[next]
-                && vertices[index] == vertices[next]
-            {
-                return Err("Moving this vertex would collapse a curved segment.".into());
+        let replacement = match self.pedit_input.point_edit {
+            Some(VertexPointEdit::Move) => {
+                vertices[vertex] = point;
+                let segments = vertices.len() - usize::from(!original.is_closed());
+                for (index, bulge) in original.bulges().iter().take(segments).enumerate() {
+                    let next = (index + 1) % vertices.len();
+                    if *bulge != 0.0
+                        && original.vertices()[index] != original.vertices()[next]
+                        && vertices[index] == vertices[next]
+                    {
+                        return Err("Moving this vertex would collapse a curved segment.".into());
+                    }
+                }
+                let mut replacement = original.clone();
+                replacement
+                    .set_vertices(vertices)
+                    .map_err(|error| error.to_string())?;
+                replacement
             }
-        }
-        let mut replacement = original.clone();
-        replacement
-            .set_vertices(vertices)
-            .map_err(|error| error.to_string())?;
+            Some(VertexPointEdit::Insert) => {
+                let append = vertex + 1 == vertices.len() && !original.is_closed();
+                if point == vertices[vertex]
+                    || (!append && point == vertices[(vertex + 1) % vertices.len()])
+                {
+                    return Err("Insert a point distinct from the adjacent vertices.".into());
+                }
+                let mut bulges = original.bulges().to_vec();
+                vertices.insert(vertex + 1, point);
+                bulges.insert(vertex + 1, 0.0);
+                if append {
+                    bulges[vertex + 1] = bulges[vertex];
+                    bulges[vertex] = 0.0;
+                }
+                Polyline2::with_bulges(vertices, bulges, original.is_closed())
+                    .map_err(|error| error.to_string())?
+            }
+            None => return Err("Choose Move or Insert in Edit vertex first.".into()),
+        };
         replacement.length().map_err(|error| error.to_string())?;
         replacement.extrema().map_err(|error| error.to_string())?;
         Ok(replacement)
     }
 
-    pub(super) fn pedit_move_vertex(&mut self, point: Point3) -> Result<(), String> {
+    pub(super) fn pedit_apply_vertex_point(&mut self, point: Point3) -> Result<(), String> {
         if !self.pedit_awaits_point() {
-            return Err("Choose Move in Edit vertex first.".into());
+            return Err("Choose Move or Insert in Edit vertex first.".into());
         }
-        let polyline = self.pedit_moved_polyline(point)?;
+        let polyline = self.pedit_vertex_preview(point)?;
         let source = self.pedit_input.source.expect("marked source exists");
         if self
             .editor
@@ -149,8 +180,11 @@ impl OpenCadApp {
             .map_err(|error| error.to_string())?
         {
             self.pedit_checkpoint(source);
+            if matches!(self.pedit_input.point_edit, Some(VertexPointEdit::Insert)) {
+                self.pedit_input.vertex = self.pedit_input.vertex.map(|vertex| vertex + 1);
+            }
         }
-        self.pedit_input.moving_vertex = false;
+        self.pedit_input.point_edit = None;
         self.points.clear();
         self.editor.select(vec![source]);
         self.pedit_vertex_message();
@@ -160,8 +194,8 @@ impl OpenCadApp {
     fn pedit_vertex_text(&mut self, input: &str) -> Option<Result<(), String>> {
         if input.is_empty() || input.eq_ignore_ascii_case("EXIT") || input.eq_ignore_ascii_case("X")
         {
-            if self.pedit_input.moving_vertex {
-                self.pedit_input.moving_vertex = false;
+            if self.pedit_input.point_edit.is_some() {
+                self.pedit_input.point_edit = None;
                 self.points.clear();
                 self.pedit_vertex_message();
             } else {
@@ -175,9 +209,9 @@ impl OpenCadApp {
             "NEXT" | "N" | "PREVIOUS" | "P"
         ) {
             return Some((|| {
-                if self.pedit_input.moving_vertex {
+                if self.pedit_input.point_edit.is_some() {
                     return Err(
-                        "Specify the new vertex point, or Exit to cancel Move first.".into(),
+                        "Specify the new vertex point, or Exit to cancel point entry first.".into(),
                     );
                 }
                 let (vertex, count, _) = self.pedit_marked_vertex().ok_or("No marked vertex.")?;
@@ -193,20 +227,26 @@ impl OpenCadApp {
             })());
         }
         let tokens: Vec<_> = input.split_whitespace().collect();
-        if tokens.first().is_some_and(|token| {
-            token.eq_ignore_ascii_case("MOVE") || token.eq_ignore_ascii_case("M")
-        }) {
+        let point_edit =
+            tokens
+                .first()
+                .and_then(|token| match token.to_ascii_uppercase().as_str() {
+                    "MOVE" | "M" => Some(VertexPointEdit::Move),
+                    "INSERT" | "I" => Some(VertexPointEdit::Insert),
+                    _ => None,
+                });
+        if let Some(point_edit) = point_edit {
             return Some((|| {
                 if tokens.len() > 2 {
-                    return Err("Use Move [x,y[,z]] in Edit vertex.".into());
+                    return Err("Use Move [x,y[,z]] or Insert [x,y[,z]] in Edit vertex.".into());
                 }
                 let point = tokens
                     .get(1)
                     .map(|token| parse_point(token, self.drawing_elevation()))
                     .transpose()?;
-                self.pedit_start_vertex_move()?;
+                self.pedit_start_vertex_point(point_edit)?;
                 if let Some(point) = point {
-                    self.pedit_move_vertex(point)?;
+                    self.pedit_apply_vertex_point(point)?;
                 }
                 Ok(())
             })());
@@ -218,20 +258,10 @@ impl OpenCadApp {
         }
         if matches!(
             input.to_ascii_uppercase().as_str(),
-            "INSERT"
-                | "I"
-                | "STRAIGHTEN"
-                | "S"
-                | "BREAK"
-                | "B"
-                | "TANGENT"
-                | "T"
-                | "WIDTH"
-                | "W"
-                | "REGEN"
+            "STRAIGHTEN" | "S" | "BREAK" | "B" | "TANGENT" | "T" | "WIDTH" | "W" | "REGEN"
         ) {
             return Some(Err(
-                "This Edit vertex option is not implemented yet; use Next, Previous, Move or Exit."
+                "This Edit vertex option is not implemented yet; use Next, Previous, Move, Insert or Exit."
                     .into(),
             ));
         }

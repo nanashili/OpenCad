@@ -339,7 +339,7 @@ pick a canvas point with the existing snapping controls, or use `@dx,dy[,dz]`
 relative to the marked vertex. Omitted absolute Z uses the polyline elevation;
 omitted relative Z is zero. `Move x,y[,z]` also applies an absolute point directly.
 
-In Move, Enter or **Exit** cancels the pending point and returns to Edit vertex.
+In Move or Insert, Enter or **Exit** cancels the pending point and returns to Edit vertex.
 In Edit vertex, Enter or **Exit** returns to the main PEDIT options, where Undo
 can restore completed moves. Escape ends PEDIT, retaining completed operations.
 Save retains the pending stage. These Enter defaults are OpenCad's choices.
@@ -348,6 +348,21 @@ and radii follow the new endpoints and bulges. Source identity, layer and style
 are retained. Off-plane points, protected layers, newly collapsed curved
 segments and unrepresentable geometry reject before mutation; an unchanged
 point adds no history. Coincident endpoints on straight segments remain allowed.
+
+**Insert** (I) accepts the same point forms and snapping as Move. It adds a
+vertex after the marked one and marks the new vertex. At the last vertex of an
+open polyline it appends; at the last vertex of a closed polyline it inserts
+before the closing edge. Each insertion is one PEDIT Undo step, retaining the
+source object, layer, style and closed flag.
+
+Insertion geometry is an explicit OpenCad policy: the old marked vertex's
+outgoing bulge stays on its edge to the new vertex; the new vertex's edge to
+the following vertex is straight. The affected arc's center and radius follow
+its new endpoints and retained bulge. Other bulges shift with their vertices.
+Appending to an open polyline creates a straight edge and transfers the dormant
+final bulge to the new final vertex. A point equal to either adjacent vertex,
+an off-plane point or an unrepresentable result rejects before mutation.
+Native bulge handling and the post-insertion marker have not been verified.
 
 ```text
 PE 2
@@ -362,6 +377,7 @@ Edit vertex
 Next
 Move
 @5,10
+Insert 15,10
 Exit
 Undo
 ```
@@ -386,8 +402,8 @@ its start remains open until Close is chosen. Invalid geometry in an otherwise
 eligible candidate, or a protected source/consumed layer, rejects the whole
 join before mutation. Hidden candidates are ignored by All and window selection.
 
-Multiple selection, fuzz-distance/Jointype joining, width, vertex Insert,
-Straighten, Break, Tangent and Regen within PEDIT, curve fitting,
+Multiple selection, fuzz-distance/Jointype joining, width, vertex Straighten,
+Break, Tangent and Regen within PEDIT, curve fitting,
 DELOBJ retention choices, PLINETYPE/PLINECONVERTMODE conversion settings and
 general UCS editing remain unfinished. Existing property controls still edit
 polyline vertices and bulges independently of PEDIT.

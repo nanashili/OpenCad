@@ -205,7 +205,7 @@ impl OpenCadApp {
                         let result = if self.pedit_awaits_point() {
                             self.cursor
                                 .ok_or_else(|| "Choose a finite XY point.".to_string())
-                                .and_then(|point| self.pedit_move_vertex(point))
+                                .and_then(|point| self.pedit_apply_vertex_point(point))
                         } else if self.pedit_vertex_active() {
                             Ok(())
                         } else {
@@ -721,7 +721,7 @@ impl OpenCadApp {
         };
         let stroke = Stroke::new(1.3, ACCENT);
         if self.pedit_awaits_point() {
-            if let Ok(polyline) = self.pedit_moved_polyline(cursor) {
+            if let Ok(polyline) = self.pedit_vertex_preview(cursor) {
                 self.draw_entity(painter, &Entity::Polyline(polyline), rect, stroke);
             }
             return;

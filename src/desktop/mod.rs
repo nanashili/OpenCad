@@ -410,7 +410,9 @@ impl OpenCadApp {
             Tool::Offset => return self.offset_point(point),
             Tool::Break | Tool::BreakAtPoint => return self.break_point(point),
             Tool::Lengthen => return self.lengthen_point(point),
-            Tool::Pedit if self.pedit_awaits_point() => return self.pedit_move_vertex(point),
+            Tool::Pedit if self.pedit_awaits_point() => {
+                return self.pedit_apply_vertex_point(point);
+            }
             Tool::Explode | Tool::Join | Tool::Pedit => {
                 return Err(
                     "Select objects on the canvas or enter entity numbers, then Enter.".into(),
@@ -769,7 +771,7 @@ impl OpenCadApp {
                 self.execute("All");
             }
             if self.pedit_vertex_active() {
-                for (key, option) in [(Key::P, "Previous"), (Key::M, "Move")] {
+                for (key, option) in [(Key::P, "Previous"), (Key::M, "Move"), (Key::I, "Insert")] {
                     if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
                         self.execute(option);
                     }

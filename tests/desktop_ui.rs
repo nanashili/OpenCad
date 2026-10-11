@@ -4356,7 +4356,7 @@ fn pedit_vertex_commands_traverse_closed_curves_move_with_validation_and_preserv
         "0,10,8",
         "1e308,1e308",
         "Next",
-        "Insert",
+        "Straighten",
         "-20,0",
         "20,0",
     ] {
@@ -4544,6 +4544,309 @@ fn pedit_vertex_canvas_marks_traverses_previews_snaps_moves_and_cancels() {
     assert_eq!(
         polyline.vertices()[0],
         Point3::new(-35.0, -25.0, 7.0).unwrap()
+    );
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn pedit_insert_commands_preserve_segment_mapping_records_and_atomic_history() {
+    use opencad::{Circle3, Polyline2};
+
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-insert.dxf");
+    let p = |x, y| Point3::new(x, y, 7.0).unwrap();
+    let mut document = DxfDocument::default();
+    document.add_layer("DETAIL").unwrap();
+    document.push(Entity::Circle(Circle3::new(p(60.0, 20.0), 5.0).unwrap()));
+    document
+        .push_on_layer(
+            Entity::Polyline(
+                Polyline2::with_bulges(
+                    vec![p(-20.0, 0.0), p(0.0, 0.0), p(20.0, 0.0)],
+                    vec![0.5, -1.0, 9.0],
+                    false,
+                )
+                .unwrap(),
+            ),
+            "DETAIL",
+        )
+        .unwrap();
+    document.set_entity_color(1, 3).unwrap();
+    let original = document.to_dxf().replacen(
+        "POLYLINE\n",
+        "POLYLINE\n5\nC2\n999\ninsert-source-identity\n",
+        1,
+    );
+    fs::write(&path, &original).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut ui = DrawingUi::new();
+    ui.command(&format!("OPEN {}", path.display()));
+    ui.command("PE 2 Edit vertex");
+    ui.command("Insert -10,10");
+    assert!(ui.has_text("PEDIT vertex 2 of 4: -10,10,7"));
+    ui.command("SAVE");
+    let first_insert = fs::read_to_string(&path).unwrap();
+    let result = read();
+    let Entity::Polyline(polyline) = &result.entities()[1] else {
+        panic!("inserted polyline")
+    };
+    assert_eq!(
+        polyline.vertices(),
+        &[p(-20.0, 0.0), p(-10.0, 10.0), p(0.0, 0.0), p(20.0, 0.0)]
+    );
+    assert_eq!(polyline.bulges(), &[0.5, 0.0, -1.0, 9.0]);
+    assert!(!polyline.is_closed());
+    assert_eq!(result.entity_style(1), document.entity_style(1));
+    assert_eq!(result.entity_layer(1), Some("DETAIL"));
+    assert_eq!(result.entities()[0], document.entities()[0]);
+    assert!(first_insert.contains("insert-source-identity"));
+    let Entity::Polyline(before) = &document.entities()[1] else {
+        unreachable!()
+    };
+    let unchanged_arc = before.segments().nth(1).unwrap().unwrap();
+    let shifted_arc = polyline.segments().nth(2).unwrap().unwrap();
+    for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+        assert_eq!(
+            unchanged_arc.point_at_fraction(fraction).unwrap(),
+            shifted_arc.point_at_fraction(fraction).unwrap()
+        );
+    }
+    ui.command("I");
+    ui.command("@5,-5");
+    assert!(ui.has_text("PEDIT vertex 3 of 5: -5,5,7"));
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[1].clone() else {
+        panic!("relative insertion")
+    };
+    assert_eq!(polyline.vertices()[2], p(-5.0, 5.0));
+    assert_eq!(polyline.bulges(), &[0.5, 0.0, 0.0, -1.0, 9.0]);
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), first_insert);
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    ui.command("Edit");
+    ui.command("Next");
+    ui.command("Next");
+    ui.command("Insert 30,10");
+    assert!(ui.has_text("PEDIT vertex 4 of 4: 30,10,7"));
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[1].clone() else {
+        panic!("open append")
+    };
+    assert_eq!(polyline.bulges(), &[0.5, -1.0, 0.0, 9.0]);
+    assert_eq!(polyline.vertices()[3], p(30.0, 10.0));
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("Close");
+    ui.command("SAVE");
+    let closed = fs::read_to_string(&path).unwrap();
+    ui.command("Edit");
+    ui.command("Next");
+    ui.command("Next");
+    ui.command("Insert 30,10");
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[1].clone() else {
+        panic!("closed insertion")
+    };
+    assert!(polyline.is_closed());
+    assert_eq!(polyline.bulges(), &[0.5, -1.0, 9.0, 0.0]);
+    assert_eq!(polyline.vertices()[3], p(30.0, 10.0));
+    ui.command("Next");
+    assert!(ui.has_text("PEDIT vertex 4 of 4: 30,10,7"));
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), closed);
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    ui.command("Edit");
+    ui.command("Insert");
+    for input in [
+        "-20,0",
+        "0,0",
+        "1,2,8",
+        "NaN,0",
+        "1e308,1e308",
+        "Next",
+        "Undo",
+        "Insert 1,2 extra",
+    ] {
+        ui.command(input);
+    }
+    assert!(ui.has_text("Insert a point distinct from the adjacent vertices."));
+    assert!(ui.has_text("Exit to cancel point entry first."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command_with_enter("");
+    assert!(ui.has_text("PEDIT vertex 1 of 3: -20,0,7"));
+    ui.command_with_enter("");
+    ui.command("Undo");
+    assert!(ui.has_text("No more operations in this PEDIT session."));
+    ui.command("Exit");
+
+    let protected_path = scratch.0.join("pedit-insert-protected.dxf");
+    document.set_layer_locked("DETAIL", true).unwrap();
+    fs::write(&protected_path, document.to_dxf()).unwrap();
+    let protected_original = fs::read_to_string(&protected_path).unwrap();
+    let mut protected = DrawingUi::new();
+    protected.command(&format!("OPEN {}", protected_path.display()));
+    protected.command("PE 2 E");
+    protected.command("Insert -10,10");
+    assert!(protected.has_text("unlock layer DETAIL before editing it"));
+    protected.command("SAVE");
+    assert_eq!(
+        fs::read_to_string(&protected_path).unwrap(),
+        protected_original
+    );
+
+    let conversion_path = scratch.0.join("pedit-insert-conversion.dxf");
+    let mut converted = DrawingUi::new();
+    converted.click("New");
+    converted.command("LINE 0,0,7 10,0,7");
+    converted.command(&format!("SAVEAS {}", conversion_path.display()));
+    let before_conversion = fs::read_to_string(&conversion_path).unwrap();
+    converted.command("PE 1");
+    converted.command("Yes");
+    converted.command("E");
+    converted.command("Insert 5,10");
+    converted.command("SAVE");
+    let inserted = DxfDocument::parse(&fs::read_to_string(&conversion_path).unwrap()).unwrap();
+    let Entity::Polyline(polyline) = &inserted.entities()[0] else {
+        panic!("converted insertion")
+    };
+    assert_eq!(polyline.vertices().len(), 3);
+    assert_eq!(polyline.vertices()[1], p(5.0, 10.0));
+    converted.command("Exit");
+    converted.command("Undo");
+    converted.command("SAVE");
+    let reverted = DxfDocument::parse(&fs::read_to_string(&conversion_path).unwrap()).unwrap();
+    let Entity::Polyline(polyline) = &reverted.entities()[0] else {
+        panic!("reverted insertion")
+    };
+    assert_eq!(polyline.vertices().len(), 2);
+    converted.command("Undo");
+    converted.command("SAVE");
+    assert_eq!(
+        fs::read_to_string(&conversion_path).unwrap(),
+        before_conversion
+    );
+}
+
+#[test]
+fn pedit_insert_canvas_previews_snaps_marks_new_vertex_and_cancels() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-insert-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("PLINE -40,-20,7 -20,0,7 20,0,7");
+    ui.replace_field("Vertex 1 bulge", "1");
+    ui.click("Apply properties");
+    ui.command("CIRCLE 40,20,7 6");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let position = |ui: &DrawingUi, x: f32, y: f32| {
+        let bounds = ui
+            .bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
+            .unwrap();
+        egui::pos2(bounds.center().x + x * 4.0, bounds.center().y - y * 4.0)
+    };
+    let click = |ui: &mut DrawingUi, x, y, modifiers| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("PE 1 E");
+    click(&mut ui, -40.0, -20.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::I);
+    let preview = position(&ui, -25.0, -10.0);
+    ui.step(vec![Event::PointerMoved(preview)]);
+    ui.snapshot("pedit-insert-preview");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    click(&mut ui, -25.0, -10.0, egui::Modifiers::NONE);
+    assert!(ui.has_text("PEDIT vertex 2 of 4: -25,-10,7"));
+    ui.snapshot("pedit-inserted-vertex");
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[0].clone() else {
+        panic!("pointer insertion")
+    };
+    assert_eq!(
+        polyline.vertices()[1],
+        Point3::new(-25.0, -10.0, 7.0).unwrap()
+    );
+    assert_eq!(polyline.bulges(), &[1.0, 0.0, 0.0, 0.0]);
+    click(&mut ui, -25.0, -10.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::I);
+    click(&mut ui, -5.0, -5.0, egui::Modifiers::SHIFT);
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[0].clone() else {
+        panic!("ortho insertion")
+    };
+    assert_eq!(
+        polyline.vertices()[2],
+        Point3::new(-5.0, -10.0, 7.0).unwrap()
+    );
+    click(&mut ui, -5.0, -10.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::I);
+    click(&mut ui, 40.4, 20.4, egui::Modifiers::NONE);
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[0].clone() else {
+        panic!("object snap insertion")
+    };
+    assert_eq!(
+        polyline.vertices()[3],
+        Point3::new(40.0, 20.0, 7.0).unwrap()
+    );
+    ui.command("Exit");
+    for _ in 0..3 {
+        ui.command("Undo");
+    }
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Edit");
+    click(&mut ui, -40.0, -20.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::I);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("PE 1 Edit");
+    ui.command("Insert -30,-10");
+    click(&mut ui, -30.0, -10.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[0].clone() else {
+        panic!("completed insertion")
+    };
+    assert_eq!(
+        polyline.vertices()[1],
+        Point3::new(-30.0, -10.0, 7.0).unwrap()
     );
     ui.command("UNDO");
     ui.command("SAVE");
