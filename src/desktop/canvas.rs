@@ -165,6 +165,11 @@ impl OpenCadApp {
                         } else {
                             self.editor.select(hit.into_iter().collect());
                         }
+                    } else if self.offset_awaits_source() {
+                        let hit = pointer.and_then(|position| self.hit(position, rect));
+                        if let Err(error) = self.offset_source(hit) {
+                            self.message(error, true);
+                        }
                     } else if self.tool != Tool::Pan
                         && let Some(point) = self.cursor
                         && let Err(e) = self.point(point)
@@ -557,10 +562,16 @@ impl OpenCadApp {
         let Some(cursor) = self.cursor else {
             return;
         };
+        let stroke = Stroke::new(1.3, ACCENT);
+        if self.tool == Tool::Offset {
+            if let Some(entity) = self.offset_preview(cursor) {
+                self.draw_entity(painter, &entity, rect, stroke);
+            }
+            return;
+        }
         let Some(base) = self.points.last().copied() else {
             return;
         };
-        let stroke = Stroke::new(1.3, ACCENT);
         match self.tool {
             Tool::Polyline => {
                 for pair in self.points.windows(2) {

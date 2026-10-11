@@ -2024,6 +2024,173 @@ fn transform_pointer_tools_reference_lengths_and_keyboard_options_work() {
 }
 
 #[test]
+fn offset_commands_options_repetition_history_and_direct_forms_save_geometry() {
+    use opencad::desktop::{menu_action_status, queue_menu_action};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("offsets.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    assert!(menu_action_status(&ui.ctx, "ID_Offset").enabled);
+    ui.command("LAYER NEW DETAIL");
+    ui.command("LINE 0,0,7 10,0,7");
+    ui.command("ENTITY COLOR 3");
+    ui.command("CIRCLE 20,20,7 5");
+    ui.command("ARC 40,20,7 3 0 90");
+    ui.command("PLINE 50,0 60,0");
+    ui.command("LAYER SET 0");
+    ui.command("SELECT");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    queue_menu_action(&ui.ctx, "ID_Offset");
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Offset"));
+    ui.command("0");
+    assert!(ui.has_text("the offset distance must be positive"));
+    ui.command("2");
+    ui.command("0");
+    assert!(ui.has_text("Entity number is outside this drawing"));
+    ui.command("4");
+    assert!(ui.has_text("offset currently supports XY lines, circles and arcs"));
+    ui.command("1");
+    ui.command("0,3");
+    ui.command("Erase");
+    ui.command("Yes");
+    ui.command("Layer");
+    ui.command("Current");
+    ui.command("1");
+    ui.command("0,-5");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 5);
+    for (index, y, layer) in [(3, 2.0, "DETAIL"), (4, -2.0, "0")] {
+        let Entity::Line(line) = document.entities()[index] else {
+            panic!("expected offset line")
+        };
+        assert_eq!(line.start(), Point3::new(0.0, y, 7.0).unwrap());
+        assert_eq!(line.end(), Point3::new(10.0, y, 7.0).unwrap());
+        assert_eq!(document.entity_layer(index), Some(layer));
+        assert_eq!(document.entity_style(index).unwrap().color_index(), 3);
+    }
+    ui.command("Undo");
+    ui.command("U");
+    ui.command("Undo");
+    assert!(ui.has_text("There are no offsets to undo in this command."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Erase");
+    ui.command("No");
+    ui.command("Layer");
+    ui.command("Source");
+    ui.command("Through");
+    ui.command("2");
+    ui.command("20,20");
+    assert!(ui.has_text("the offset would collapse the curve's radius"));
+    ui.command("24,20");
+    ui.command("3");
+    ui.command("40,28");
+    ui.command_with_enter("");
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("OFFSET 5 1 0,20 CURRENT");
+    ui.command("OFFSET THROUGH 1 0,-3 ERASE SOURCE");
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 7);
+    let Entity::Circle(circle) = document.entities()[3] else {
+        panic!("expected concentric circle")
+    };
+    assert_eq!(circle.radius(), 4.0);
+    assert_eq!(circle.center(), Point3::new(20.0, 20.0, 7.0).unwrap());
+    let Entity::Arc(arc) = document.entities()[4] else {
+        panic!("expected concentric arc")
+    };
+    assert_eq!(arc.radius(), 8.0);
+    assert!((arc.sweep() - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+    for (index, y, layer) in [(5, 5.0, "0"), (6, -3.0, "DETAIL")] {
+        let Entity::Line(line) = document.entities()[index] else {
+            panic!("expected direct offset line")
+        };
+        assert_eq!(line.start(), Point3::new(0.0, y, 7.0).unwrap());
+        assert_eq!(document.entity_layer(index), Some(layer));
+        assert_eq!(document.entity_style(index).unwrap().color_index(), 3);
+    }
+    ui.command("OFFSET -1 1 0,20");
+    ui.command("OFFSET 1 1 0,20 CURRENT SOURCE");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn offset_pointer_picking_preview_through_keyboard_undo_and_cancel_work() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pointer-offsets.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("OSNAP OFF");
+    ui.command("LINE -40,0,7 40,0,7");
+    ui.click("Offset");
+    ui.command("10");
+    ui.canvas_click(0.5, 0.5);
+    let bounds = ui
+        .nodes
+        .values()
+        .find(|node| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Drawing canvas,"))
+        })
+        .and_then(|node| node.bounds())
+        .unwrap();
+    ui.step(vec![Event::PointerMoved(egui::pos2(
+        ((bounds.x0 + bounds.x1) * 0.5) as f32,
+        (bounds.y0 + (bounds.y1 - bounds.y0) * 0.4) as f32,
+    ))]);
+    ui.snapshot("offset-preview");
+    ui.canvas_click(0.5, 0.4);
+    ui.canvas_click(0.5, 0.5);
+    ui.canvas_click(0.5, 0.6);
+    ui.step(vec![key(egui::Key::U, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::U, egui::Modifiers::NONE, false)]);
+    assert!(ui.has_text("Offset undone."));
+    ui.command("Through");
+    ui.command("1");
+    let bounds = ui
+        .nodes
+        .values()
+        .find(|node| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Drawing canvas,"))
+        })
+        .and_then(|node| node.bounds())
+        .unwrap();
+    let expected_y = (bounds.y1 - bounds.y0) * 0.2 / 4.0;
+    ui.canvas_click(0.5, 0.3);
+    ui.step(vec![key(egui::Key::Enter, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Enter, egui::Modifiers::NONE, false)]);
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 3);
+    for (index, expected_y) in [(1, 10.0), (2, expected_y)] {
+        let Entity::Line(line) = document.entities()[index] else {
+            panic!("expected pointer offset")
+        };
+        assert!((line.start().y() - expected_y).abs() < 1e-4);
+        assert_eq!(line.start().x(), -40.0);
+        assert_eq!(line.end().x(), 40.0);
+        assert_eq!(line.start().z(), 7.0);
+        assert_eq!(line.end().z(), 7.0);
+    }
+    ui.command("O");
+    ui.command_with_enter(""); // OpenCad's initial Enter selects Through.
+    ui.command("1");
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(path).unwrap(), saved);
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");

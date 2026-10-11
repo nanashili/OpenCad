@@ -9,6 +9,7 @@ mod entity_style;
 mod layer;
 mod line;
 mod linetype;
+mod offset;
 mod polyline;
 mod svg;
 mod transform;
@@ -24,6 +25,7 @@ pub use entity_style::{EntityStyle, EntityStyleError};
 pub use layer::{Layer, LayerError};
 pub use line::{Bounds3, Line3, Point3};
 pub use linetype::{Linetype, LinetypeError};
+pub use offset::{Offset, OffsetLayer, OffsetOptions};
 pub use polyline::{Polyline2, PolylineSegment};
 pub use svg::{SvgError, render_document_svg, render_entities_svg, render_svg};
 pub use transform::Transform;
@@ -65,6 +67,11 @@ pub enum GeometryError {
     NonFiniteAngle,
     NonFiniteResult,
     NonPositiveScale,
+    NonPositiveOffset,
+    UndefinedOffsetSide,
+    OffsetCollapse,
+    UnrepresentableOffset,
+    UnsupportedOffsetEntity,
     DegenerateLine,
     NotEnoughSegmentsToClose,
     NotEnoughVertices,
@@ -86,6 +93,19 @@ impl fmt::Display for GeometryError {
             Self::NonFiniteAngle => write!(f, "angles must be finite"),
             Self::NonFiniteResult => write!(f, "the geometry result exceeds the finite range"),
             Self::NonPositiveScale => write!(f, "the scale factor must be positive"),
+            Self::NonPositiveOffset => write!(f, "the offset distance must be positive"),
+            Self::UndefinedOffsetSide => write!(
+                f,
+                "choose a point off the source curve to define an offset side"
+            ),
+            Self::OffsetCollapse => write!(f, "the offset would collapse the curve's radius"),
+            Self::UnrepresentableOffset => write!(
+                f,
+                "the offset does not change geometry at this coordinate precision"
+            ),
+            Self::UnsupportedOffsetEntity => {
+                write!(f, "offset currently supports XY lines, circles and arcs")
+            }
             Self::DegenerateLine => write!(f, "a coincident line has no unique distance parameter"),
             Self::NotEnoughSegmentsToClose => write!(f, "closing requires at least two segments"),
             Self::NotEnoughVertices => write!(f, "a polyline requires at least two vertices"),

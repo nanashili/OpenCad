@@ -64,6 +64,34 @@ Rotation and mirror retain Z; uniform scaling scales XYZ about the base. Positiv
 scale factors and Mirror's No default are OpenCad policies. Drawing-specific UCS,
 angular-unit settings, text, annotative objects and other entity types are unfinished.
 
+## Offset
+
+Choose **Offset** in Modify or enter `OFFSET` (`O`). Enter a positive distance or
+choose **Through**, select a LINE, CIRCLE or ARC, then click or type the side or
+through point. A source can also be selected by its one-based entity number.
+The preview uses the same geometry as the committed result. Continue selecting
+sources, or press Enter/choose **Exit** to finish. Escape cancels a pending pick.
+
+**Erase** accepts Yes/No for removing each source. **Layer** accepts Current/Source
+for the new curve's layer. Explicit source style overrides are copied; BYLAYER
+properties resolve against the target layer. **Undo** (`U`) removes the most recent
+offset in this command, including restoring an erased source. It stops at the
+command's first offset and refuses to undo unrelated edits.
+
+Direct forms are available:
+
+```text
+OFFSET 5 1 0,20
+OFFSET THROUGH 2 10,30 ERASE CURRENT
+```
+
+OpenCad defaults to retaining sources on their source layer. Enter at the initial
+distance prompt chooses Through. These defaults are OpenCad policies; AutoCAD
+2027 Mac defaults have not been verified. Offsets use world XY, preserve elevation
+and arc angles, and reject collapsed radii, ambiguous sides and nonrepresentable
+results. Unequal-Z lines, polyline joins, other curve types, distance measurement
+with two picks, Multiple mode and OFFSETDIST are unfinished.
+
 ## Reordering toolset panels
 
 Click **Reorder panels** at the bottom left of the Drafting toolset. Drag a panel

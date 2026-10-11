@@ -1,6 +1,6 @@
 use crate::{
     DxfDocument, Entity, EntityStyle, EntityStyleError, GeometryError, Layer, LayerError, Linetype,
-    LinetypeError, Transform,
+    LinetypeError, Offset, OffsetLayer, OffsetOptions, Transform,
 };
 use std::{error::Error, fmt};
 
@@ -88,6 +88,10 @@ impl Editor {
     #[cfg(feature = "desktop")]
     pub(crate) fn document(&self) -> &DxfDocument {
         &self.current.document
+    }
+    #[cfg(feature = "desktop")]
+    pub(crate) fn revision(&self) -> u64 {
+        self.current.revision
     }
     pub fn linetypes(&self) -> &[Linetype] {
         self.current.document.linetypes()
@@ -384,6 +388,46 @@ impl Editor {
                 .replace_entity(index, entity)
                 .expect("transform preserves type");
         }
+        Ok(true)
+    }
+
+    /// Create an offset and optionally erase its source in the same undo step.
+    /// Explicit entity style overrides are copied; BYLAYER resolves on the target layer.
+    pub fn offset_entity(
+        &mut self,
+        index: usize,
+        offset: Offset,
+        options: OffsetOptions,
+    ) -> Result<bool, EditError> {
+        let Some(source) = self.entities().get(index) else {
+            return Ok(false);
+        };
+        let entity = source.offset_xy(offset)?;
+        let source_layer = self.entity_layer(index).expect("existing source layer");
+        self.editable_layer(source_layer)?;
+        let target_layer = match options.layer {
+            OffsetLayer::Source => source_layer,
+            OffsetLayer::Current => &self.active_layer,
+        }
+        .to_owned();
+        self.editable_layer(&target_layer)?;
+        let style = self
+            .entity_style(index)
+            .expect("existing source style")
+            .clone();
+        self.checkpoint();
+        if options.erase_source {
+            self.current
+                .document
+                .remove(index)
+                .expect("validated source index");
+        }
+        let created = self.entities().len();
+        self.current
+            .document
+            .push_with_style(entity, &target_layer, style)
+            .expect("validated target layer");
+        self.select(vec![created]);
         Ok(true)
     }
 

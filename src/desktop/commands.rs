@@ -19,7 +19,10 @@ impl OpenCadApp {
     pub(super) fn execute(&mut self, input: &str) {
         let input = input.trim();
         if input.is_empty() {
-            if let Some(result) = self.transform_text(input) {
+            if let Some(result) = self
+                .offset_text(input)
+                .or_else(|| self.transform_text(input))
+            {
                 if let Err(error) = result {
                     self.message(error, true);
                 }
@@ -73,6 +76,9 @@ impl OpenCadApp {
             return Ok(());
         }
         if let Some(result) = self.transform_text(input) {
+            return result;
+        }
+        if let Some(result) = self.offset_text(input) {
             return result;
         }
         let (verb, rest) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
@@ -306,6 +312,7 @@ impl OpenCadApp {
                     false,
                 );
             }
+            "OFFSET" | "O" => self.offset_command(&tokens)?,
             "ROTATE" | "RO" | "SCALE" | "SC" => {
                 let rotate = verb.eq_ignore_ascii_case("ROTATE") || verb.eq_ignore_ascii_case("RO");
                 if tokens.is_empty() {
@@ -585,7 +592,7 @@ pub(super) fn parse_pattern(value: &str) -> Result<Vec<f64>, String> {
     value.split(',').map(|part| number(part.trim())).collect()
 }
 
-fn number(value: &str) -> Result<f64, String> {
+pub(super) fn number(value: &str) -> Result<f64, String> {
     let number = value
         .parse::<f64>()
         .map_err(|_| format!("Invalid number: {value}"))?;
@@ -595,7 +602,7 @@ fn number(value: &str) -> Result<f64, String> {
     Ok(number)
 }
 
-fn parse_point(value: &str, elevation: f64) -> Result<Point3, String> {
+pub(super) fn parse_point(value: &str, elevation: f64) -> Result<Point3, String> {
     let coordinates = value
         .split(',')
         .map(number)
