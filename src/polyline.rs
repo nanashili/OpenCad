@@ -165,6 +165,76 @@ impl Polyline2 {
             .collect()
     }
 
+    /// Attach one open XY line, arc or polyline at a touching endpoint.
+    /// Source coordinates win at the junction. Matching prefers appending,
+    /// then prepending; the candidate may be reversed. Closed/off-plane and
+    /// unsupported candidates are ignored. The output remains explicitly open.
+    pub fn join_endpoints_xy(&self, other: &Entity) -> Result<Option<Self>, GeometryError> {
+        if self.closed {
+            return Err(GeometryError::ClosedPolylineJoin);
+        }
+        self.length()?;
+        self.extrema()?;
+        let elevation = match other {
+            Entity::Line(line) if line.start().z() == line.end().z() => line.start().z(),
+            Entity::Arc(arc) => arc.center().z(),
+            Entity::Polyline(polyline) if !polyline.is_closed() => polyline.elevation(),
+            _ => return Ok(None),
+        };
+        if elevation != self.elevation() {
+            return Ok(None);
+        }
+        let mut candidate = other.to_polyline_xy()?;
+        let first = self.vertices[0];
+        let last = self.vertices[self.vertices.len() - 1];
+        let candidate_first = candidate.vertices[0];
+        let candidate_last = candidate.vertices[candidate.vertices.len() - 1];
+        let append = if touching_xy(last, candidate_first) {
+            true
+        } else if touching_xy(last, candidate_last) {
+            candidate.reverse();
+            true
+        } else if touching_xy(first, candidate_last) {
+            false
+        } else if touching_xy(first, candidate_first) {
+            candidate.reverse();
+            false
+        } else {
+            return Ok(None);
+        };
+        let (vertices, bulges) = if append {
+            (
+                self.vertices
+                    .iter()
+                    .chain(&candidate.vertices[1..])
+                    .copied()
+                    .collect(),
+                self.bulges[..self.bulges.len() - 1]
+                    .iter()
+                    .chain(&candidate.bulges)
+                    .copied()
+                    .collect(),
+            )
+        } else {
+            (
+                candidate.vertices[..candidate.vertices.len() - 1]
+                    .iter()
+                    .chain(&self.vertices)
+                    .copied()
+                    .collect(),
+                candidate.bulges[..candidate.bulges.len() - 1]
+                    .iter()
+                    .chain(&self.bulges)
+                    .copied()
+                    .collect(),
+            )
+        };
+        let result = Self::with_bulges(vertices, bulges, false)?;
+        result.length()?;
+        result.extrema()?;
+        Ok(Some(result))
+    }
+
     pub(crate) fn extrema(&self) -> Result<Vec<Point3>, GeometryError> {
         let mut points = self.vertices.clone();
         for segment in self.segments() {
@@ -185,6 +255,18 @@ impl Polyline2 {
             }
         })
     }
+}
+
+fn touching_xy(a: Point3, b: Point3) -> bool {
+    // OpenCad's numerical allowance, not a user-specified fuzz distance.
+    let magnitude = a
+        .x()
+        .abs()
+        .max(a.y().abs())
+        .max(b.x().abs())
+        .max(b.y().abs());
+    let allowance = 1e-10 + 8.0 * f64::EPSILON * magnitude;
+    (a.x() - b.x()).hypot(a.y() - b.y()) <= allowance
 }
 
 impl Entity {

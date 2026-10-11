@@ -10,7 +10,7 @@ impl OpenCadApp {
         }
     }
 
-    fn join_indices(&self, tokens: &[&str]) -> Result<Vec<usize>, String> {
+    pub(super) fn join_indices(&self, tokens: &[&str]) -> Result<Vec<usize>, String> {
         tokens
             .iter()
             .map(|token| {

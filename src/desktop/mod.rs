@@ -747,10 +747,14 @@ impl OpenCadApp {
                 (Key::U, "Undo"),
                 (Key::Y, "Yes"),
                 (Key::N, "No"),
+                (Key::J, "Join"),
             ] {
                 if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
                     self.execute(option);
                 }
+            }
+            if self.pedit_joining() && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::A)) {
+                self.execute("All");
             }
         }
         if self.tool == Tool::Mirror && self.points.len() == 2 {

@@ -725,6 +725,64 @@ impl Editor {
             .map(|index| self.entities()[*index].clone())
             .collect();
         let result = entity.join_xy(&others)?;
+        self.commit_join(source, result, consumed)
+    }
+
+    /// Join touching, same-elevation LINE/ARC/open POLYLINE candidates to an
+    /// open polyline. Document order resolves branches; repeated scans accept
+    /// chains regardless of selection order. One checkpoint covers the merge.
+    pub fn join_polyline_entities(
+        &mut self,
+        source: usize,
+        candidates: &[usize],
+    ) -> Result<usize, EditError> {
+        let Some(entity) = self.entities().get(source) else {
+            return Ok(0);
+        };
+        let Entity::Polyline(polyline) = entity else {
+            return Err(GeometryError::UnsupportedPolylineConversion.into());
+        };
+        if polyline.is_closed() {
+            return Err(GeometryError::ClosedPolylineJoin.into());
+        }
+        polyline.length()?;
+        polyline.extrema()?;
+        let mut result = polyline.clone();
+        let mut pending: Vec<_> = candidates
+            .iter()
+            .copied()
+            .filter(|index| *index != source && self.is_entity_visible(*index))
+            .collect();
+        pending.sort_unstable();
+        pending.dedup();
+        let mut consumed = Vec::new();
+        loop {
+            let before = consumed.len();
+            for &index in &pending {
+                if consumed.contains(&index) {
+                    continue;
+                }
+                if let Some(joined) = result.join_endpoints_xy(&self.entities()[index])? {
+                    result = joined;
+                    consumed.push(index);
+                }
+            }
+            if consumed.len() == before {
+                break;
+            }
+        }
+        if consumed.is_empty() {
+            return Ok(0);
+        }
+        self.commit_join(source, Entity::Polyline(result), consumed)
+    }
+
+    fn commit_join(
+        &mut self,
+        source: usize,
+        result: Entity,
+        mut consumed: Vec<usize>,
+    ) -> Result<usize, EditError> {
         for index in std::iter::once(&source).chain(consumed.iter()) {
             self.editable_layer(self.entity_layer(*index).expect("validated join index"))?;
         }

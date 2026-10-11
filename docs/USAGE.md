@@ -319,8 +319,17 @@ prompt; `PEDITACCEPT 0` restores it. This preference persists between app runs.
 back only the operations made during the current PEDIT session, including
 conversion. A repeated Open/Close that changes nothing adds no history. Enter
 or **Exit** ends the session; Escape ends it while retaining completed edits.
-Canvas keys C, O, R, U, Y and N activate the corresponding options. Save keeps
+Canvas keys C, O, R, U, Y, N and J activate the corresponding options. Save keeps
 the session active. Starting another editing tool ends the session.
+
+**Join** starts candidate selection for an open polyline. Pick objects, drag a
+selection window, enter object numbers, or use **All** (canvas key A). Selection
+is additive; Shift removes candidates while retaining the source. Enter joins
+touching LINE, ARC and open POLYLINE objects at either end, then returns to the
+PEDIT options. `Join 2 5` applies those candidates immediately, as does
+`PEDIT 3 Join 2 5`. Close/Open/Reverse/Undo wait until candidate selection ends.
+Save retains the pending selection; Exit or Escape discards it. Completed joins
+remain editable and each join can be undone as one PEDIT operation.
 
 ```text
 PE 2
@@ -330,6 +339,7 @@ Reverse
 Undo
 Exit
 PEDIT 3 Open
+Join 2 5
 ```
 
 Conversion creates a zero-width legacy R12 POLYLINE with source layer/style and
@@ -340,7 +350,20 @@ Same-type edits preserve the source DXF record. Protected layers, nonplanar
 lines, degenerate arcs and unrepresentable results reject before mutation.
 These geometry, identity and history choices are explicit OpenCad policies.
 
-Multiple selection, Join, width and vertex editing within PEDIT, curve fitting,
+Join retains the source record, layer and style and removes consumed records.
+Candidates must have exactly the source elevation. Closed, off-plane and
+unsupported objects are skipped. Endpoint matching permits a numerical
+allowance of `1e-10 + 8 * f64::EPSILON * max(abs(endpoint XY coordinates))`
+drawing units, retaining the source junction coordinate. This allowance is
+OpenCad's policy. There is no gap bridge, trimming or extension. Candidate
+reversal preserves signed curved segments. Document order resolves branches;
+repeated scans find chains regardless of selection order. A path returning to
+its start remains open until Close is chosen. Invalid geometry in an otherwise
+eligible candidate, or a protected source/consumed layer, rejects the whole
+join before mutation. Hidden candidates are ignored by All and window selection.
+
+Multiple selection, fuzz-distance/Jointype joining, width and vertex editing
+within PEDIT, curve fitting,
 DELOBJ retention choices, PLINETYPE/PLINECONVERTMODE conversion settings and
 general UCS editing remain unfinished. Existing property controls still edit
 polyline vertices and bulges independently of PEDIT.

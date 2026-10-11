@@ -4014,6 +4014,263 @@ fn pedit_canvas_picks_and_keyboard_options_edit_curved_polylines_and_cancel_conv
 }
 
 #[test]
+fn pedit_join_commands_merge_chains_preserve_records_and_restore_conversion_history() {
+    use opencad::{Arc3, Circle3, Line3, Polyline2};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-join.dxf");
+    let p = |x, y| Point3::new(x, y, 7.0).unwrap();
+    let mut document = DxfDocument::default();
+    document.add_layer("DETAIL").unwrap();
+    document.push(Entity::Line(Line3::new(p(40.0, 10.0), p(30.0, 10.0))));
+    document.push(Entity::Circle(Circle3::new(p(70.0, 20.0), 5.0).unwrap()));
+    document
+        .push_on_layer(
+            Entity::Polyline(Polyline2::new(vec![p(0.0, 0.0), p(10.0, 0.0)], false).unwrap()),
+            "DETAIL",
+        )
+        .unwrap();
+    document.set_entity_color(2, 3).unwrap();
+    document.set_entity_linetype_scale(2, 2.0).unwrap();
+    document.push(Entity::Line(Line3::new(p(20.0, 0.0), p(10.0, 0.0))));
+    document.push(Entity::Arc(
+        Arc3::new(p(20.0, 10.0), 10.0, 270_f64.to_radians(), 0.0).unwrap(),
+    ));
+    document.push(Entity::Line(Line3::new(p(70.0, 0.0), p(80.0, 0.0))));
+    let original = document.to_dxf().replacen(
+        "POLYLINE\n",
+        "POLYLINE\n5\nB4\n999\npedit-source-record\n",
+        1,
+    );
+    fs::write(&path, &original).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut ui = DrawingUi::new();
+    ui.command(&format!("OPEN {}", path.display()));
+    ui.command("PEDIT 3 Join 1 4 5");
+    ui.command("SAVE");
+    let joined = read();
+    assert_eq!(joined.entities().len(), 3);
+    let Entity::Polyline(polyline) = &joined.entities()[1] else {
+        panic!("joined polyline")
+    };
+    assert_eq!(polyline.vertices().len(), 5);
+    assert!((polyline.length().unwrap() - 30.0 - 5.0 * std::f64::consts::PI).abs() < 1e-9);
+    assert_eq!(joined.entity_layer(1), Some("DETAIL"));
+    assert_eq!(joined.entity_style(1), document.entity_style(2));
+    assert!(
+        fs::read_to_string(&path)
+            .unwrap()
+            .contains("pedit-source-record")
+    );
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Undo");
+    assert!(ui.has_text("No more operations in this PEDIT session."));
+    ui.command("Close");
+    ui.command("Join 1");
+    assert!(ui.has_text("open the source polyline before joining objects"));
+    ui.command("Undo");
+    ui.command("Join 1 999");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Join");
+    ui.command("1 4 5");
+    assert!(ui.has_text("4 selected"));
+    ui.command("Reverse");
+    assert!(ui.has_text("Press Enter to finish selecting Join objects first"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command_with_enter("");
+    ui.command("SAVE");
+    assert_eq!(read().entities(), joined.entities());
+    ui.command("Undo");
+    ui.command("Join 2"); // Incompatible input adds no history.
+    ui.command("Undo");
+    assert!(ui.has_text("No more operations in this PEDIT session."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Exit");
+
+    let converted_path = scratch.0.join("pedit-join-conversion.dxf");
+    let mut converted = DrawingUi::new();
+    converted.click("New");
+    converted.command("LINE 0,0,7 10,0,7");
+    converted.command("LINE 10,0,7 20,0,7");
+    converted.command(&format!("SAVEAS {}", converted_path.display()));
+    let before_conversion = fs::read_to_string(&converted_path).unwrap();
+    converted.command("PE 1");
+    converted.command("Yes");
+    converted.command("Join 1"); // Conversion appended the source after this line.
+    converted.command("SAVE");
+    let result = DxfDocument::parse(&fs::read_to_string(&converted_path).unwrap()).unwrap();
+    let Entity::Polyline(result) = &result.entities()[0] else {
+        panic!("converted and joined")
+    };
+    assert_eq!(
+        result.vertices(),
+        &[p(0.0, 0.0), p(10.0, 0.0), p(20.0, 0.0)]
+    );
+    converted.command("Undo");
+    converted.command("SAVE");
+    let result = DxfDocument::parse(&fs::read_to_string(&converted_path).unwrap()).unwrap();
+    assert_eq!(result.entities().len(), 2);
+    assert!(matches!(result.entities()[1], Entity::Polyline(_)));
+    converted.command("Undo");
+    assert!(converted.has_text("Convert it? Yes/No <Yes>"));
+    converted.command("SAVE");
+    assert_eq!(
+        fs::read_to_string(&converted_path).unwrap(),
+        before_conversion
+    );
+
+    let protected_path = scratch.0.join("pedit-join-protected.dxf");
+    document.add_layer("PROTECTED").unwrap();
+    document.set_entity_layer(4, "PROTECTED").unwrap();
+    document.set_layer_locked("PROTECTED", true).unwrap();
+    fs::write(&protected_path, document.to_dxf()).unwrap();
+    let protected_original = fs::read_to_string(&protected_path).unwrap();
+    let mut protected = DrawingUi::new();
+    protected.command(&format!("OPEN {}", protected_path.display()));
+    protected.command("PEDIT 3 Join 1 4 5");
+    assert!(protected.has_text("unlock layer PROTECTED before editing it"));
+    protected.command("SAVE");
+    assert_eq!(
+        fs::read_to_string(&protected_path).unwrap(),
+        protected_original
+    );
+    protected.command("Exit");
+    document.set_layer_visible("PROTECTED", false).unwrap();
+    fs::write(&protected_path, document.to_dxf()).unwrap();
+    protected.command(&format!("OPEN {}", protected_path.display()));
+    protected.command("PEDIT 3 Join 1 4 5");
+    assert!(protected.has_text("Join objects must be visible"));
+}
+
+#[test]
+fn pedit_join_canvas_selects_windows_preserves_anchor_and_handles_keyboard_and_cancel() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-join-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    for command in [
+        "PLINE -50,-20,7 -30,-20,7",
+        "LINE -30,-20,7 -10,-20,7",
+        "ARC -10,-10,7 10 270 0",
+        "LINE 0,-10,7 20,-10,7",
+        "CIRCLE 40,20,7 6",
+        "LINE 40,-20,7 60,-20,7",
+    ] {
+        ui.command(command);
+    }
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let position = |ui: &DrawingUi, x: f32, y: f32| {
+        let bounds = ui
+            .bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
+            .unwrap();
+        egui::pos2(bounds.center().x + 4.0 * x, bounds.center().y - 4.0 * y)
+    };
+    let click = |ui: &mut DrawingUi, x, y, modifiers| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    let drag = |ui: &mut DrawingUi, from: (f32, f32), to: (f32, f32), modifiers| {
+        let from = position(ui, from.0, from.1);
+        let to = position(ui, to.0, to.1);
+        ui.step(vec![
+            Event::PointerMoved(from),
+            Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerMoved(to)]);
+        ui.step(vec![Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("SELECT");
+    ui.command("PE");
+    click(&mut ui, -40.0, -20.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::J);
+    assert!(ui.has_text("PEDIT Join · Select touching XY"));
+    click(&mut ui, -40.0, -20.0, egui::Modifiers::SHIFT);
+    assert!(ui.has_text("1 selected"));
+    drag(&mut ui, (-35.0, 5.0), (25.0, -30.0), egui::Modifiers::NONE);
+    assert!(ui.has_text("4 selected"));
+    drag(
+        &mut ui,
+        (-35.0, -15.0),
+        (-5.0, -25.0),
+        egui::Modifiers::SHIFT,
+    );
+    assert!(ui.has_text("3 selected"));
+    click(&mut ui, -20.0, -20.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::A);
+    assert!(ui.has_text("6 selected"));
+    click(&mut ui, 40.0, 26.0, egui::Modifiers::SHIFT);
+    click(&mut ui, 50.0, -20.0, egui::Modifiers::SHIFT);
+    assert!(ui.has_text("4 selected"));
+    ui.snapshot("pedit-join-candidate-selection");
+    press(&mut ui, egui::Key::Enter);
+    assert!(ui.has_text("3 objects joined to polyline"));
+    ui.snapshot("pedit-join-curved-chain");
+    ui.command("SAVE");
+    let merged = read();
+    assert_eq!(merged.entities().len(), 3);
+    let Entity::Polyline(polyline) = &merged.entities()[0] else {
+        panic!("joined polyline")
+    };
+    assert_eq!(polyline.vertices().len(), 5);
+    assert!((polyline.length().unwrap() - 60.0 - 5.0 * std::f64::consts::PI).abs() < 1e-9);
+    click(&mut ui, -40.0, -20.0, egui::Modifiers::NONE); // Focus canvas.
+    press(&mut ui, egui::Key::R);
+    press(&mut ui, egui::Key::U);
+    press(&mut ui, egui::Key::U);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Join");
+    click(&mut ui, -20.0, -20.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("PE 1 Join");
+    ui.command("All");
+    ui.command_with_enter("");
+    ui.command("SAVE");
+    assert_eq!(read().entities(), merged.entities());
+    ui.command("Exit"); // Completed join survives ending the session.
+    ui.command("SAVE");
+    assert_eq!(read().entities(), merged.entities());
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");
