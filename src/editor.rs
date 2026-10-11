@@ -1,7 +1,7 @@
 use crate::{
     BoundaryMode, Corner, CornerParameter, DxfDocument, Entity, EntityStyle, EntityStyleError,
-    GeometryError, Layer, LayerError, Linetype, LinetypeError, Offset, OffsetLayer, OffsetOptions,
-    Transform,
+    GeometryError, Layer, LayerError, Lengthen, Linetype, LinetypeError, Offset, OffsetLayer,
+    OffsetOptions, Transform,
 };
 use std::{error::Error, fmt};
 
@@ -497,6 +497,20 @@ impl Editor {
         };
         let parts = source.break_at_xy(pick)?;
         self.replace_curve_parts(index, parts)
+    }
+
+    /// Change one endpoint in place, retaining source identity/style and one undo step.
+    pub fn lengthen_entity(
+        &mut self,
+        index: usize,
+        pick: crate::Point3,
+        operation: Lengthen,
+    ) -> Result<bool, EditError> {
+        let Some(source) = self.entities().get(index) else {
+            return Ok(false);
+        };
+        let entity = source.lengthen_xy(pick, operation)?;
+        self.replace_curve_parts(index, vec![entity])
     }
 
     pub fn extend_entity(

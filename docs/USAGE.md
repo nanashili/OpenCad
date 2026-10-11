@@ -203,6 +203,49 @@ use `1e-10`; these are OpenCad policies. Polyline breaks, 3D/UCS projection and
 complete native tolerance/identity parity remain unfinished. Canvas **F** fits
 the drawing outside an active BREAK command.
 
+## Lengthen
+
+Choose **Lengthen** in Modify, or enter `LENGTHEN` (`LEN`). Click a curve to
+display its length and, for an arc, its included angle. Choose an edit mode:
+
+- **DElta:** specify a signed length change. Positive extends; negative shortens.
+  **Angle** changes an arc's included angle by a signed number of degrees.
+- **Percent:** specify the final length as a percentage of the current length.
+  `50` halves the length; `200` doubles it.
+- **Total:** specify the final length. **Angle** specifies an arc's final included
+  angle in degrees.
+- **DYnamic:** select near an endpoint, then click its new position or drag from
+  the source curve. A line projects the destination along its original direction;
+  an arc projects it around the original circle. The opposite endpoint stays fixed.
+
+In a scalar mode, click near the endpoint to change. The command field also
+accepts `entity-number pick-x,y[,z]`. Dynamic accepts that selection, then a
+destination `x,y[,z]`. Live previews show the proposed curve before completion.
+The mode remains active for repeated edits. **Undo** (`U`, including the canvas
+key) undoes the last completed length edit in this command. Enter, Exit or Escape
+finishes the command; global undo/redo remains available afterward. Canvas keys
+**D**, **P**, **T** and **A** choose Delta, Percent, Total and Angle.
+
+Direct forms:
+
+```text
+LENGTHEN DELTA -5 1 30,0
+LEN PERCENT 150 1 30,0
+LENGTHEN TOTAL 20 1 30,0
+LENGTHEN DELTA ANGLE 15 2 10,0
+LENGTHEN TOTAL ANGLE 90 2 10,0
+LENGTHEN DYNAMIC 1 30,0 45,12
+```
+
+Supported edits are world-XY LINEs and ARCs; closed CIRCLEs stay unchanged.
+Source elevation, layer and style are retained, along with same-type DXF source
+records. Each completed edit is one undo step. Locked or hidden curves cannot
+be edited. OpenCad rejects ambiguous endpoint-distance ties, nonpositive final
+lengths, zero/full-turn arc sweeps, degenerate curves and changes below coordinate
+precision. Relative endpoint comparisons use `1e-10`; these are OpenCad policies.
+Polyline/ellipse/spline lengthening, 3D/UCS behavior and complete native tolerance
+parity remain unfinished.
+
 ## Reordering toolset panels
 
 Click **Reorder panels** at the bottom left of the Drafting toolset. Drag a panel

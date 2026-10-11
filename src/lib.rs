@@ -9,6 +9,7 @@ mod dxf;
 mod editor;
 mod entity_style;
 mod layer;
+mod lengthen;
 mod line;
 mod linetype;
 mod offset;
@@ -27,6 +28,7 @@ pub use dxf::{DxfDocument, DxfError, DxfErrorKind, read_dxf, write_dxf};
 pub use editor::{EditError, Editor};
 pub use entity_style::{EntityStyle, EntityStyleError};
 pub use layer::{Layer, LayerError};
+pub use lengthen::Lengthen;
 pub use line::{Bounds3, Line3, Point3};
 pub use linetype::{Linetype, LinetypeError};
 pub use offset::{Offset, OffsetLayer, OffsetOptions};
@@ -83,6 +85,10 @@ pub enum GeometryError {
     UnsupportedBreakAtPoint,
     InvalidBreakPoints,
     UnrepresentableBreak,
+    UnsupportedLengthenEntity,
+    UnsupportedLengthenAngle,
+    InvalidLengthenValue,
+    UnrepresentableLengthen,
     DegenerateCurve,
     NoBoundaryIntersection,
     AmbiguousCurvePick,
@@ -145,6 +151,18 @@ impl fmt::Display for GeometryError {
                 f,
                 "the break would produce a fragment below coordinate precision"
             ),
+            Self::UnsupportedLengthenEntity => write!(
+                f,
+                "lengthen currently supports XY lines and arcs; circles are unchanged"
+            ),
+            Self::UnsupportedLengthenAngle => write!(f, "lengthen Angle requires an arc"),
+            Self::InvalidLengthenValue => write!(
+                f,
+                "lengthen requires a positive final length or an arc sweep between zero and a full turn"
+            ),
+            Self::UnrepresentableLengthen => {
+                write!(f, "the length change is below coordinate precision")
+            }
             Self::DegenerateCurve => write!(f, "the curve has no editable span"),
             Self::NoBoundaryIntersection => {
                 write!(f, "no usable boundary intersection for this portion")

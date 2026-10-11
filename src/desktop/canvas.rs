@@ -151,6 +151,7 @@ impl OpenCadApp {
                         | Tool::Chamfer
                         | Tool::Break
                         | Tool::BreakAtPoint
+                        | Tool::Lengthen
                 ) && let Some(point) = self.cursor
                 {
                     self.cursor = Some(self.snap(point, rect, ui.input(|i| i.modifiers.shift)));
@@ -172,6 +173,13 @@ impl OpenCadApp {
                             }
                         } else {
                             self.editor.select(hit.into_iter().collect());
+                        }
+                    } else if self.tool == Tool::Lengthen {
+                        let hit = pointer.and_then(|position| self.hit(position, rect));
+                        if let Some(point) = self.cursor
+                            && let Err(error) = self.lengthen_click(hit, point)
+                        {
+                            self.message(error, true);
                         }
                     } else if matches!(self.tool, Tool::Break | Tool::BreakAtPoint) {
                         let hit = pointer.and_then(|position| self.hit(position, rect));
@@ -207,6 +215,25 @@ impl OpenCadApp {
                     {
                         self.message(e, true);
                     }
+                }
+                if response.drag_started_by(PointerButton::Primary) && self.lengthen_awaits_source()
+                {
+                    response.request_focus();
+                    if let Some(position) = ui.input(|i| i.pointer.press_origin())
+                        && let Some(point) = self.camera.world(position, rect, self.elevation)
+                    {
+                        let hit = self.hit(position, rect);
+                        if let Err(error) = self.lengthen_click(hit, point) {
+                            self.message(error, true);
+                        }
+                    }
+                }
+                if response.drag_stopped_by(PointerButton::Primary)
+                    && self.lengthen_awaits_point()
+                    && let Some(point) = self.cursor
+                    && let Err(error) = self.lengthen_point(point)
+                {
+                    self.message(error, true);
                 }
                 if response.drag_started_by(PointerButton::Primary) && self.tool == Tool::Select {
                     response.request_focus();
@@ -247,8 +274,23 @@ impl OpenCadApp {
                     self.draw_grid(&painter, rect);
                 }
                 let break_preview_source = self.break_preview_source();
+                let lengthen_preview = if self.tool == Tool::Lengthen {
+                    self.cursor.and_then(|point| {
+                        let hit = self
+                            .camera
+                            .screen(point.x(), point.y(), rect)
+                            .and_then(|position| self.hit(position, rect));
+                        self.lengthen_preview(hit, point)
+                    })
+                } else {
+                    None
+                };
                 for (index, entity) in self.editor.entities().iter().enumerate() {
-                    if !self.editor.is_entity_visible(index) || break_preview_source == Some(index)
+                    if !self.editor.is_entity_visible(index)
+                        || break_preview_source == Some(index)
+                        || lengthen_preview
+                            .as_ref()
+                            .is_some_and(|(source, _)| *source == index)
                     {
                         continue;
                     }
@@ -596,6 +638,16 @@ impl OpenCadApp {
             return;
         };
         let stroke = Stroke::new(1.3, ACCENT);
+        if self.tool == Tool::Lengthen {
+            let hit = self
+                .camera
+                .screen(cursor.x(), cursor.y(), rect)
+                .and_then(|position| self.hit(position, rect));
+            if let Some((_, entity)) = self.lengthen_preview(hit, cursor) {
+                self.draw_entity(painter, &entity, rect, stroke);
+            }
+            return;
+        }
         if matches!(self.tool, Tool::Break | Tool::BreakAtPoint) {
             if let Some(parts) = self.break_preview(cursor) {
                 for part in parts {

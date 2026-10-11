@@ -2876,6 +2876,306 @@ fn break_canvas_raw_picks_first_override_preview_dropdown_and_cancel_work() {
 }
 
 #[test]
+fn lengthen_commands_measure_change_repeat_and_undo_without_losing_source_style() {
+    use opencad::desktop::{menu_action_status, queue_menu_action};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("lengthen-commands.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LAYER NEW DETAIL");
+    ui.command("LINE 0,0,7 40,0,7");
+    ui.command("ENTITY COLOR 3");
+    ui.command("CIRCLE 80,0,7 10");
+    ui.command("ARC 120,0,7 10 270 90");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert!(menu_action_status(&ui.ctx, "ID_Lengthen").enabled);
+    queue_menu_action(&ui.ctx, "ID_Lengthen");
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Lengthen"));
+    ui.command("1 40,0");
+    assert!(ui.has_text("Length = 40.0000"));
+    ui.command("3 130,0");
+    assert!(ui.has_text("included angle = 180.0000 degrees"));
+    ui.command("DE");
+    ui.command("NaN");
+    assert!(ui.has_text("Numbers must be finite."));
+    ui.command("-10");
+    ui.command("1 40,0");
+    ui.command("1 30,0");
+    ui.command("SAVE");
+    let Entity::Line(line) = read().entities()[0] else {
+        panic!("expected line")
+    };
+    assert_eq!(line.end(), Point3::new(20.0, 0.0, 7.0).unwrap());
+    ui.command("U");
+    ui.command("U");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("P");
+    ui.command("A");
+    assert!(ui.has_text("Angle is available with Delta or Total."));
+    ui.command("50");
+    ui.command("1 40,0");
+    ui.command("T");
+    ui.command("5");
+    ui.command("1 0,0");
+    ui.command("SAVE");
+    let document = read();
+    let Entity::Line(line) = document.entities()[0] else {
+        panic!("expected line")
+    };
+    assert_eq!(line.start(), Point3::new(15.0, 0.0, 7.0).unwrap());
+    assert_eq!(line.end(), Point3::new(20.0, 0.0, 7.0).unwrap());
+    assert_eq!(document.entity_style(0).unwrap().color_index(), 3);
+    assert_eq!(document.entity_layer(0), Some("DETAIL"));
+    ui.command("Undo");
+    ui.command("Undo");
+    ui.command("Total");
+    ui.command("Angle");
+    ui.command("90");
+    ui.command("3 120,-10");
+    ui.command("Delta");
+    ui.command("Angle");
+    ui.command("45");
+    ui.command("3 130,0");
+    ui.command("SAVE");
+    let Entity::Arc(arc) = read().entities()[2] else {
+        panic!("expected arc")
+    };
+    assert!((arc.sweep().to_degrees() - 135.0).abs() < 1e-9);
+    assert_eq!(arc.end_angle(), std::f64::consts::FRAC_PI_2);
+    assert_eq!(arc.center().z(), 7.0);
+    ui.command("U");
+    ui.command("U");
+    ui.command("Exit");
+    for (command, start, end) in [
+        ("LEN DELTA 5 1 40,0", 0.0, 45.0),
+        ("LENGTHEN PERCENT 50 1 0,0", 20.0, 40.0),
+        ("LENGTHEN TOTAL 10 1 40,0", 0.0, 10.0),
+        ("LENGTHEN DYNAMIC 1 0,0 -10,15,-8", -10.0, 40.0),
+    ] {
+        ui.command(command);
+        ui.command("SAVE");
+        let Entity::Line(line) = read().entities()[0] else {
+            panic!("expected line")
+        };
+        assert_eq!(line.start(), Point3::new(start, 0.0, 7.0).unwrap());
+        assert_eq!(line.end(), Point3::new(end, 0.0, 7.0).unwrap());
+        ui.command("UNDO");
+    }
+    for (command, sweep) in [
+        ("LENGTHEN DELTA ANGLE -90 3 120,-10", 90.0),
+        ("LENGTHEN TOTAL ANGLE 270 3 120,10", 270.0),
+    ] {
+        ui.command(command);
+        ui.command("SAVE");
+        let Entity::Arc(arc) = read().entities()[2] else {
+            panic!("expected arc")
+        };
+        assert!((arc.sweep().to_degrees() - sweep).abs() < 1e-9);
+        ui.command("UNDO");
+    }
+    for command in [
+        "LENGTHEN PERCENT 200 2 90,0", // Closed circles are a no-op.
+        "LENGTHEN DELTA -40 1 40,0",
+        "LENGTHEN PERCENT 0 1 40,0",
+        "LENGTHEN TOTAL inf 1 40,0",
+        "LENGTHEN TOTAL ANGLE 90 1 40,0",
+        "LENGTHEN DYNAMIC 1 40,0 -10,0",
+        "LENGTHEN TOTAL 10 0 40,0",
+        "LENGTHEN DELTA 5 1",
+        "LENGTHEN TOTAL ANGLE 360 3 120,10",
+    ] {
+        ui.command(command);
+    }
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("LAYER LOCK DETAIL");
+    ui.command("LENGTHEN DELTA 5 1 40,0");
+    assert!(ui.has_text("unlock layer DETAIL before editing it"));
+    ui.command("UNDO");
+    ui.command("LAYER HIDE DETAIL");
+    ui.command("LENGTHEN DELTA 5 1 40,0");
+    assert!(ui.has_text("Lengthen sources must be visible."));
+    ui.command("UNDO");
+    ui.command("LEN");
+    ui.command("DE");
+    ui.command("SAVE"); // A complete single-word command must leave the value prompt available.
+    ui.command("LINE");
+    assert!(ui.has_text("Current tool: Line"));
+    ui.command("LEN");
+    assert!(ui.has_text("Select a curve to measure"));
+    ui.command("DE");
+    ui.command("5");
+    ui.command("1 40,0");
+    ui.command("ENTITY COLOR 2");
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("LEN");
+    ui.command("U");
+    assert!(ui.has_text("There are no lengthen edits to undo in this command."));
+    ui.command_with_enter("");
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("UNDO"); // Revert the color; retain the length edit for reopening.
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    ui.command(&format!("OPEN {}", path.display()));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    let Entity::Line(line) = read().entities()[0] else {
+        panic!("expected line")
+    };
+    assert_eq!(line.end().x(), 45.0);
+}
+
+#[test]
+fn lengthen_canvas_uses_raw_picks_keyboard_options_and_dynamic_clicks_and_dragging() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("lengthen-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE -40,0,7 40,0,7");
+    ui.command("ARC 60,40,7 15 270 90");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let position = |ui: &DrawingUi, x: f64, y: f64| {
+        let bounds = ui
+            .bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
+            .unwrap();
+        egui::pos2(
+            bounds.center().x + 4.0 * x as f32,
+            bounds.center().y - 4.0 * y as f32,
+        )
+    };
+    let click = |ui: &mut DrawingUi, x: f64, y: f64| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        ui.step(Vec::new());
+    };
+    let press = |ui: &mut DrawingUi, value: egui::Key| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    ui.command("LEN");
+    click(&mut ui, 2.0, 0.0);
+    assert!(ui.has_text("Length = 80.0000"));
+    press(&mut ui, egui::Key::D);
+    assert!(ui.has_text("Specify signed delta length"));
+    ui.command("10");
+    let pos = position(&ui, 2.0, 0.0);
+    ui.step(vec![Event::PointerMoved(pos)]);
+    ui.snapshot("lengthen-delta-preview");
+    click(&mut ui, 2.0, 0.0); // A midpoint snap here would incorrectly make this pick ambiguous.
+    ui.command("SAVE");
+    let Entity::Line(line) = read().entities()[0] else {
+        panic!("expected line")
+    };
+    assert!((line.end().x() - 50.0).abs() < 1e-4);
+    ui.command("U");
+    ui.command("LEN");
+    click(&mut ui, 2.0, 0.0);
+    press(&mut ui, egui::Key::P);
+    assert!(ui.has_text("Specify a positive percentage"));
+    ui.command("50");
+    click(&mut ui, 2.0, 0.0);
+    ui.command("SAVE");
+    let Entity::Line(line) = read().entities()[0] else {
+        panic!("expected line")
+    };
+    assert!((line.end().x()).abs() < 1e-4);
+    click(&mut ui, -30.0, 0.0); // Restore canvas keyboard focus without changing the requested mode.
+    press(&mut ui, egui::Key::U);
+    press(&mut ui, egui::Key::U);
+    press(&mut ui, egui::Key::T);
+    assert!(ui.has_text("Specify a positive total length"));
+    press(&mut ui, egui::Key::A);
+    assert!(ui.has_text("Specify the angle in degrees"));
+    ui.command("90");
+    click(&mut ui, 60.0, 25.0);
+    ui.command("SAVE");
+    let Entity::Arc(arc) = read().entities()[1] else {
+        panic!("expected arc")
+    };
+    assert!((arc.sweep().to_degrees() - 90.0).abs() < 1e-9);
+    ui.command("U");
+    ui.command("DY");
+    click(&mut ui, 35.0, 0.0);
+    let pos = position(&ui, 55.0, 18.0);
+    ui.step(vec![Event::PointerMoved(pos)]);
+    ui.snapshot("lengthen-dynamic-line-preview");
+    click(&mut ui, 55.0, 18.0);
+    ui.command("SAVE");
+    let Entity::Line(line) = read().entities()[0] else {
+        panic!("expected line")
+    };
+    assert!((line.end().x() - 55.0).abs() < 1e-4);
+    assert_eq!(line.end().y(), 0.0);
+    assert_eq!(line.end().z(), 7.0);
+    ui.command("U");
+    // Dynamic also supports a single pointer drag, using the original press for endpoint selection.
+    let from = position(&ui, -35.0, 0.0);
+    ui.step(vec![
+        Event::PointerMoved(from),
+        Event::PointerButton {
+            pos: from,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        },
+    ]);
+    let to = position(&ui, -60.0, -15.0);
+    ui.step(vec![Event::PointerMoved(to)]);
+    ui.step(Vec::new());
+    ui.snapshot("lengthen-dynamic-drag-preview");
+    ui.step(vec![Event::PointerButton {
+        pos: to,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    }]);
+    ui.step(Vec::new());
+    ui.command("SAVE");
+    let Entity::Line(line) = read().entities()[0] else {
+        panic!("expected line")
+    };
+    assert!((line.start().x() + 60.0).abs() < 1e-4);
+    assert_eq!(line.end(), Point3::new(40.0, 0.0, 7.0).unwrap());
+    ui.command("U");
+    click(&mut ui, 60.0, 25.0);
+    let pos = position(&ui, 90.0, 40.0);
+    ui.step(vec![Event::PointerMoved(pos)]);
+    ui.snapshot("lengthen-dynamic-arc-preview");
+    click(&mut ui, 90.0, 40.0);
+    ui.command("SAVE");
+    let Entity::Arc(arc) = read().entities()[1] else {
+        panic!("expected arc")
+    };
+    assert!((arc.sweep().to_degrees() - 90.0).abs() < 1e-4);
+    assert_eq!(arc.end_angle(), std::f64::consts::FRAC_PI_2);
+    ui.command("U");
+    click(&mut ui, -35.0, 0.0);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");

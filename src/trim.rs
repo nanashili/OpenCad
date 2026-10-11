@@ -126,6 +126,17 @@ impl Curve {
         }
     }
 
+    pub(crate) fn nearer_start(self, pick: Point3) -> Result<bool, GeometryError> {
+        let distance =
+            |endpoint: Point3| finite((pick.x() - endpoint.x()).hypot(pick.y() - endpoint.y()));
+        let first = distance(self.point(0.0)?)?;
+        let last = distance(self.point(1.0)?)?;
+        if (first - last).abs() <= EPS * first.max(last).max(1.0) {
+            return Err(GeometryError::AmbiguousCurvePick);
+        }
+        Ok(first < last)
+    }
+
     pub(crate) fn fragment(self, from: f64, to: f64) -> Result<Entity, GeometryError> {
         match self {
             Self::Line(_) => Ok(Entity::Line(Line3::new(self.point(from)?, self.point(to)?))),
@@ -270,14 +281,7 @@ impl Entity {
         if curve.closed() {
             return Err(GeometryError::UnsupportedExtendEntity);
         }
-        let distance =
-            |endpoint: Point3| finite((pick.x() - endpoint.x()).hypot(pick.y() - endpoint.y()));
-        let first = distance(curve.point(0.0)?)?;
-        let last = distance(curve.point(1.0)?)?;
-        if (first - last).abs() <= EPS * first.max(last).max(1.0) {
-            return Err(GeometryError::AmbiguousCurvePick);
-        }
-        let start = first < last;
+        let start = curve.nearer_start(pick)?;
         let mut candidates = curve.cuts(boundaries, mode)?;
         match curve {
             Curve::Line(_) => {
