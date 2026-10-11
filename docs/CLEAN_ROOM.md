@@ -1,9 +1,9 @@
 # Clean-room implementation process
 
-OpenCad is an independent clean-room implementation of a growing subset of
-AutoCAD workflows, written in Rust. The process separates investigation of the
-reference application from implementation. It is a development method, not a
-claim of complete compatibility or a legal certification.
+OpenCad reverse engineers a growing subset of AutoCAD workflows and implements
+them independently in Rust using a clean-room process. The process separates
+investigation of AutoCAD from original implementation. It is a development
+method, not a claim of complete compatibility or a legal certification.
 
 ## Information flow
 

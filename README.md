@@ -3,15 +3,17 @@
 [![Build and release](https://github.com/nanashili/OpenCad/actions/workflows/build.yml/badge.svg)](https://github.com/nanashili/OpenCad/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**An independent clean-room implementation of AutoCAD workflows, written in Rust.**
+**An AutoCAD reverse engineering project with an independent clean-room implementation in Rust.**
 
 OpenCad recreates the familiar desktop drafting layout and implements a growing
 subset of CAD editing and R12 ASCII DXF exchange. It is an early project: full
 AutoCAD feature parity and DWG support are not implemented.
 
+Reverse engineering documents AutoCAD's UI, behavior and file interchange.
 The code and icon artwork are original OpenCad work. Functional UI names and
 organization were documented from AutoCAD for Mac. The [clean-room process](docs/CLEAN_ROOM.md)
-explains the separation between reference investigation and implementation.
+explains how reference investigators document behavior contracts for a separate
+implementation lane that writes original code.
 OpenCad is not affiliated with or endorsed by Autodesk.
 
 ## Screenshots

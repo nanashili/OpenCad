@@ -132,7 +132,7 @@ jobs:
           test "$(wc -l < SHA256SUMS.txt)" -eq 4
           sha256sum --check SHA256SUMS.txt
           cat > release-notes.md <<'NOTES'
-          OpenCad is an independent clean-room CAD implementation in Rust. This early release supports a limited R12 ASCII DXF workflow; DWG and full AutoCAD feature parity are not implemented.
+          OpenCad is an AutoCAD reverse engineering project with an independent clean-room implementation in Rust. This early release supports a limited R12 ASCII DXF workflow; DWG and full AutoCAD feature parity are not implemented.
 
           Packages include the GUI, CLI, examples, documentation, MIT license and dependency notices. Choose macOS arm64 (Apple Silicon), macOS x64 (Intel), Windows x64, or Linux x64. SHA256SUMS.txt verifies the four archives.
 
