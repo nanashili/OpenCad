@@ -108,7 +108,7 @@ def main():
                 for path in sorted(package.rglob('*')):
                     zipped.write(path, path.relative_to(package.parent).as_posix())
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
-    (args.output / (stem + '.sha256')).write_text(f'{digest}  {archive.name}\n', encoding='utf-8')
+    (args.output / (stem + '.sha256')).write_text(f'{digest}  {archive.name}\n', encoding='utf-8', newline='\n')
     print(archive.resolve())
 
 
