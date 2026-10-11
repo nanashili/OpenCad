@@ -478,12 +478,27 @@ fn toolset_gears_and_slim_palette_preserve_drafting_and_property_edits() {
             })
     }
     fn expanded(ui: &DrawingUi) -> bool {
-        ui.nodes
-            .values()
-            .find(|node| node.label() == Some("Draw"))
-            .expect("accessible Draw section")
+        ui.nodes[&draw_header(ui)]
             .is_expanded()
             .expect("section expansion state")
+    }
+    fn draw_header(ui: &DrawingUi) -> accesskit::NodeId {
+        // Linux and Windows also have a menu button named Draw. Target the
+        // accessible palette header, independent of HashMap iteration order.
+        ui.nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == accesskit::Role::Button
+                    && node.label() == Some("Draw")
+                    && node.bounds().is_some_and(|bounds| {
+                        bounds.x0 >= 0.0 && bounds.x1 <= 184.0 && bounds.y0 >= 58.0
+                    })
+            })
+            .map(|(id, _)| *id)
+            .expect("accessible Draw palette header")
+    }
+    fn click_draw_header(ui: &mut DrawingUi) {
+        ui.action(draw_header(ui), accesskit::Action::Click);
     }
     fn canvas(ui: &DrawingUi) -> egui::Rect {
         ui.bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
@@ -527,12 +542,12 @@ fn toolset_gears_and_slim_palette_preserve_drafting_and_property_edits() {
         .find(|node| node.role() == accesskit::Role::Button && node.label() == Some("3D Polyline"))
         .expect("newly visible command");
     assert!(three_d.is_disabled());
-    ui.click("Draw");
+    click_draw_header(&mut ui);
     settle(&mut ui);
     assert!(!expanded(&ui));
     assert!(panel_button(&ui, "Polyline").is_none());
     assert!(panel_button(&ui, "Customize Draw panel").is_some());
-    ui.click("Draw");
+    click_draw_header(&mut ui);
     settle(&mut ui);
     assert!(panel_button(&ui, "Polyline").is_some());
 
@@ -575,10 +590,10 @@ fn toolset_gears_and_slim_palette_preserve_drafting_and_property_edits() {
             .is_disabled()
     );
     ui.snapshot("toolsets-slim");
-    ui.click("Draw");
+    click_draw_header(&mut ui);
     settle(&mut ui);
     assert!(panel_button(&ui, "Line").is_none());
-    ui.click("Draw");
+    click_draw_header(&mut ui);
     settle(&mut ui);
     ui.click("Line");
     ui.command("30,40,3");
