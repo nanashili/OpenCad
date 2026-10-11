@@ -803,7 +803,7 @@ impl OpenCadApp {
                 (Key::W, "Width"),
                 (Key::H, "Halfwidth"),
                 (Key::A, "A"),
-                (Key::L, "Line"),
+                (Key::L, "L"),
                 (Key::D, "Direction"),
                 (Key::S, "Second pt"),
             ] {

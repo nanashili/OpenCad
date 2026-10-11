@@ -6867,8 +6867,8 @@ fn pline_angle_input_center_errors_and_cancel_leave_drafts_atomic() {
     ui.command("Center");
     ui.command("0,1"); // center coincides with the new start
     ui.command("0,0");
-    ui.command("-1,0"); // center + endpoint is deliberately unfinished
-    assert!(ui.has_text("Choose Angle to complete the center construction"));
+    ui.command("0,0"); // the direction pick cannot coincide with the center
+    assert!(ui.has_text("the curve has no editable span"));
     ui.command("Angle");
     ui.command("360");
     ui.command("-180");
@@ -7196,4 +7196,252 @@ fn pline_canvas_radius_shortcut_retains_polyline_and_picks_chord_direction() {
         assert_eq!(actual, clockwise);
         assert!((arc.radius() - radius).abs() < 1e-10);
     }
+}
+
+#[test]
+fn pline_center_routes_preserve_geometry_widths_and_atomic_history() {
+    use opencad::PolylineWidth;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-center-routes.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("ELEVATION 7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    for command in [
+        "PLINE",
+        "6,0",
+        "Arc",
+        "Width 1 2",
+        "Center",
+        "4,0",
+        "4,100",
+        "Center",
+        "4,0",
+        "Length",
+        "2.8284271247461903",
+        "Center",
+        "0,0",
+        "LEN",
+        "-2.8284271247461903",
+        "U",
+        "Center",
+        "0,0",
+        "Length",
+        "-2.8284271247461903",
+        "Center",
+        "0,0",
+        "L",
+    ] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("Enter a nonzero signed chord length"));
+    ui.step(vec![Event::PointerMoved(egui::pos2(950.0, 450.0))]);
+    ui.snapshot("pline-center-length-draft");
+    for command in ["4", "Line", "@6,0", "", "ZOOM EXTENTS", "SAVE"] {
+        ui.command(command);
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    let expected = [
+        (6.0, 0.0),
+        (4.0, 2.0),
+        (2.0, 0.0),
+        (0.0, -2.0),
+        (0.0, 2.0),
+        (6.0, 2.0),
+    ];
+    assert_eq!(polyline.vertices().len(), expected.len());
+    for (actual, (x, y)) in polyline.vertices().iter().zip(expected) {
+        assert!((actual.x() - x).abs() < 1e-10 && (actual.y() - y).abs() < 1e-10);
+        assert_eq!(actual.z(), 7.0);
+    }
+    let quarter = (std::f64::consts::PI / 8.0).tan();
+    let major = (3.0 * std::f64::consts::PI / 8.0).tan();
+    for (actual, expected) in polyline
+        .bulges()
+        .iter()
+        .zip([quarter, quarter, major, 1.0, 0.0, 0.0])
+    {
+        assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+    for (segment, (x, y)) in
+        polyline
+            .segments()
+            .take(4)
+            .zip([(4.0, 0.0), (4.0, 0.0), (0.0, 0.0), (0.0, 0.0)])
+    {
+        let opencad::PolylineSegment::Arc { arc, clockwise } = segment.unwrap() else {
+            panic!("arc")
+        };
+        assert!(!clockwise);
+        assert!((arc.radius() - 2.0).abs() < 1e-10);
+        assert!((arc.center().x() - x).abs() < 1e-10 && (arc.center().y() - y).abs() < 1e-10);
+    }
+    assert_eq!(polyline.widths()[0], PolylineWidth::new(1.0, 2.0).unwrap());
+    assert!(
+        polyline.widths()[1..]
+            .iter()
+            .all(|width| *width == PolylineWidth::new(2.0, 2.0).unwrap())
+    );
+    ui.snapshot("pline-center-length-finished");
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_center_invalid_inputs_and_cancel_keep_drafts_atomic() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-center-errors.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("ELEVATION 7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    for command in ["PLINE", "2,0", "Arc", "Width 2 4", "Length"] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("PLINE Length construction is not supported yet without an arc center"));
+    ui.command("Center");
+    ui.command("2,0");
+    assert!(ui.has_text("Choose an arc construction point distinct from its start"));
+    ui.command("0,0,8");
+    assert!(ui.has_text("polyline vertices must share one Z elevation"));
+    ui.command("0,0");
+    for invalid in ["0,0", "4,0"] {
+        ui.command(invalid);
+        assert!(ui.has_text("the curve has no editable span"));
+    }
+    ui.command("0,1,8");
+    assert!(ui.has_text("polyline vertices must share one Z elevation"));
+    for command in ["Width 8 9", "U", "Close", "", "SAVE"] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("L");
+    for invalid in ["", "NaN", "inf", "2 4"] {
+        ui.command(invalid);
+        assert!(ui.has_text("Enter one finite nonzero signed chord length"));
+    }
+    for invalid in ["0", "4.000000000000001", "-4.000000000000001"] {
+        ui.command(invalid);
+        assert!(ui.has_text("an arc chord must be nonzero and no longer than its diameter"));
+    }
+    ui.command("0,2");
+    assert!(ui.has_text("Enter one finite nonzero signed chord length"));
+    ui.canvas_click(0.5, 0.4);
+    assert!(ui.has_text("Enter the signed chord length before specifying points"));
+    for command in ["U", "Close", "Width 8 9", "SAVE"] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    for command in ["Exit", "Length"] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("PLINE Length construction is not supported yet without an arc center"));
+    for command in [
+        "Center", "0,0", "Length", "-4", "Center", "-2,-2", "Length", "Exit", "Line", "@0,2", "",
+        "SAVE",
+    ] {
+        ui.command(command);
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert_eq!(polyline.vertices().len(), 3);
+    for (actual, (x, y)) in polyline
+        .vertices()
+        .iter()
+        .zip([(2.0, 0.0), (-2.0, 0.0), (-2.0, 2.0)])
+    {
+        assert!((actual.x() - x).abs() < 1e-12 && (actual.y() - y).abs() < 1e-12);
+        assert_eq!(actual.z(), 7.0);
+    }
+    assert!((polyline.bulges()[0] - 1.0).abs() < 1e-12);
+    assert_eq!(&polyline.bulges()[1..], &[0.0, 0.0]);
+    assert_eq!(
+        polyline.widths()[0],
+        opencad::PolylineWidth::new(2.0, 4.0).unwrap()
+    );
+    assert_eq!(
+        polyline.widths()[1],
+        opencad::PolylineWidth::new(4.0, 4.0).unwrap()
+    );
+    for command in ["PLINE", "0,0", "Arc", "Center", "1,0", "Length"] {
+        ui.command(command);
+    }
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_center_canvas_projection_and_contextual_length_shortcut() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-center-canvas.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("OSNAP OFF");
+    ui.command("SNAP OFF");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let press = |ui: &mut DrawingUi, value| {
+        let canvas = ui
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Drawing canvas,"))
+            })
+            .map(|(id, _)| *id)
+            .expect("canvas");
+        ui.action(canvas, accesskit::Action::Focus);
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("PLINE");
+    ui.command("2,0");
+    press(&mut ui, egui::Key::A);
+    ui.command("CE");
+    ui.canvas_click(0.5, 0.5); // Empty-drawing camera centers the origin.
+    assert!(ui.has_text("direction is projected onto the starting circle"));
+    ui.canvas_click(0.5, 0.3); // Off-circle ray along +Y.
+    ui.command("Center");
+    ui.canvas_click(0.5, 0.5);
+    press(&mut ui, egui::Key::L);
+    assert!(ui.has_text("Enter a nonzero signed chord length"));
+    ui.command("4");
+    press(&mut ui, egui::Key::L); // L returns to Line after the arc is accepted.
+    ui.canvas_click(0.6, 0.5);
+    ui.command("");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert_eq!(polyline.vertices().len(), 4);
+    for (actual, (x, y)) in
+        polyline
+            .vertices()
+            .iter()
+            .take(3)
+            .zip([(2.0, 0.0), (0.0, 2.0), (0.0, -2.0)])
+    {
+        assert!((actual.x() - x).abs() < 1e-10 && (actual.y() - y).abs() < 1e-10);
+    }
+    assert!((polyline.bulges()[0] - (std::f64::consts::PI / 8.0).tan()).abs() < 1e-12);
+    assert!((polyline.bulges()[1] - 1.0).abs() < 1e-12);
+    assert_eq!(&polyline.bulges()[2..], &[0.0, 0.0]);
 }

@@ -19,6 +19,7 @@ enum ArcInput {
     Center(Option<Point3>),
     AngleCenter(f64),
     CenterAngle(Point3),
+    CenterLength(Point3),
     Radius(Option<f64>),
     AngleRadius(f64),
     RadiusAngle(f64),
@@ -72,7 +73,10 @@ impl OpenCadApp {
                 "PLINE Arc · Specify center point. Exit cancels this option."
             }
             Some(ArcInput::Center(Some(_))) => {
-                "PLINE Arc · Choose Angle to complete the center construction. Center + endpoint and Length are unfinished. Exit cancels this option."
+                "PLINE Arc · Pick an endpoint direction from the center, or choose Angle / Length. Counterclockwise; direction is projected onto the starting circle. Exit cancels this option."
+            }
+            Some(ArcInput::CenterLength(_)) => {
+                "PLINE Arc · Enter a nonzero signed chord length, no longer than the diameter. Positive minor, negative major; counterclockwise. Exit cancels this option."
             }
             Some(ArcInput::Radius(None) | ArcInput::AngleRadius(_)) => {
                 "PLINE Arc · Enter a finite positive radius. Exit cancels this option."
@@ -100,7 +104,8 @@ impl OpenCadApp {
         let end = match self.pline_input.arc_input? {
             ArcInput::Direction(Some(point))
             | ArcInput::Center(Some(point))
-            | ArcInput::CenterAngle(point) => point,
+            | ArcInput::CenterAngle(point)
+            | ArcInput::CenterLength(point) => point,
             ArcInput::Direction(None)
             | ArcInput::Second(None)
             | ArcInput::Center(None)
@@ -190,6 +195,13 @@ impl OpenCadApp {
     fn pline_construct_endpoint(&self, point: Point3) -> Result<(Point3, f64), String> {
         match self.pline_input.arc_input {
             Some(ArcInput::AngleCenter(sweep)) => self.pline_center_arc(point, sweep),
+            Some(ArcInput::Center(Some(center))) => {
+                let start = *self.points.last().expect("arc starting point");
+                let (end, segment) =
+                    PolylineSegment::arc_to_ray_with_endpoint(start, center, point, false)
+                        .map_err(|e| e.to_string())?;
+                Ok((end, segment.bulge()))
+            }
             Some(ArcInput::Chord {
                 radius,
                 sweep,
@@ -308,9 +320,6 @@ impl OpenCadApp {
             return Ok(());
         }
         let (point, bulge) = match self.pline_input.arc_input {
-            Some(ArcInput::Center(Some(_))) => {
-                return Err("Choose Angle to complete the center construction. Center + endpoint is unfinished.".into());
-            }
             Some(ArcInput::Radius(Some(_))) => {
                 return Err("Choose Angle to complete the radius construction. Radius + endpoint is unfinished.".into());
             }
@@ -319,6 +328,9 @@ impl OpenCadApp {
             }
             Some(ArcInput::Radius(None) | ArcInput::AngleRadius(_)) => {
                 return Err("Enter the radius before specifying points.".into());
+            }
+            Some(ArcInput::CenterLength(_)) => {
+                return Err("Enter the signed chord length before specifying points.".into());
             }
             Some(ArcInput::Chord { point: false, .. }) => {
                 return Err(
@@ -475,6 +487,7 @@ impl OpenCadApp {
             input,
             ArcInput::Angle(None)
                 | ArcInput::CenterAngle(_)
+                | ArcInput::CenterLength(_)
                 | ArcInput::RadiusAngle(_)
                 | ArcInput::Radius(_)
                 | ArcInput::AngleRadius(_)
@@ -484,6 +497,15 @@ impl OpenCadApp {
         }
         Some((|| {
             match input {
+                ArcInput::CenterLength(center) => {
+                    let chord =
+                        pline_number(tokens, "Enter one finite nonzero signed chord length.")?;
+                    let start = *self.points.last().expect("arc starting point");
+                    let (end, segment) =
+                        PolylineSegment::arc_about_chord_with_endpoint(start, center, chord, false)
+                            .map_err(|e| e.to_string())?;
+                    self.pline_add_endpoint(end, segment.bulge())?;
+                }
                 ArcInput::Radius(Some(_)) => {
                     return Err("Choose Angle to complete the radius construction. Radius + endpoint is unfinished.".into());
                 }
@@ -551,15 +573,16 @@ impl OpenCadApp {
         let option = match verb {
             "A" if !self.pline_input.arc_mode => "ARC",
             "ARC" => "ARC",
+            "L" if matches!(self.pline_input.arc_input, Some(ArcInput::Center(Some(_)))) => {
+                "LENGTH"
+            }
             "LINE" | "L" => "LINE",
             "D" | "DIRECTION" if self.pline_input.arc_mode => "DIRECTION",
             "S" | "SE" | "SECOND" | "SECONDPT" if self.pline_input.arc_mode => "SECOND",
             "A" | "ANGLE" if self.pline_input.arc_mode => "ANGLE",
             "CE" | "CENTER" if self.pline_input.arc_mode => "CENTER",
             "R" | "RADIUS" if self.pline_input.arc_mode => "RADIUS",
-            "LENGTH" | "LEN" => {
-                return Some(Err("PLINE Length construction is not supported yet.".into()));
-            }
+            "LENGTH" | "LEN" => "LENGTH",
             _ => return None,
         };
         Some((|| {
@@ -572,6 +595,13 @@ impl OpenCadApp {
             }
             if option != "LINE" && self.points.is_empty() {
                 return Err("Specify the PLINE starting point before choosing Arc.".into());
+            }
+            if option == "LENGTH"
+                && !matches!(self.pline_input.arc_input, Some(ArcInput::Center(Some(_))))
+            {
+                return Err(
+                    "PLINE Length construction is not supported yet without an arc center.".into(),
+                );
             }
             self.pline_input.arc_mode = option != "LINE";
             self.pline_input.arc_input = match option {
@@ -590,6 +620,10 @@ impl OpenCadApp {
                     Some(ArcInput::Angle(Some(sweep))) => ArcInput::AngleRadius(sweep),
                     _ => ArcInput::Radius(None),
                 }),
+                "LENGTH" => match self.pline_input.arc_input {
+                    Some(ArcInput::Center(Some(center))) => Some(ArcInput::CenterLength(center)),
+                    _ => unreachable!("validated arc center"),
+                },
                 _ => None,
             };
             self.message(self.prompt(), false);

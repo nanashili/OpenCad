@@ -79,7 +79,7 @@ unverified. Width and Halfwidth also apply to interactive arc segments.
 After the first interactive PLINE point, **Arc** (`A`) enters arc mode.
 An endpoint creates an arc tangent to the preceding line or arc. A first arc
 has no preceding tangent: use **Direction**, **Second pt**, **Angle**, or
-**Center + Angle** to define it.
+**Center** to define it.
 
 - **Direction** (`D`): pick a point defining the starting tangent, then the arc endpoint.
 - **Second pt** (`S`, `SE`): pick a point on the arc, then its endpoint. The arc
@@ -88,11 +88,22 @@ has no preceding tangent: use **Direction**, **Second pt**, **Angle**, or
   then its endpoint. Positive angles run counterclockwise; negative angles run
   clockwise. Minor, semicircular and major arcs are supported. Enter a finite,
   nonzero value with magnitude less than 360 degrees.
-- **Center** (`CE`): pick the center, choose **Angle**, then enter the included
-  angle. Alternatively, choose **Angle**, enter the angle, choose **Center**,
-  then pick the center. Both routes rotate the starting radius by that signed
-  angle and add one endpoint. Center followed directly by an endpoint or Length
-  remains unfinished; the prompt requires Angle.
+- **Center** (`CE`): pick the center, then pick an endpoint direction. OpenCad
+  projects the ray from the center through that point onto the starting circle
+  and traverses counterclockwise, including major arcs. The direction point may
+  be off the circle; the center itself and the starting radial ray are rejected.
+  Alternatively, choose **Angle** after the center and enter the signed included
+  angle. **Angle**, angle, **Center**, center also works. Both angle routes rotate
+  the starting radius by that signed angle and add one endpoint.
+- **Length** (`L`, `LEN` after specifying a center): enter a finite nonzero signed
+  chord length. Positive selects the minor counterclockwise arc; negative selects
+  the major counterclockwise arc. Either sign of the diameter creates a
+  semicircle. The magnitude must not exceed the diameter computed from the
+  starting point and center; OpenCad does not clamp an oversized chord. Length
+  construction without an explicit center remains unfinished. Ctrl to reverse
+  center endpoint/Length traversal is not implemented. Projection and signed
+  Length rules are original OpenCad policies; their AutoCAD PLINE parity is
+  unverified.
 - **Radius** (`R`): enter a finite positive radius, choose **Angle**, enter the
   included angle, then enter the chord direction in decimal degrees from +X,
   counterclockwise. Alternatively, choose **Angle**, enter the included angle,
@@ -102,7 +113,9 @@ has no preceding tangent: use **Direction**, **Second pt**, **Angle**, or
   the chord length from the radius and included angle. An explicit direction is
   required: Enter has no current-direction default in OpenCad. Radius followed
   directly by an endpoint remains unfinished; the prompt requires Angle.
-- **Line** (`L`): return to straight segments within the same polyline.
+- **Line** (`L`, except while awaiting a center endpoint): return to straight
+  segments within the same polyline. Spell **Line** to cancel a center endpoint
+  construction; `L` selects Length at that prompt.
 - **Width** / **Halfwidth**: set the next segment's taper, with the same carry
   behavior as straight segments. The preview shows the curved fill.
 
@@ -157,8 +170,8 @@ range, invalid-input and cancellation rules are OpenCad policies whose native
 parity is unverified. Radius input must be positive and finite; chord-direction
 angles wrap modulo 360. OpenCad's direction-point interpretation, validation and
 lack of a current-direction default are explicit policies whose native parity
-is unverified. Center + endpoint, Center + Length, Radius + endpoint and line
-Length construction remain unfinished and report that limitation. Direct point-list
+is unverified. Radius + endpoint and line Length construction remain unfinished
+and report that limitation. Direct point-list
 `PLINE ...` commands create straight segments. Bulge properties can still edit
 individual segments after creation. Canvas **C** continues to mean Close;
 enter **CE** or **Center** in the command field to choose a center.

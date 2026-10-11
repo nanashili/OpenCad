@@ -75,6 +75,7 @@ pub enum GeometryError {
     NegativeRadius,
     NonFiniteAngle,
     InvalidArcSweep,
+    InvalidArcChord,
     NonFiniteResult,
     NonPositiveScale,
     NonPositiveOffset,
@@ -135,6 +136,12 @@ impl fmt::Display for GeometryError {
                 write!(
                     f,
                     "an arc's signed sweep must be nonzero and less than one full turn"
+                )
+            }
+            Self::InvalidArcChord => {
+                write!(
+                    f,
+                    "an arc chord must be nonzero and no longer than its diameter"
                 )
             }
             Self::NonFiniteResult => write!(f, "the geometry result exceeds the finite range"),

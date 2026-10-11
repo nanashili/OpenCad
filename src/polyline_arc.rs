@@ -45,6 +45,95 @@ impl PolylineSegment {
         Ok((end, Self::arc_from_sweep(start, end, sweep)?))
     }
 
+    /// Arc on the starting radius, ending on the ray from `center` through `direction`.
+    /// The direction point need not lie on the circle. A coincident ray or a
+    /// full-turn request is rejected; `clockwise` selects traversal direction.
+    pub fn arc_to_ray(
+        start: Point3,
+        center: Point3,
+        direction: Point3,
+        clockwise: bool,
+    ) -> Result<Self, GeometryError> {
+        Self::arc_to_ray_with_endpoint(start, center, direction, clockwise)
+            .map(|(_, segment)| segment)
+    }
+
+    pub(crate) fn arc_to_ray_with_endpoint(
+        start: Point3,
+        center: Point3,
+        direction: Point3,
+        clockwise: bool,
+    ) -> Result<(Point3, Self), GeometryError> {
+        if start.z() != center.z() || start.z() != direction.z() {
+            return Err(GeometryError::NonPlanarPolyline);
+        }
+        let (sx, sy) = unit_xy(start.x() - center.x(), start.y() - center.y())?;
+        let (mut dx, mut dy) = (direction.x() - center.x(), direction.y() - center.y());
+        if !dx.is_finite() || !dy.is_finite() {
+            // Direction is scale independent. Halving before subtraction keeps
+            // rays across opposite large coordinates usable without overflow.
+            dx = direction.x() * 0.5 - center.x() * 0.5;
+            dy = direction.y() * 0.5 - center.y() * 0.5;
+        }
+        let (ex, ey) = unit_xy(dx, dy)?;
+        let angle = (sx * ey - sy * ex).atan2(sx * ex + sy * ey);
+        if angle == 0.0 {
+            return Err(GeometryError::DegenerateCurve);
+        }
+        let sweep = if clockwise && angle > 0.0 {
+            angle - TAU
+        } else if !clockwise && angle < 0.0 {
+            angle + TAU
+        } else {
+            angle
+        };
+        Self::arc_about_with_endpoint(start, center, sweep)
+    }
+
+    /// Center-based arc with a signed chord length: positive selects the minor
+    /// arc, negative selects the major arc. `clockwise` sets traversal direction.
+    pub fn arc_about_chord(
+        start: Point3,
+        center: Point3,
+        chord: f64,
+        clockwise: bool,
+    ) -> Result<Self, GeometryError> {
+        Self::arc_about_chord_with_endpoint(start, center, chord, clockwise)
+            .map(|(_, segment)| segment)
+    }
+
+    pub(crate) fn arc_about_chord_with_endpoint(
+        start: Point3,
+        center: Point3,
+        chord: f64,
+        clockwise: bool,
+    ) -> Result<(Point3, Self), GeometryError> {
+        if !chord.is_finite() {
+            return Err(GeometryError::NonFiniteDistance);
+        }
+        if start.z() != center.z() {
+            return Err(GeometryError::NonPlanarPolyline);
+        }
+        let radius = (start.x() - center.x()).hypot(start.y() - center.y());
+        if !radius.is_finite() {
+            return Err(GeometryError::NonFiniteResult);
+        }
+        if radius == 0.0 {
+            return Err(GeometryError::DegenerateCurve);
+        }
+        // Divide first: forming the diameter can overflow for a valid chord.
+        let ratio = (chord.abs() / radius) * 0.5;
+        if chord == 0.0 || ratio > 1.0 {
+            return Err(GeometryError::InvalidArcChord);
+        }
+        let minor = 2.0 * ratio.asin();
+        let sweep = if chord < 0.0 { TAU - minor } else { minor };
+        if sweep == 0.0 || sweep == TAU {
+            return Err(GeometryError::UnrepresentableBulge);
+        }
+        Self::arc_about_with_endpoint(start, center, if clockwise { -sweep } else { sweep })
+    }
+
     /// Arc with a positive radius, signed sweep in radians, and forward XY chord direction.
     pub fn arc_from_radius(
         start: Point3,

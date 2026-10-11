@@ -606,3 +606,227 @@ fn radius_arcs_reject_invalid_directions_dimensions_and_unrepresentable_results(
     assert!(PolylineSegment::arc_from_radius(translated, 1.0, PI / 2.0, (1.0, 0.0)).is_err());
     assert!(PolylineSegment::arc_from_radius(translated, f64::MAX / 2.0, PI, (1.0, 0.0)).is_err());
 }
+
+#[test]
+fn center_ray_arcs_project_direction_and_preserve_signed_minor_major_geometry() {
+    let root_two = 2.0_f64.sqrt();
+    for scale in [1e-150, 1.0, 1e150] {
+        let p = |x, y| point((3.0 + x) * scale, (-2.0 + y) * scale, 7.0);
+        let start = p(2.0, 0.0);
+        let center = p(0.0, 0.0);
+        for (ray, clockwise, sweep, end, middle) in [
+            (
+                p(0.0, 9.0),
+                false,
+                PI / 2.0,
+                p(0.0, 2.0),
+                p(root_two, root_two),
+            ),
+            (
+                p(0.0, 9.0),
+                true,
+                -3.0 * PI / 2.0,
+                p(0.0, 2.0),
+                p(-root_two, -root_two),
+            ),
+            (
+                p(0.0, -5.0),
+                false,
+                3.0 * PI / 2.0,
+                p(0.0, -2.0),
+                p(-root_two, root_two),
+            ),
+            (
+                p(0.0, -5.0),
+                true,
+                -PI / 2.0,
+                p(0.0, -2.0),
+                p(root_two, -root_two),
+            ),
+            (p(-7.0, 0.0), false, PI, p(-2.0, 0.0), p(0.0, 2.0)),
+            (p(-7.0, 0.0), true, -PI, p(-2.0, 0.0), p(0.0, -2.0)),
+        ] {
+            let segment = PolylineSegment::arc_to_ray(start, center, ray, clockwise).unwrap();
+            near(segment.bulge(), (sweep / 4.0).tan());
+            near(segment.length().unwrap() / scale, 2.0 * sweep.abs());
+            for (fraction, expected) in [(0.0, start), (0.5, middle), (1.0, end)] {
+                let actual = segment.point_at_fraction(fraction).unwrap();
+                near(actual.x() / scale, expected.x() / scale);
+                near(actual.y() / scale, expected.y() / scale);
+                assert_eq!(actual.z(), 7.0);
+            }
+            let PolylineSegment::Arc {
+                arc,
+                clockwise: actual_clockwise,
+            } = segment
+            else {
+                panic!("arc")
+            };
+            assert_eq!(actual_clockwise, clockwise);
+            near(arc.radius() / scale, 2.0);
+            near(arc.center().x() / scale, center.x() / scale);
+            near(arc.center().y() / scale, center.y() / scale);
+        }
+    }
+    // Tiny direction vectors retain their direction independently of radius.
+    let segment = PolylineSegment::arc_to_ray(
+        point(1.0, 0.0, 7.0),
+        point(0.0, 0.0, 7.0),
+        point(0.0, 1e-320, 7.0),
+        false,
+    )
+    .unwrap();
+    near_point(
+        segment.point_at_fraction(1.0).unwrap(),
+        point(0.0, 1.0, 7.0),
+    );
+    // Subtraction overflows for the direction pick, but the projected arc fits.
+    let segment = PolylineSegment::arc_to_ray(
+        point(-1e308, 1e306, 7.0),
+        point(-1e308, 0.0, 7.0),
+        point(1e308, 0.0, 7.0),
+        true,
+    )
+    .unwrap();
+    let end = segment.point_at_fraction(1.0).unwrap();
+    near(end.x() / 1e308, -0.99);
+    near(end.y() / 1e306, 0.0);
+    near(segment.length().unwrap() / 1e306, PI / 2.0);
+}
+
+#[test]
+fn center_chord_arcs_match_analytic_signed_lengths_and_diameters() {
+    let root_two = 2.0_f64.sqrt();
+    for scale in [1e-150, 1.0, 1e150] {
+        let p = |x, y| point((3.0 + x) * scale, (-2.0 + y) * scale, 7.0);
+        for (chord, sweep, x, y, mx, my) in [
+            (2.0 * root_two, PI / 2.0, 0.0, 2.0, root_two, root_two),
+            (
+                -2.0 * root_two,
+                3.0 * PI / 2.0,
+                0.0,
+                -2.0,
+                -root_two,
+                root_two,
+            ),
+            (4.0, PI, -2.0, 0.0, 0.0, 2.0),
+            (-4.0, PI, -2.0, 0.0, 0.0, 2.0),
+        ] {
+            for clockwise in [false, true] {
+                let sign = if clockwise { -1.0 } else { 1.0 };
+                let start = p(2.0, 0.0);
+                let center = p(0.0, 0.0);
+                // Use the diameter of the represented translated coordinates;
+                // (5*s - 3*s) need not round to exactly 2*s.
+                let input_chord = if chord.abs() == 4.0 {
+                    (start.x() - center.x()) * 2.0 * chord.signum()
+                } else {
+                    chord * scale
+                };
+                let segment =
+                    PolylineSegment::arc_about_chord(start, center, input_chord, clockwise)
+                        .unwrap();
+                near(segment.bulge(), (sign * sweep / 4.0).tan());
+                near(segment.length().unwrap() / scale, 2.0 * sweep);
+                for (fraction, expected) in
+                    [(0.0, start), (0.5, p(mx, my * sign)), (1.0, p(x, y * sign))]
+                {
+                    let actual = segment.point_at_fraction(fraction).unwrap();
+                    near(actual.x() / scale, expected.x() / scale);
+                    near(actual.y() / scale, expected.y() / scale);
+                    assert_eq!(actual.z(), 7.0);
+                }
+                let end = segment.point_at_fraction(1.0).unwrap();
+                near(
+                    (end.x() - start.x()).hypot(end.y() - start.y()) / scale,
+                    chord.abs(),
+                );
+                let PolylineSegment::Arc { arc, .. } = segment else {
+                    panic!("arc")
+                };
+                near(arc.radius() / scale, 2.0);
+                near(arc.center().x() / scale, center.x() / scale);
+                near(arc.center().y() / scale, center.y() / scale);
+            }
+        }
+    }
+    // A finite chord remains usable even when twice the radius would overflow.
+    let segment = PolylineSegment::arc_about_chord(
+        point(1e308, 0.0, 0.0),
+        point(0.0, 0.0, 0.0),
+        1e307,
+        false,
+    )
+    .unwrap();
+    let end = segment.point_at_fraction(1.0).unwrap();
+    near((end.x() - 1e308).hypot(end.y()) / 1e307, 1.0);
+    let PolylineSegment::Arc { arc, .. } = segment else {
+        panic!("arc")
+    };
+    near(arc.radius() / 1e308, 1.0);
+}
+
+#[test]
+fn center_ray_and_chord_arcs_reject_ambiguous_nonplanar_and_unrepresentable_input() {
+    let start = point(2.0, 0.0, 7.0);
+    let center = point(0.0, 0.0, 7.0);
+    let ray = point(0.0, 9.0, 7.0);
+    for clockwise in [false, true] {
+        for invalid in [center, start, point(9.0, 0.0, 7.0)] {
+            assert_eq!(
+                PolylineSegment::arc_to_ray(start, center, invalid, clockwise),
+                Err(GeometryError::DegenerateCurve)
+            );
+        }
+        assert_eq!(
+            PolylineSegment::arc_to_ray(start, start, ray, clockwise),
+            Err(GeometryError::DegenerateCurve)
+        );
+        assert_eq!(
+            PolylineSegment::arc_to_ray(start, point(0.0, 0.0, 8.0), ray, clockwise),
+            Err(GeometryError::NonPlanarPolyline)
+        );
+        assert_eq!(
+            PolylineSegment::arc_to_ray(start, center, point(0.0, 9.0, 8.0), clockwise),
+            Err(GeometryError::NonPlanarPolyline)
+        );
+        for chord in [0.0, -0.0, 4.000000000000001, -5.0, f64::MAX] {
+            assert_eq!(
+                PolylineSegment::arc_about_chord(start, center, chord, clockwise),
+                Err(GeometryError::InvalidArcChord)
+            );
+        }
+        for chord in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(
+                PolylineSegment::arc_about_chord(start, center, chord, clockwise),
+                Err(GeometryError::NonFiniteDistance)
+            );
+        }
+        assert_eq!(
+            PolylineSegment::arc_about_chord(start, start, 1.0, clockwise),
+            Err(GeometryError::DegenerateCurve)
+        );
+        assert_eq!(
+            PolylineSegment::arc_about_chord(start, point(0.0, 0.0, 8.0), 1.0, clockwise),
+            Err(GeometryError::NonPlanarPolyline)
+        );
+    }
+    assert!(PolylineSegment::arc_about_chord(start, center, f64::from_bits(1), false).is_err());
+    assert!(PolylineSegment::arc_about_chord(start, center, -1e-20, false).is_err());
+    assert!(
+        PolylineSegment::arc_about_chord(point(1e308, 0.0, 7.0), center, -1e307, false).is_err()
+    );
+    assert!(
+        PolylineSegment::arc_to_ray(
+            point(f64::MAX, 0.0, 7.0),
+            point(-f64::MAX, 0.0, 7.0),
+            ray,
+            false
+        )
+        .is_err()
+    );
+    assert!(
+        PolylineSegment::arc_to_ray(start, center, point(2.0, -f64::from_bits(1), 7.0), false)
+            .is_err()
+    );
+}
