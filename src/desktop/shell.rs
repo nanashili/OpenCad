@@ -1578,10 +1578,10 @@ impl OpenCadApp {
 
     pub(super) fn start_page(&mut self, ui: &mut egui::Ui) {
         egui::Panel::left("start_navigation")
-            .exact_size(240.0)
+            .exact_size(238.0)
             .frame(
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(47, 52, 63))
+                    .fill(Color32::from_rgb(46, 52, 64))
                     .inner_margin(egui::Margin::symmetric(32, 32)),
             )
             .show(ui, |ui| {
@@ -1590,29 +1590,29 @@ impl OpenCadApp {
                 ui.add_space(20.0);
                 let navigation_button = |label| {
                     Button::new(label)
-                        .fill(Color32::from_rgb(47, 52, 63))
+                        .fill(Color32::from_rgb(46, 52, 64))
                         .stroke(Stroke::new(1.0, Color32::from_rgb(110, 126, 147)))
                         .corner_radius(1)
                 };
                 if ui
-                    .add_sized([176.0, 36.0], navigation_button("Open..."))
+                    .add_sized([174.0, 36.0], navigation_button("Open..."))
                     .clicked()
                 {
                     self.request(PendingAction::Open(None));
                 }
                 if ui
-                    .add_sized([176.0, 36.0], navigation_button("New"))
+                    .add_sized([174.0, 36.0], navigation_button("New"))
                     .clicked()
                 {
                     self.request(PendingAction::New);
                 }
                 ui.add_space(32.0);
                 let (recent, response) =
-                    ui.allocate_exact_size(egui::vec2(176.0, 44.0), egui::Sense::click());
+                    ui.allocate_exact_size(egui::vec2(174.0, 44.0), egui::Sense::click());
                 ui.painter().rect_filled(
                     recent.expand2(egui::vec2(32.0, 0.0)),
                     0.0,
-                    Color32::from_rgb(71, 79, 95),
+                    Color32::from_rgb(69, 79, 97),
                 );
                 ui.painter().text(
                     recent.left_center(),
@@ -1625,7 +1625,7 @@ impl OpenCadApp {
                     egui::WidgetInfo::selected(egui::WidgetType::Button, true, true, "Recent")
                 });
                 let (learning, response) =
-                    ui.allocate_exact_size(egui::vec2(176.0, 44.0), egui::Sense::click());
+                    ui.allocate_exact_size(egui::vec2(174.0, 44.0), egui::Sense::click());
                 ui.painter().text(
                     learning.left_center(),
                     Align2::LEFT_CENTER,
@@ -1653,7 +1653,7 @@ impl OpenCadApp {
                 .exact_size(350.0)
                 .frame(
                     egui::Frame::new()
-                        .fill(Color32::from_rgb(61, 68, 82))
+                        .fill(Color32::from_rgb(59, 68, 83))
                         .inner_margin(egui::Margin::same(32)),
                 )
                 .show(ui, |ui| {
@@ -1681,7 +1681,7 @@ impl OpenCadApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
-                    .fill(Color32::from_rgb(71, 79, 95))
+                    .fill(Color32::from_rgb(69, 79, 97))
                     .inner_margin(egui::Margin::same(24)),
             )
             .show(ui, |ui| {
