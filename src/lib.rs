@@ -95,6 +95,7 @@ pub enum GeometryError {
     IncompatibleJoinEntities,
     JoinRequiresFullTurn,
     UnrepresentableJoin,
+    UnsupportedPolylineConversion,
     DegenerateCurve,
     NoBoundaryIntersection,
     AmbiguousCurvePick,
@@ -180,6 +181,9 @@ impl fmt::Display for GeometryError {
                 "this arc join requires a full turn; use JOIN cLose explicitly"
             ),
             Self::UnrepresentableJoin => write!(f, "the join is below coordinate precision"),
+            Self::UnsupportedPolylineConversion => {
+                write!(f, "PEDIT requires an XY polyline, line or arc")
+            }
             Self::DegenerateCurve => write!(f, "the curve has no editable span"),
             Self::NoBoundaryIntersection => {
                 write!(f, "no usable boundary intersection for this portion")

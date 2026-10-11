@@ -23,6 +23,7 @@ impl OpenCadApp {
                 .corner_text(input)
                 .or_else(|| self.explode_text(input))
                 .or_else(|| self.join_text(input))
+                .or_else(|| self.pedit_text(input))
                 .or_else(|| self.lengthen_text(input))
                 .or_else(|| self.break_text(input))
                 .or_else(|| self.trim_text(input))
@@ -49,6 +50,9 @@ impl OpenCadApp {
     }
 
     fn command_result(&mut self, input: &str) -> Result<(), String> {
+        if let Some(result) = self.pedit_text(input) {
+            return result;
+        }
         if let Some(result) = self.join_text(input) {
             return result;
         }
@@ -109,6 +113,20 @@ impl OpenCadApp {
         let rest = rest.trim();
         let tokens: Vec<_> = rest.split_whitespace().collect();
         match verb.to_ascii_uppercase().as_str() {
+            "PEDITACCEPT" => {
+                if !rest.is_empty() {
+                    self.pedit_accept = match rest {
+                        "0" => false,
+                        "1" => true,
+                        _ => return Err("PEDITACCEPT must be 0 or 1.".into()),
+                    };
+                    self.finish();
+                }
+                self.message(
+                    format!("PEDITACCEPT = {}", u8::from(self.pedit_accept)),
+                    false,
+                );
+            }
             "ENTITY" => {
                 if tokens.len() != 2 {
                     return Err("ENTITY syntax: ENTITY COLOR BYLAYER|BYBLOCK|1..255; ENTITY LINETYPE name; ENTITY LTSCALE nonnegative-number".into());
@@ -365,6 +383,7 @@ impl OpenCadApp {
             "LENGTHEN" | "LEN" => self.lengthen_command(&tokens)?,
             "EXPLODE" | "X" => self.explode_command(&tokens)?,
             "JOIN" | "J" => self.join_command(&tokens)?,
+            "PEDIT" | "PE" => self.pedit_command(&tokens)?,
             "CHAMFER" | "CHA" => self.corner_command(&tokens, true)?,
             "EXTEND" | "EX" | "E" => self.trim_command(&tokens, true)?,
             "ROTATE" | "RO" | "SCALE" | "SC" => {

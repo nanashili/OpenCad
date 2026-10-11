@@ -754,6 +754,16 @@ impl Editor {
         self.replace_curve_parts(index, vec![circle])
     }
 
+    /// Replace a line/arc with one polyline in a single history transaction.
+    /// Converted records are new and inherit the source layer/style.
+    pub fn convert_to_polyline(&mut self, index: usize) -> Result<bool, EditError> {
+        let Some(source) = self.entities().get(index) else {
+            return Ok(false);
+        };
+        let polyline = source.to_polyline_xy()?;
+        self.replace_curve_parts(index, vec![Entity::Polyline(polyline)])
+    }
+
     pub fn delete_selection(&mut self) -> Result<bool, LayerError> {
         if self.selection().is_empty() {
             return Ok(false);

@@ -24,6 +24,7 @@ struct Preferences {
     recent_files: Vec<StoredPath>,
     recent_list: bool,
     corner_trim: Option<bool>,
+    pedit_accept: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -202,6 +203,7 @@ impl OpenCadApp {
         if let Some(trim) = preferences.corner_trim {
             self.corner_trim = trim;
         }
+        self.pedit_accept = preferences.pedit_accept;
         for path in preferences
             .recent_files
             .into_iter()
@@ -279,6 +281,7 @@ impl OpenCadApp {
                 .collect(),
             recent_list: self.recent_list,
             corner_trim: Some(self.corner_trim),
+            pedit_accept: self.pedit_accept,
         };
         eframe::set_value(storage, STORAGE_KEY, &preferences);
     }

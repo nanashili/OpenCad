@@ -307,6 +307,44 @@ Small accepted residuals project onto the source geometry. These are OpenCad
 policies. Polyline/mixed-type joins, multiple compatible groups, 3D/UCS and
 complete native tolerance parity remain unfinished.
 
+## Polyline editing
+
+Use Modify > Object > Polyline, the optional **Polyline Edit** toolset button,
+or `PEDIT` (`PE`). Pick one XY polyline, line or arc, or enter its object number.
+One preselected object is accepted. Lines and arcs ask for **Yes/No** conversion;
+Enter defaults to Yes and No clears the selection. `PEDITACCEPT 1` skips this
+prompt; `PEDITACCEPT 0` restores it. This preference persists between app runs.
+
+**Close**, **Open** and **Reverse** edit the selected polyline. **Undo** walks
+back only the operations made during the current PEDIT session, including
+conversion. A repeated Open/Close that changes nothing adds no history. Enter
+or **Exit** ends the session; Escape ends it while retaining completed edits.
+Canvas keys C, O, R, U, Y and N activate the corresponding options. Save keeps
+the session active. Starting another editing tool ends the session.
+
+```text
+PE 2
+Yes
+Close
+Reverse
+Undo
+Exit
+PEDIT 3 Open
+```
+
+Conversion creates a zero-width legacy R12 POLYLINE with source layer/style and
+a new record, removing the source. Lines retain endpoint order and exact XY
+elevation; arcs become one counterclockwise bulged segment. Closing activates
+the final vertex's stored outgoing bulge; opening retains that dormant value.
+Same-type edits preserve the source DXF record. Protected layers, nonplanar
+lines, degenerate arcs and unrepresentable results reject before mutation.
+These geometry, identity and history choices are explicit OpenCad policies.
+
+Multiple selection, Join, width and vertex editing within PEDIT, curve fitting,
+DELOBJ retention choices, PLINETYPE/PLINECONVERTMODE conversion settings and
+general UCS editing remain unfinished. Existing property controls still edit
+polyline vertices and bulges independently of PEDIT.
+
 ## Reordering toolset panels
 
 Click **Reorder panels** at the bottom left of the Drafting toolset. Drag a panel

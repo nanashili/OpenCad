@@ -3752,6 +3752,268 @@ fn join_canvas_confirms_source_selects_curves_and_windows_and_handles_close_and_
 }
 
 #[test]
+fn pedit_commands_convert_curves_preserve_properties_and_bound_session_undo() {
+    use opencad::{Arc3, Circle3, Line3, Polyline2};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit.dxf");
+    let p = |x, y| Point3::new(x, y, 7.0).unwrap();
+    let mut document = DxfDocument::default();
+    document.add_layer("DETAIL").unwrap();
+    document
+        .push_on_layer(
+            Entity::Line(Line3::new(p(-20.0, -10.0), p(20.0, -10.0))),
+            "DETAIL",
+        )
+        .unwrap();
+    document
+        .push_on_layer(
+            Entity::Arc(Arc3::new(p(0.0, 25.0), 10.0, 0.0, std::f64::consts::PI * 1.5).unwrap()),
+            "DETAIL",
+        )
+        .unwrap();
+    document.push(Entity::Polyline(
+        Polyline2::with_bulges(
+            vec![p(-30.0, 0.0), p(-10.0, 0.0), p(-20.0, 15.0)],
+            vec![1.0, 0.0, -0.25],
+            false,
+        )
+        .unwrap(),
+    ));
+    document.push(Entity::Circle(Circle3::new(p(40.0, 0.0), 5.0).unwrap()));
+    document.push(Entity::Line(Line3::new(
+        p(0.0, 0.0),
+        Point3::new(10.0, 0.0, 8.0).unwrap(),
+    )));
+    document.set_entity_color(0, 3).unwrap();
+    document.set_entity_linetype_scale(0, 2.0).unwrap();
+    fs::write(&path, document.to_dxf()).unwrap();
+    let original = fs::read_to_string(&path).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut ui = DrawingUi::new();
+    ui.command(&format!("OPEN {}", path.display()));
+    assert!(opencad::desktop::menu_action_status(&ui.ctx, "ID_Pedit").enabled);
+    opencad::desktop::queue_menu_action(&ui.ctx, "ID_Pedit");
+    ui.step(Vec::new());
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Polyline Edit"));
+    ui.command("1");
+    assert!(ui.has_text("Convert it? Yes/No <Yes>"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("No");
+    assert!(ui.has_text("Select one XY polyline"));
+    ui.command("1");
+    ui.command_with_enter("");
+    ui.command("SAVE");
+    let converted = read();
+    assert!(matches!(converted.entities()[4], Entity::Polyline(_)));
+    assert_eq!(converted.entity_layer(4), Some("DETAIL"));
+    assert_eq!(converted.entity_style(4), document.entity_style(0));
+    let Entity::Polyline(line) = &converted.entities()[4] else {
+        panic!("converted line")
+    };
+    assert_eq!(line.vertices(), &[p(-20.0, -10.0), p(20.0, -10.0)]);
+    assert_eq!(line.bulges(), &[0.0, 0.0]);
+    ui.command("Close");
+    ui.command("Reverse");
+    ui.command("SAVE");
+    let Entity::Polyline(closed) = read().entities()[4].clone() else {
+        panic!("polyline")
+    };
+    assert!(closed.is_closed());
+    assert_eq!(closed.vertices(), &[p(20.0, -10.0), p(-20.0, -10.0)]);
+    ui.command("Undo");
+    ui.command("Undo");
+    ui.command("Undo");
+    assert!(ui.has_text("Convert it? Yes/No <Yes>"));
+    ui.command("Undo");
+    assert!(ui.has_text("No more operations in this PEDIT session."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("No");
+    ui.command("Exit");
+    ui.command("PE 3 Close");
+    ui.command("Close"); // A no-op must not add a session history step.
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Close");
+    ui.command("Open");
+    ui.command("Reverse");
+    ui.command("Undo");
+    ui.command("Exit");
+    ui.command("UNDO");
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[2].clone() else {
+        panic!("polyline")
+    };
+    assert!(polyline.is_closed());
+    assert_eq!(polyline.bulges(), &[1.0, 0.0, -0.25]);
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    for command in [
+        "PE 0",
+        "PE 99",
+        "PE 3 invalid",
+        "PE 1 Close",
+        "PE 3 Close extra",
+        "PE 4",
+        "PE 5",
+    ] {
+        ui.command(command);
+        ui.command("SAVE");
+        assert_eq!(fs::read_to_string(&path).unwrap(), original, "{command}");
+    }
+    for state in ["LOCK", "HIDE"] {
+        ui.command(&format!("LAYER {state} DETAIL"));
+        ui.command("SAVE");
+        let protected = fs::read_to_string(&path).unwrap();
+        ui.command("PE 1");
+        if state == "LOCK" {
+            ui.command("Yes");
+        }
+        assert!(ui.has_text(if state == "LOCK" {
+            "unlock layer DETAIL before editing it"
+        } else {
+            "PEDIT objects must be visible"
+        }));
+        ui.command("SAVE");
+        assert_eq!(fs::read_to_string(&path).unwrap(), protected);
+        ui.command("Exit");
+        ui.command("UNDO");
+    }
+    ui.command("SELECT 2");
+    ui.command("PE");
+    ui.command("Yes");
+    ui.command("SAVE");
+    let Entity::Polyline(arc) = read().entities()[4].clone() else {
+        panic!("converted arc")
+    };
+    assert!((arc.bulges()[0] - (std::f64::consts::PI * 3.0 / 8.0).tan()).abs() < 1e-9);
+    assert!((arc.length().unwrap() - std::f64::consts::PI * 15.0).abs() < 1e-9);
+    assert_eq!(arc.elevation(), 7.0);
+    ui.command("Exit");
+    ui.command("PEDITACCEPT 1");
+    let mut storage = PreferenceStorage::default();
+    ui.app.save(&mut storage);
+    let mut restored = DrawingUi::with_storage_and_path(Some(&storage), Some(path.clone()));
+    restored.command("PEDITACCEPT");
+    assert!(restored.has_text("PEDITACCEPT = 1"));
+    restored.command("PE 1"); // Original line is still first after arc conversion.
+    assert!(restored.has_text("PEDIT · Close / Reverse / Undo"));
+    restored.command("SAVE");
+    assert!(matches!(read().entities()[4], Entity::Polyline(_)));
+    restored.command("Undo");
+    restored.command("No");
+    restored.command("Exit");
+    restored.command("PEDITACCEPT 2");
+    assert!(restored.has_text("PEDITACCEPT must be 0 or 1"));
+    restored.command("PEDITACCEPT");
+    assert!(restored.has_text("PEDITACCEPT = 1"));
+}
+
+#[test]
+fn pedit_canvas_picks_and_keyboard_options_edit_curved_polylines_and_cancel_conversion() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE -50,-20,7 -10,-20,7");
+    ui.command("ARC 10,20,7 10 0 270");
+    ui.command("PLINE 30,-20,7 50,-20,7 50,0,7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let click = |ui: &mut DrawingUi, x: f32, y: f32| {
+        let canvas = ui
+            .bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
+            .unwrap();
+        let position = egui::pos2(canvas.center().x + x * 4.0, canvas.center().y - y * 4.0);
+        ui.step(vec![
+            Event::PointerMoved(position),
+            Event::PointerButton {
+                pos: position,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos: position,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        ui.step(Vec::new());
+    };
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("SELECT");
+    ui.command("PE");
+    click(&mut ui, -30.0, -20.0);
+    assert!(ui.has_text("Convert it? Yes/No <Yes>"));
+    ui.snapshot("pedit-conversion-prompt");
+    press(&mut ui, egui::Key::N);
+    assert!(ui.has_text("Select one XY polyline"));
+    click(&mut ui, -30.0, -20.0);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("SELECT");
+    ui.command("PE");
+    click(&mut ui, 17.071_068, 27.071_068);
+    press(&mut ui, egui::Key::Y);
+    assert!(ui.has_text("PEDIT · Close / Reverse / Undo"));
+    press(&mut ui, egui::Key::R);
+    ui.command("SAVE");
+    let Entity::Polyline(arc) = read().entities()[2].clone() else {
+        panic!("arc polyline")
+    };
+    assert!(arc.bulges()[0] < -1.0);
+    assert!((arc.length().unwrap() - std::f64::consts::PI * 15.0).abs() < 1e-9);
+    click(&mut ui, -80.0, -50.0); // Restore canvas focus without changing the source.
+    press(&mut ui, egui::Key::C);
+    ui.snapshot("pedit-reversed-closed-arc");
+    ui.command("SAVE");
+    let Entity::Polyline(closed) = read().entities()[2].clone() else {
+        panic!("closed arc")
+    };
+    assert!(closed.is_closed());
+    click(&mut ui, -80.0, -50.0);
+    press(&mut ui, egui::Key::O);
+    press(&mut ui, egui::Key::U);
+    ui.command("SAVE");
+    let Entity::Polyline(closed) = read().entities()[2].clone() else {
+        panic!("closed arc")
+    };
+    assert!(closed.is_closed());
+    click(&mut ui, -80.0, -50.0);
+    press(&mut ui, egui::Key::Enter);
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("UNDO");
+    ui.command("UNDO");
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("SELECT");
+    ui.command("PE");
+    click(&mut ui, 40.0, -20.0);
+    press(&mut ui, egui::Key::C);
+    press(&mut ui, egui::Key::Escape); // Completed PEDIT edits survive cancellation.
+    ui.command("SAVE");
+    let Entity::Polyline(closed) = read().entities()[2].clone() else {
+        panic!("polyline")
+    };
+    assert!(closed.is_closed());
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");

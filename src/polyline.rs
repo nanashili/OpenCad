@@ -187,6 +187,36 @@ impl Polyline2 {
     }
 }
 
+impl Entity {
+    /// Convert an XY line or arc to a single-segment, zero-width polyline.
+    /// Existing polylines retain their vertices, bulges and closing flag.
+    pub fn to_polyline_xy(&self) -> Result<Polyline2, GeometryError> {
+        let polyline = match self {
+            Self::Polyline(polyline) => polyline.clone(),
+            Self::Line(line) => Polyline2::new(vec![line.start(), line.end()], false)?,
+            Self::Arc(arc) => {
+                if arc.radius() == 0.0 || arc.sweep() == 0.0 {
+                    return Err(GeometryError::DegenerateCurve);
+                }
+                let start = arc.start_point()?;
+                let end = arc.end_point()?;
+                if start == end {
+                    return Err(GeometryError::UnrepresentableBulge);
+                }
+                Polyline2::with_bulges(
+                    vec![start, end],
+                    vec![(arc.sweep() / 4.0).tan(), 0.0],
+                    false,
+                )?
+            }
+            _ => return Err(GeometryError::UnsupportedPolylineConversion),
+        };
+        polyline.length()?;
+        polyline.extrema()?;
+        Ok(polyline)
+    }
+}
+
 fn segment(start: Point3, end: Point3, bulge: f64) -> Result<PolylineSegment, GeometryError> {
     let line = Line3::new(start, end);
     if bulge == 0.0 || start == end {

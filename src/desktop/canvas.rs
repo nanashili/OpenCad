@@ -146,6 +146,7 @@ impl OpenCadApp {
                     Tool::Select
                         | Tool::Explode
                         | Tool::Join
+                        | Tool::Pedit
                         | Tool::Pan
                         | Tool::Trim
                         | Tool::Extend
@@ -186,6 +187,14 @@ impl OpenCadApp {
                             }
                         } else {
                             self.editor.select(hit.into_iter().collect());
+                        }
+                    } else if self.tool == Tool::Pedit {
+                        let result = pointer
+                            .and_then(|position| self.hit(position, rect))
+                            .ok_or_else(|| "Select an XY polyline, line or arc.".to_string())
+                            .and_then(|index| self.pedit_select(index));
+                        if let Err(error) = result {
+                            self.message(error, true);
                         }
                     } else if self.tool == Tool::Lengthen {
                         let hit = pointer.and_then(|position| self.hit(position, rect));

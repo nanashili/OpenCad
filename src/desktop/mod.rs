@@ -8,6 +8,7 @@ mod joining;
 mod lengthening;
 mod offsets;
 mod panels;
+mod polyline_editing;
 mod preferences;
 mod shell;
 mod toolsets;
@@ -55,6 +56,7 @@ enum Tool {
     Lengthen,
     Explode,
     Join,
+    Pedit,
     Pan,
 }
 impl Tool {
@@ -81,6 +83,7 @@ impl Tool {
             Self::Lengthen => "Lengthen",
             Self::Explode => "Explode",
             Self::Join => "Join",
+            Self::Pedit => "Polyline Edit",
             Self::Pan => "Pan",
         }
     }
@@ -135,6 +138,8 @@ pub struct OpenCadApp {
     lengthen_input: lengthening::LengthenInput,
     corner_input: corners::CornerInput,
     join_source: Option<usize>,
+    pedit_input: polyline_editing::PeditInput,
+    pedit_accept: bool,
     corner_trim: bool,
     camera: canvas::Camera,
     fit_pending: bool,
@@ -221,6 +226,8 @@ impl OpenCadApp {
             lengthen_input: lengthening::LengthenInput::default(),
             corner_input: corners::CornerInput::default(),
             join_source: None,
+            pedit_input: polyline_editing::PeditInput::default(),
+            pedit_accept: false,
             corner_trim: true,
             camera: canvas::Camera::default(),
             fit_pending: true,
@@ -296,6 +303,7 @@ impl OpenCadApp {
         self.lengthen_input = lengthening::LengthenInput::default();
         self.corner_input = corners::CornerInput::default();
         self.join_source = None;
+        self.pedit_input = polyline_editing::PeditInput::default();
         if matches!(tool, Tool::Trim | Tool::Extend) {
             self.trim_input.boundaries = self.editor.selection().to_vec();
         }
@@ -335,6 +343,7 @@ impl OpenCadApp {
                 "EXPLODE · Select objects; Enter explodes polylines. Shift removes; All selects visible objects; Escape cancels."
             }
             (Tool::Join, _) => self.join_prompt(),
+            (Tool::Pedit, _) => self.pedit_prompt(),
             (Tool::Pan, _) => "Drag to pan. Scroll to zoom; F fits the drawing.",
         }
     }
@@ -349,6 +358,7 @@ impl OpenCadApp {
         self.lengthen_input = lengthening::LengthenInput::default();
         self.corner_input = corners::CornerInput::default();
         self.join_source = None;
+        self.pedit_input = polyline_editing::PeditInput::default();
         self.marquee = None;
         self.polar_guide = None;
     }
@@ -397,7 +407,7 @@ impl OpenCadApp {
             Tool::Offset => return self.offset_point(point),
             Tool::Break | Tool::BreakAtPoint => return self.break_point(point),
             Tool::Lengthen => return self.lengthen_point(point),
-            Tool::Explode | Tool::Join => {
+            Tool::Explode | Tool::Join | Tool::Pedit => {
                 return Err(
                     "Select objects on the canvas or enter entity numbers, then Enter.".into(),
                 );
@@ -729,6 +739,20 @@ impl OpenCadApp {
         if ctx.text_edit_focused() {
             return;
         }
+        if self.tool == Tool::Pedit {
+            for (key, option) in [
+                (Key::C, "Close"),
+                (Key::O, "Open"),
+                (Key::R, "Reverse"),
+                (Key::U, "Undo"),
+                (Key::Y, "Yes"),
+                (Key::N, "No"),
+            ] {
+                if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
+                    self.execute(option);
+                }
+            }
+        }
         if self.tool == Tool::Mirror && self.points.len() == 2 {
             for (key, answer) in [(Key::Y, "Yes"), (Key::N, "No")] {
                 if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
@@ -850,6 +874,7 @@ impl OpenCadApp {
                     | Tool::Lengthen
                     | Tool::Explode
                     | Tool::Join
+                    | Tool::Pedit
             ) || (self.tool == Tool::Mirror && self.points.len() == 2)
             {
                 self.execute("");
