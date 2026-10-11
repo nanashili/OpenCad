@@ -162,6 +162,47 @@ OpenCad numerical policies. Parallel-line fillets, curved/polyline sources,
 chamfer Angle/Method, and 3D corners remain unfinished. The canvas **F** key fits
 the drawing; `F` in the command field starts FILLET.
 
+## Break and break at point
+
+Choose **Break** or **Break at Point** from the Modify panel's Break drop-down,
+or enter `BREAK` or `BREAKATPOINT`.
+
+- **BREAK:** click a source curve; that raw pick becomes the first point. Pick
+  the second point anywhere to remove the portion between their projections.
+  **First** (`F`, including the canvas key) replaces the initial point. Enter
+  `@` or `@0,0` as the second point to split an open curve without a gap.
+- **BREAKATPOINT:** select an open line or arc, then specify a separate break
+  point. The result is two curves meeting at the projected point.
+- The command field accepts `entity-number [pick-x,y[,z]]` to select a BREAK
+  source. Omitting the pick prompts for the first point. BREAKATPOINT accepts
+  an entity number, then `x,y[,z]`. Subsequent canvas points use raw coordinates
+  and project onto the selected curve; they do not need to hit another entity.
+- Live previews show retained fragments. Enter, Exit or Escape cancels pending
+  input. Each completed break is one undoable drawing edit.
+
+Direct forms:
+
+```text
+BREAK 1 3,8 7,-8
+BREAK 1 4,0 @
+BREAKATPOINT 1 4,8
+```
+
+Supported sources are world-XY LINEs, ARCs and CIRCLEs; BREAKATPOINT excludes
+circles. Line picks project orthogonally and clamp to endpoints. Arc picks
+outside the angular span use the nearest endpoint. Circle breaks remove the
+counterclockwise first-to-second portion, retaining one ARC. Source elevation
+is preserved. Same-type first fragments retain their source record; additional
+fragments and converted circles copy the source layer/style into new records.
+Locked or hidden sources cannot be edited.
+
+OpenCad rejects endpoint splits without a gap, equal circle directions,
+ambiguous arc endpoint ties, degenerate curves and precision collapse. A gap
+covering both endpoints removes an open source entirely. Fractional comparisons
+use `1e-10`; these are OpenCad policies. Polyline breaks, 3D/UCS projection and
+complete native tolerance/identity parity remain unfinished. Canvas **F** fits
+the drawing outside an active BREAK command.
+
 ## Reordering toolset panels
 
 Click **Reorder panels** at the bottom left of the Drafting toolset. Drag a panel

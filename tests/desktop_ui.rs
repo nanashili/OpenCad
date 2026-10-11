@@ -2643,6 +2643,239 @@ fn fillet_chamfer_canvas_picks_preview_shift_keyboard_and_cancel_work() {
 }
 
 #[test]
+fn break_commands_override_points_split_convert_preserve_style_and_undo_atomically() {
+    use opencad::desktop::{menu_action_status, queue_menu_action};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("break-commands.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    for action in ["ID_Break", "ID_BreakSele"] {
+        assert!(menu_action_status(&ui.ctx, action).enabled);
+    }
+    ui.command("LAYER NEW DETAIL");
+    ui.command("LINE 0,0,7 40,0,7");
+    ui.command("ENTITY COLOR 3");
+    ui.command("CIRCLE 80,0,7 10");
+    ui.command("ARC 120,0,7 10 270 90");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    queue_menu_action(&ui.ctx, "ID_Break");
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Break"));
+    ui.command("1 8,20");
+    ui.command("First");
+    ui.command("12,20");
+    ui.command("28,-30");
+    assert!(ui.has_text("Curve broken."));
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 4);
+    for (index, start, end) in [(0, 0.0, 12.0), (3, 28.0, 40.0)] {
+        let Entity::Line(line) = document.entities()[index] else {
+            panic!("expected broken line");
+        };
+        assert!((line.start().x() - start).abs() < 1e-9);
+        assert!((line.end().x() - end).abs() < 1e-9);
+        assert_eq!(line.start().z(), 7.0);
+        assert_eq!(document.entity_layer(index), Some("DETAIL"));
+        assert_eq!(document.entity_style(index).unwrap().color_index(), 3);
+    }
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command("UNDO");
+    queue_menu_action(&ui.ctx, "ID_BreakSele");
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Break at Point"));
+    ui.command("1");
+    ui.command("@");
+    assert!(ui.has_text("BREAKATPOINT requires an absolute break point."));
+    ui.command("20,15");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let (Entity::Line(first), Entity::Line(second)) =
+        (&document.entities()[0], &document.entities()[3])
+    else {
+        panic!("expected split lines");
+    };
+    assert_eq!(first.end(), second.start());
+    assert_eq!(first.end(), Point3::new(20.0, 0.0, 7.0).unwrap());
+    ui.command("UNDO");
+    for command in [
+        "BREAK 1 10,30 @",
+        "BREAK 1 10,30 @0,0",
+        "BREAKATPOINT 1 10,30",
+    ] {
+        ui.command(command);
+        ui.command("SAVE");
+        let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(document.entities().len(), 4);
+        let Entity::Line(line) = document.entities()[0] else {
+            panic!("expected split line");
+        };
+        assert_eq!(line.end(), Point3::new(10.0, 0.0, 7.0).unwrap());
+        ui.command("UNDO");
+    }
+    ui.command("BREAK 2 90,0 80,10");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let Entity::Arc(arc) = document.entities()[2] else {
+        panic!("expected converted circle");
+    };
+    assert_eq!(arc.center(), Point3::new(80.0, 0.0, 7.0).unwrap());
+    assert!((arc.start_angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+    assert!((arc.sweep() - 3.0 * std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+    ui.command("UNDO");
+    ui.command("BREAK 3 130,0 @0,0");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 4);
+    for index in [2, 3] {
+        let Entity::Arc(arc) = document.entities()[index] else {
+            panic!("expected split arc");
+        };
+        assert!((arc.sweep() - std::f64::consts::FRAC_PI_2).abs() < 1e-9);
+    }
+    ui.command("UNDO");
+    for command in [
+        "BREAKATPOINT 2 90,0",
+        "BREAKATPOINT 1 0,0",
+        "BREAK 0 10,0 20,0",
+        "BREAK 1 NaN,0 20,0",
+        "BREAK 1 10,0",
+        "BREAK 2 90,0 @",
+    ] {
+        ui.command(command);
+    }
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("LAYER LOCK DETAIL");
+    ui.command("BREAK 1 10,0 20,0");
+    assert!(ui.has_text("unlock layer DETAIL before editing it"));
+    ui.command("UNDO");
+    ui.command("LAYER HIDE DETAIL");
+    ui.command("BREAK 1 10,0 20,0");
+    assert!(ui.has_text("Break sources must be visible."));
+    ui.command("UNDO");
+    ui.command("BREAK");
+    ui.command("First");
+    assert!(ui.has_text("Select a curve before overriding the first point."));
+    ui.command("1");
+    ui.command("10,0");
+    ui.command_with_enter("");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn break_canvas_raw_picks_first_override_preview_dropdown_and_cancel_work() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("break-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE -40,0,7 40,0,7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let position = |ui: &DrawingUi, x: f64, y: f64| {
+        let bounds = ui
+            .nodes
+            .values()
+            .find(|node| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Drawing canvas,"))
+            })
+            .and_then(|node| node.bounds())
+            .unwrap();
+        egui::pos2(
+            ((bounds.x0 + bounds.x1) * 0.5 + 4.0 * x) as f32,
+            ((bounds.y0 + bounds.y1) * 0.5 - 4.0 * y) as f32,
+        )
+    };
+    let click = |ui: &mut DrawingUi, x: f64, y: f64| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        ui.step(Vec::new());
+    };
+    // The native dropdown defaults to Break at Point; choose Break via its accessible menu.
+    ui.custom_action("Break at Point", "Open command menu");
+    ui.click("Break");
+    click(&mut ui, 2.0, 0.0); // Near the midpoint snap; retain the raw source pick.
+    let pos = position(&ui, 20.0, 15.0);
+    ui.step(vec![Event::PointerMoved(pos)]);
+    ui.snapshot("break-gap-preview");
+    click(&mut ui, 20.0, 15.0); // No entity here; project onto the selected source.
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 2);
+    let (Entity::Line(first), Entity::Line(second)) =
+        (&document.entities()[0], &document.entities()[1])
+    else {
+        panic!("expected broken lines");
+    };
+    assert!((first.end().x() - 2.0).abs() < 1e-4);
+    assert!((second.start().x() - 20.0).abs() < 1e-4);
+    ui.command("UNDO");
+    ui.command("BREAK");
+    click(&mut ui, -20.0, 0.0);
+    ui.step(vec![key(egui::Key::F, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::F, egui::Modifiers::NONE, false)]);
+    click(&mut ui, -10.0, 20.0);
+    ui.command("@0,0");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let (Entity::Line(first), Entity::Line(second)) =
+        (&document.entities()[0], &document.entities()[1])
+    else {
+        panic!("expected split lines");
+    };
+    assert_eq!(first.end(), second.start());
+    assert!((first.end().x() + 10.0).abs() < 1e-4);
+    ui.command("UNDO");
+    ui.custom_action("Break at Point", "Open command menu");
+    ui.click("Break at Point");
+    click(&mut ui, -25.0, 0.0);
+    let pos = position(&ui, 10.0, 20.0);
+    ui.step(vec![Event::PointerMoved(pos)]);
+    ui.snapshot("break-at-point-preview");
+    click(&mut ui, 10.0, 20.0);
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let (Entity::Line(first), Entity::Line(second)) =
+        (&document.entities()[0], &document.entities()[1])
+    else {
+        panic!("expected split lines");
+    };
+    assert_eq!(first.end(), second.start());
+    assert!((first.end().x() - 10.0).abs() < 1e-4);
+    ui.command("UNDO");
+    ui.command("BREAK");
+    click(&mut ui, -30.0, 0.0);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");

@@ -149,6 +149,8 @@ impl OpenCadApp {
                         | Tool::Extend
                         | Tool::Fillet
                         | Tool::Chamfer
+                        | Tool::Break
+                        | Tool::BreakAtPoint
                 ) && let Some(point) = self.cursor
                 {
                     self.cursor = Some(self.snap(point, rect, ui.input(|i| i.modifiers.shift)));
@@ -170,6 +172,13 @@ impl OpenCadApp {
                             }
                         } else {
                             self.editor.select(hit.into_iter().collect());
+                        }
+                    } else if matches!(self.tool, Tool::Break | Tool::BreakAtPoint) {
+                        let hit = pointer.and_then(|position| self.hit(position, rect));
+                        if let Some(point) = self.cursor
+                            && let Err(error) = self.break_click(hit, point)
+                        {
+                            self.message(error, true);
                         }
                     } else if matches!(self.tool, Tool::Fillet | Tool::Chamfer) {
                         let hit = pointer.and_then(|position| self.hit(position, rect));
@@ -237,8 +246,10 @@ impl OpenCadApp {
                 if self.grid {
                     self.draw_grid(&painter, rect);
                 }
+                let break_preview_source = self.break_preview_source();
                 for (index, entity) in self.editor.entities().iter().enumerate() {
-                    if !self.editor.is_entity_visible(index) {
+                    if !self.editor.is_entity_visible(index) || break_preview_source == Some(index)
+                    {
                         continue;
                     }
                     let selected = self.editor.selection().contains(&index);
@@ -585,6 +596,34 @@ impl OpenCadApp {
             return;
         };
         let stroke = Stroke::new(1.3, ACCENT);
+        if matches!(self.tool, Tool::Break | Tool::BreakAtPoint) {
+            if let Some(parts) = self.break_preview(cursor) {
+                for part in parts {
+                    self.draw_entity(painter, &part, rect, stroke);
+                    let ends = match part {
+                        Entity::Line(line) => Some([line.start(), line.end()]),
+                        Entity::Arc(arc) => arc
+                            .start_point()
+                            .ok()
+                            .zip(arc.end_point().ok())
+                            .map(|(start, end)| [start, end]),
+                        _ => None,
+                    };
+                    if let Some(ends) = ends {
+                        for end in ends {
+                            if let Some(position) = self.camera.screen(end.x(), end.y(), rect) {
+                                painter.rect_filled(
+                                    Rect::from_center_size(position, egui::vec2(4.0, 4.0)),
+                                    0.0,
+                                    ACCENT,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
         if matches!(self.tool, Tool::Fillet | Tool::Chamfer) {
             if let Some(position) = self.camera.screen(cursor.x(), cursor.y(), rect)
                 && let Some(source) = self.hit(position, rect)

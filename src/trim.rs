@@ -14,7 +14,7 @@ pub enum BoundaryMode {
 }
 
 #[derive(Clone, Copy)]
-enum Curve {
+pub(crate) enum Curve {
     Line(Line3),
     Round {
         center: Point3,
@@ -26,7 +26,7 @@ enum Curve {
 }
 
 impl Curve {
-    fn from_entity(entity: &Entity) -> Option<Self> {
+    pub(crate) fn from_entity(entity: &Entity) -> Option<Self> {
         match entity {
             Entity::Line(line) if line.start().z() == line.end().z() => Some(Self::Line(*line)),
             Entity::Circle(circle) => Some(Self::Round {
@@ -47,7 +47,7 @@ impl Curve {
         }
     }
 
-    fn validate(self) -> Result<(), GeometryError> {
+    pub(crate) fn validate(self) -> Result<(), GeometryError> {
         match self {
             Self::Line(line) => {
                 if line.length()? == 0.0 {
@@ -69,11 +69,11 @@ impl Curve {
         }
     }
 
-    fn closed(self) -> bool {
+    pub(crate) fn closed(self) -> bool {
         matches!(self, Self::Round { closed: true, .. })
     }
 
-    fn parameter(self, point: Point3) -> Result<f64, GeometryError> {
+    pub(crate) fn parameter(self, point: Point3) -> Result<f64, GeometryError> {
         let value = match self {
             Self::Line(line) => {
                 let length = line.length()?;
@@ -106,7 +106,7 @@ impl Curve {
         finite(value)
     }
 
-    fn point(self, parameter: f64) -> Result<Point3, GeometryError> {
+    pub(crate) fn point(self, parameter: f64) -> Result<Point3, GeometryError> {
         match self {
             Self::Line(line) => line.point_at_fraction(parameter),
             Self::Round {
@@ -126,7 +126,7 @@ impl Curve {
         }
     }
 
-    fn fragment(self, from: f64, to: f64) -> Result<Entity, GeometryError> {
+    pub(crate) fn fragment(self, from: f64, to: f64) -> Result<Entity, GeometryError> {
         match self {
             Self::Line(_) => Ok(Entity::Line(Line3::new(self.point(from)?, self.point(to)?))),
             Self::Round {

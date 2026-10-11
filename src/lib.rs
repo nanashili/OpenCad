@@ -1,6 +1,7 @@
 //! Original CAD geometry, line drawing, and a limited ASCII DXF exchange path.
 
 mod arc;
+mod breaking;
 mod circle;
 mod color;
 mod corner;
@@ -78,6 +79,10 @@ pub enum GeometryError {
     UnsupportedOffsetEntity,
     UnsupportedTrimEntity,
     UnsupportedExtendEntity,
+    UnsupportedBreakEntity,
+    UnsupportedBreakAtPoint,
+    InvalidBreakPoints,
+    UnrepresentableBreak,
     DegenerateCurve,
     NoBoundaryIntersection,
     AmbiguousCurvePick,
@@ -125,6 +130,21 @@ impl fmt::Display for GeometryError {
                 write!(f, "trim targets must be XY lines, circles or arcs")
             }
             Self::UnsupportedExtendEntity => write!(f, "extend targets must be XY lines or arcs"),
+            Self::UnsupportedBreakEntity => {
+                write!(f, "break currently supports XY lines, circles and arcs")
+            }
+            Self::UnsupportedBreakAtPoint => write!(
+                f,
+                "break at point currently requires an open XY line or arc"
+            ),
+            Self::InvalidBreakPoints => write!(
+                f,
+                "choose distinct break points, or one point inside an open curve"
+            ),
+            Self::UnrepresentableBreak => write!(
+                f,
+                "the break would produce a fragment below coordinate precision"
+            ),
             Self::DegenerateCurve => write!(f, "the curve has no editable span"),
             Self::NoBoundaryIntersection => {
                 write!(f, "no usable boundary intersection for this portion")

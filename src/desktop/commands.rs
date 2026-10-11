@@ -21,6 +21,7 @@ impl OpenCadApp {
         if input.is_empty() {
             if let Some(result) = self
                 .corner_text(input)
+                .or_else(|| self.break_text(input))
                 .or_else(|| self.trim_text(input))
                 .or_else(|| self.offset_text(input))
                 .or_else(|| self.transform_text(input))
@@ -45,6 +46,9 @@ impl OpenCadApp {
     }
 
     fn command_result(&mut self, input: &str) -> Result<(), String> {
+        if let Some(result) = self.break_text(input) {
+            return result;
+        }
         if let Some(result) = self.corner_text(input) {
             return result;
         }
@@ -344,6 +348,8 @@ impl OpenCadApp {
             "OFFSET" | "O" => self.offset_command(&tokens)?,
             "TRIM" | "TR" | "T" => self.trim_command(&tokens, false)?,
             "FILLET" | "F" => self.corner_command(&tokens, false)?,
+            "BREAK" => self.break_command(&tokens, false)?,
+            "BREAKATPOINT" => self.break_command(&tokens, true)?,
             "CHAMFER" | "CHA" => self.corner_command(&tokens, true)?,
             "EXTEND" | "EX" | "E" => self.trim_command(&tokens, true)?,
             "ROTATE" | "RO" | "SCALE" | "SC" => {

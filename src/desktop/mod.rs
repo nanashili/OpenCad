@@ -1,3 +1,4 @@
+mod breaking;
 mod canvas;
 mod catalog;
 mod commands;
@@ -46,6 +47,8 @@ enum Tool {
     Extend,
     Fillet,
     Chamfer,
+    Break,
+    BreakAtPoint,
     Pan,
 }
 impl Tool {
@@ -67,6 +70,8 @@ impl Tool {
             Self::Extend => "Extend",
             Self::Fillet => "Fillet",
             Self::Chamfer => "Chamfer",
+            Self::Break => "Break",
+            Self::BreakAtPoint => "Break at Point",
             Self::Pan => "Pan",
         }
     }
@@ -117,6 +122,7 @@ pub struct OpenCadApp {
     transform_input: transforms::TransformInput,
     offset_input: offsets::OffsetInput,
     trim_input: trimming::TrimInput,
+    break_input: breaking::BreakInput,
     corner_input: corners::CornerInput,
     corner_trim: bool,
     camera: canvas::Camera,
@@ -200,6 +206,7 @@ impl OpenCadApp {
             transform_input: transforms::TransformInput::default(),
             offset_input: offsets::OffsetInput::default(),
             trim_input: trimming::TrimInput::default(),
+            break_input: breaking::BreakInput::default(),
             corner_input: corners::CornerInput::default(),
             corner_trim: true,
             camera: canvas::Camera::default(),
@@ -272,6 +279,7 @@ impl OpenCadApp {
         self.transform_input = transforms::TransformInput::default();
         self.offset_input = offsets::OffsetInput::default();
         self.trim_input = trimming::TrimInput::default();
+        self.break_input = breaking::BreakInput::default();
         self.corner_input = corners::CornerInput::default();
         if matches!(tool, Tool::Trim | Tool::Extend) {
             self.trim_input.boundaries = self.editor.selection().to_vec();
@@ -306,6 +314,7 @@ impl OpenCadApp {
             (Tool::Offset, _) => self.offset_prompt(),
             (Tool::Trim | Tool::Extend, _) => self.trim_prompt(),
             (Tool::Fillet | Tool::Chamfer, _) => self.corner_prompt(),
+            (Tool::Break | Tool::BreakAtPoint, _) => self.break_prompt(),
             (Tool::Pan, _) => "Drag to pan. Scroll to zoom; F fits the drawing.",
         }
     }
@@ -316,6 +325,7 @@ impl OpenCadApp {
         self.transform_input = transforms::TransformInput::default();
         self.offset_input = offsets::OffsetInput::default();
         self.trim_input = trimming::TrimInput::default();
+        self.break_input = breaking::BreakInput::default();
         self.corner_input = corners::CornerInput::default();
         self.marquee = None;
         self.polar_guide = None;
@@ -363,6 +373,7 @@ impl OpenCadApp {
         match self.tool {
             Tool::Rotate | Tool::Scale | Tool::Mirror => return self.transform_point(point),
             Tool::Offset => return self.offset_point(point),
+            Tool::Break | Tool::BreakAtPoint => return self.break_point(point),
             Tool::Trim | Tool::Extend | Tool::Fillet | Tool::Chamfer => {
                 return Err("Pick a curve on the canvas or enter entity-number x,y[,z].".into());
             }
@@ -752,7 +763,11 @@ impl OpenCadApp {
             }
         }
         if ctx.input(|i| i.key_pressed(Key::F)) {
-            self.fit_pending = true;
+            if self.tool == Tool::Break {
+                self.execute("First");
+            } else {
+                self.fit_pending = true;
+            }
         }
         if ctx.input(|i| i.key_pressed(Key::F7)) {
             self.grid = !self.grid;
@@ -780,7 +795,13 @@ impl OpenCadApp {
         if ctx.input(|i| i.key_pressed(Key::Enter)) {
             if matches!(
                 self.tool,
-                Tool::Offset | Tool::Trim | Tool::Extend | Tool::Fillet | Tool::Chamfer
+                Tool::Offset
+                    | Tool::Trim
+                    | Tool::Extend
+                    | Tool::Fillet
+                    | Tool::Chamfer
+                    | Tool::Break
+                    | Tool::BreakAtPoint
             ) || (self.tool == Tool::Mirror && self.points.len() == 2)
             {
                 self.execute("");

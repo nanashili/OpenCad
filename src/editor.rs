@@ -472,6 +472,33 @@ impl Editor {
         self.replace_curve_parts(index, parts)
     }
 
+    /// Break one curve in a single transaction. Same-type first fragments keep
+    /// the source record; additional/converted fragments copy its layer/style.
+    pub fn break_entity(
+        &mut self,
+        index: usize,
+        first: crate::Point3,
+        second: crate::Point3,
+    ) -> Result<bool, EditError> {
+        let Some(source) = self.entities().get(index) else {
+            return Ok(false);
+        };
+        let parts = source.break_xy(first, second)?;
+        self.replace_curve_parts(index, parts)
+    }
+
+    pub fn break_entity_at(
+        &mut self,
+        index: usize,
+        pick: crate::Point3,
+    ) -> Result<bool, EditError> {
+        let Some(source) = self.entities().get(index) else {
+            return Ok(false);
+        };
+        let parts = source.break_at_xy(pick)?;
+        self.replace_curve_parts(index, parts)
+    }
+
     pub fn extend_entity(
         &mut self,
         index: usize,
