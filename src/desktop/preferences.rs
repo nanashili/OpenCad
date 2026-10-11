@@ -1,3 +1,4 @@
+use super::toolsets::{PanelKey, UserPanel};
 use super::*;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,11 +15,20 @@ struct Preferences {
     hidden_status: BTreeSet<String>,
     collapsed_toolsets: BTreeSet<String>,
     toolset_order: Vec<String>,
+    panel_order: Vec<StoredPanelKey>,
+    user_panels: Vec<UserPanel>,
+    next_panel_id: u64,
     // Group label -> first command ID -> visibility. Command IDs survive
     // catalog insertion/reordering, unlike the runtime item indices.
     tool_visibility: BTreeMap<String, BTreeMap<String, bool>>,
     recent_files: Vec<StoredPath>,
     recent_list: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+enum StoredPanelKey {
+    System(String),
+    User(u64),
 }
 
 /// Preserve native filenames that cannot be represented by UTF-8. A profile
@@ -123,21 +133,67 @@ impl OpenCadApp {
                 }
             }
         }
-        let mut order = Vec::new();
-        for label in &preferences.toolset_order {
-            if let Some(group) = catalog::TOOL_GROUPS
-                .iter()
-                .find(|group| group.label == label)
-                && !order
+        let mut user_ids = HashSet::new();
+        self.workspace.user_panels = preferences
+            .user_panels
+            .into_iter()
+            .filter_map(|mut panel| {
+                if panel.id == 0 || !user_ids.insert(panel.id) {
+                    return None;
+                }
+                panel.normalize();
+                Some(panel)
+            })
+            .collect();
+        self.workspace.next_panel_id = preferences
+            .next_panel_id
+            .max(
+                user_ids
                     .iter()
-                    .any(|known: &&shell::ToolGroup| known.label == group.label)
+                    .max()
+                    .copied()
+                    .unwrap_or(0)
+                    .saturating_add(1),
+            )
+            .max(1);
+        // Older profiles contain only system labels. Stable identities let new
+        // profiles retain custom panels through renaming and catalog updates.
+        let saved_order = if preferences.panel_order.is_empty() {
+            preferences
+                .toolset_order
+                .into_iter()
+                .map(StoredPanelKey::System)
+                .collect()
+        } else {
+            preferences.panel_order
+        };
+        let mut order = Vec::new();
+        for saved in saved_order {
+            let key = match saved {
+                StoredPanelKey::System(label) => catalog::TOOL_GROUPS
+                    .iter()
+                    .find(|group| group.label == label)
+                    .map(|group| PanelKey::System(group.label)),
+                StoredPanelKey::User(id) => user_ids.contains(&id).then_some(PanelKey::User(id)),
+            };
+            if let Some(key) = key
+                && !order.contains(&key)
             {
-                order.push(group);
+                order.push(key);
             }
         }
-        for group in catalog::TOOL_GROUPS {
-            if !order.iter().any(|known| known.label == group.label) {
-                order.push(group);
+        for key in catalog::TOOL_GROUPS
+            .iter()
+            .map(|group| PanelKey::System(group.label))
+            .chain(
+                self.workspace
+                    .user_panels
+                    .iter()
+                    .map(|panel| PanelKey::User(panel.id)),
+            )
+        {
+            if !order.contains(&key) {
+                order.push(key);
             }
         }
         self.workspace.tool_order = order;
@@ -195,8 +251,22 @@ impl OpenCadApp {
                 .workspace
                 .tool_order
                 .iter()
-                .map(|group| group.label.to_owned())
+                .filter_map(|key| match key {
+                    PanelKey::System(label) => Some((*label).to_owned()),
+                    _ => None,
+                })
                 .collect(),
+            panel_order: self
+                .workspace
+                .tool_order
+                .iter()
+                .map(|key| match key {
+                    PanelKey::System(label) => StoredPanelKey::System((*label).to_owned()),
+                    PanelKey::User(id) => StoredPanelKey::User(*id),
+                })
+                .collect(),
+            user_panels: self.workspace.user_panels.clone(),
+            next_panel_id: self.workspace.next_panel_id,
             tool_visibility,
             recent_files: self
                 .recent_files

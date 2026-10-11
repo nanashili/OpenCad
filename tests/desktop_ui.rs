@@ -142,6 +142,29 @@ impl DrawingUi {
         self.action(id, accesskit::Action::Click);
     }
 
+    fn custom_action(&mut self, label: &str, description: &str) {
+        let (target, node) = self
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label))
+            .unwrap_or_else(|| panic!("missing accessible control {label}"));
+        let id = node
+            .custom_actions()
+            .iter()
+            .find(|action| action.description.as_ref() == description)
+            .unwrap_or_else(|| panic!("missing action {description} on {label}"))
+            .id;
+        self.step(vec![Event::AccessKitActionRequest(
+            accesskit::ActionRequest {
+                action: accesskit::Action::CustomAction,
+                target_tree: accesskit::TreeId::ROOT,
+                target_node: *target,
+                data: Some(accesskit::ActionData::CustomAction(id)),
+            },
+        )]);
+        self.step(Vec::new());
+    }
+
     fn toolset_header(&self, label: &str) -> accesskit::NodeId {
         // Other platforms also have a Draw menu; select the palette header.
         self.nodes
@@ -829,6 +852,286 @@ fn panel_reordering_supports_drag_accessibility_and_restart() {
         panic!("drawing must retain its line");
     };
     assert_eq!(line.end().x(), 15.0);
+}
+
+#[test]
+fn custom_panels_edit_drag_execute_persist_and_delete() {
+    fn drag(ui: &mut DrawingUi, source: egui::Pos2, destination: egui::Pos2, cancel: bool) {
+        ui.step(vec![
+            Event::PointerMoved(source),
+            Event::PointerButton {
+                pos: source,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        ui.step(vec![Event::PointerMoved(source + egui::vec2(0.0, 8.0))]);
+        ui.step(vec![Event::PointerMoved(destination)]);
+        if cancel {
+            ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+            ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+        }
+        ui.step(vec![Event::PointerButton {
+            pos: destination,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        ui.step(Vec::new());
+    }
+    fn add(ui: &mut DrawingUi, id: &str, label: &str) {
+        ui.replace_field("Search panel commands", id);
+        ui.custom_action(
+            &format!("Available command: {label}"),
+            "Add command to panel",
+        );
+        assert!(ui.bounds(&format!("Panel item: {label}")).is_some());
+    }
+    fn select(ui: &mut DrawingUi, label: &str) {
+        let id = *ui
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label))
+            .expect("outline item")
+            .0;
+        ui.action(id, accesskit::Action::Click);
+    }
+
+    let scratch = Scratch::new();
+    let drawing = scratch.0.join("custom-panels.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.click("Add panel");
+    assert!(ui.bounds("New Panel").is_some());
+    assert!(ui.bounds("Rename Panel").is_none());
+    ui.click("Customize New Panel panel");
+    ui.replace_field("Rename Panel", "Fabrication");
+    for layout in 2..=6 {
+        ui.click("Next Layout");
+        assert!(ui.has_text(&format!("{layout}/6")));
+    }
+    assert!(
+        ui.nodes
+            .values()
+            .any(|node| node.label() == Some("Next Layout") && node.is_disabled())
+    );
+    for _ in 0..4 {
+        ui.click("Previous Layout");
+    }
+    assert!(ui.has_text("2/6"));
+    ui.replace_field("Search panel commands", "ID_Line");
+    let source = ui.bounds("Available command: Line").unwrap().center();
+    let target = ui.bounds("Panel command drop area").unwrap().center();
+    drag(&mut ui, source, target, false);
+    assert!(ui.bounds("Panel item: Line").is_some());
+
+    ui.click("Add Drop-down");
+    ui.replace_field("Rename Drop-down", "Primitives");
+    add(&mut ui, "ID_CircleRad", "Circle, Center, Radius");
+    add(&mut ui, "ID_Rectang", "Rectangle");
+    // Moving a child out of a drop-down retains it as an independent command.
+    let source = ui.bounds("Panel item: Rectangle").unwrap().center();
+    let target = ui.bounds("Panel item: Line").unwrap().left_top() + egui::vec2(50.0, 2.0);
+    drag(&mut ui, source, target, false);
+    assert!(
+        ui.bounds("Panel item: Rectangle").unwrap().top()
+            < ui.bounds("Panel item: Line").unwrap().top()
+    );
+    // Place the command back inside using the drop-down's center target.
+    let source = ui.bounds("Panel item: Rectangle").unwrap().center();
+    let target = ui.bounds("Panel item: Primitives").unwrap().center();
+    drag(&mut ui, source, target, false);
+    assert!(
+        ui.bounds("Panel item: Rectangle").unwrap().left()
+            == ui
+                .bounds("Panel item: Circle, Center, Radius")
+                .unwrap()
+                .left()
+    );
+
+    select(&mut ui, "Panel item: Primitives");
+    add(&mut ui, "ID_Save", "Save");
+    select(&mut ui, "Panel item: Save");
+    ui.click("Delete selected panel item");
+    assert!(ui.bounds("Panel item: Save").is_none());
+    for _ in 0..20 {
+        ui.step(Vec::new());
+    }
+    ui.snapshot("custom-panel-editor");
+    // Canceling an active drag closes the editor and adds nothing.
+    ui.replace_field("Search panel commands", "ID_Save");
+    let source = ui.bounds("Available command: Save").unwrap().center();
+    let target = ui.bounds("Panel item: Line").unwrap().center();
+    drag(&mut ui, source, target, true);
+    assert!(ui.bounds("Rename Panel").is_none());
+    ui.click("Customize Fabrication panel");
+    assert!(ui.bounds("Panel item: Save").is_none());
+    ui.dismiss_popup();
+    // Hide the system copies so these actions exercise only the new panel.
+    ui.action(ui.toolset_header("Draw"), accesskit::Action::Click);
+    for _ in 0..12 {
+        ui.step(Vec::new());
+    }
+    ui.click("Line");
+    ui.canvas_click(0.1, 0.2);
+    ui.canvas_click(0.4, 0.3);
+    assert!(
+        ui.bounds("Rectangle").is_none(),
+        "Rectangle is inside the custom drop-down"
+    );
+    ui.custom_action("Primitives", "Open command menu");
+    ui.click("Circle, Center, Radius");
+    ui.canvas_click(0.7, 0.4);
+    ui.canvas_click(0.8, 0.5);
+    ui.custom_action("Primitives", "Open command menu");
+    ui.click("Rectangle");
+    ui.canvas_click(0.2, 0.6);
+    ui.canvas_click(0.5, 0.8);
+    ui.command(&format!("SAVEAS {}", drawing.display()));
+    let before = fs::read_to_string(&drawing).unwrap();
+    let document = DxfDocument::parse(&before).unwrap();
+    assert_eq!(document.entities().len(), 6);
+    assert_eq!(
+        document
+            .entities()
+            .iter()
+            .filter(|entity| matches!(entity, Entity::Circle(_)))
+            .count(),
+        1
+    );
+
+    ui.click("Reorder panels");
+    let source = ui.bounds("Reorder panel: Fabrication").unwrap().center();
+    let target = ui.bounds("Reorder panel: Draw").unwrap().left_top() + egui::vec2(50.0, 2.0);
+    drag(&mut ui, source, target, false);
+    ui.dismiss_popup();
+    ui.click("Customize Fabrication panel");
+    ui.replace_field("Rename Panel", "Workshop");
+    ui.dismiss_popup();
+    ui.action(ui.toolset_header("Workshop"), accesskit::Action::Click);
+    let mut storage = PreferenceStorage::default();
+    ui.app.save(&mut storage);
+    drop(ui);
+
+    let mut ui = DrawingUi::with_storage(Some(&storage));
+    ui.click("custom-panels.dxf");
+    let workshop = ui.toolset_header("Workshop");
+    assert_eq!(ui.nodes[&workshop].is_expanded(), Some(false));
+    assert!(
+        ui.nodes[&workshop].bounds().unwrap().y0
+            < ui.nodes[&ui.toolset_header("Draw")].bounds().unwrap().y0
+    );
+    ui.click("Customize Workshop panel");
+    assert!(ui.has_text("2/6"));
+    assert!(ui.bounds("Panel item: Line").is_some());
+    assert!(ui.bounds("Panel item: Primitives").is_some());
+    assert!(ui.bounds("Panel item: Circle, Center, Radius").is_some());
+    assert!(ui.bounds("Panel item: Rectangle").is_some());
+    assert!(ui.bounds("Panel item: Save").is_none());
+    ui.dismiss_popup();
+    ui.click("Delete Workshop panel");
+    ui.click("Cancel panel deletion");
+    assert!(ui.bounds("Workshop").is_some());
+    ui.click("Delete Workshop panel");
+    ui.click("Confirm delete Workshop panel");
+    assert!(ui.bounds("Workshop").is_none());
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&drawing).unwrap(), before);
+    ui.app.save(&mut storage);
+    drop(ui);
+    let mut ui = DrawingUi::with_storage(Some(&storage));
+    ui.click("custom-panels.dxf");
+    ui.click("Reorder panels");
+    assert!(ui.bounds("Reorder panel: Workshop").is_none());
+    assert!(ui.bounds("Reorder panel: Draw").is_some());
+    ui.dismiss_popup();
+    ui.click("Add panel");
+    assert!(ui.bounds("New Panel").is_some());
+}
+
+#[test]
+fn saved_custom_panels_validate_identities_and_catalog_references() {
+    let storage = PreferenceStorage(HashMap::from([(
+        "opencad.workspace.v1".into(),
+        r#"(
+        next_panel_id: 1,
+        panel_order: [User(7), User(7), User(99), System("obsolete"), System("Hatch")],
+        user_panels: [
+            (id: 0, name: "Zero"),
+            (id: 7, name: "Recovered", layout: 99, next_item_id: 1, items: [
+                Command(id: 2, action: "ID_Line"),
+                Command(id: 2, action: "ID_Save"),
+                Command(id: 0, action: "ID_Save"),
+                Command(id: 3, action: "obsolete"),
+                DropDown(id: 4, name: "", commands: [
+                    (id: 2, action: "ID_Save"),
+                    (id: 5, action: "obsolete"),
+                    (id: 6, action: "ID_Rectang"),
+                ]),
+            ]),
+            (id: 7, name: "Duplicate"),
+        ],
+    )"#
+        .into(),
+    )]));
+    let mut ui = DrawingUi::with_storage(Some(&storage));
+    ui.click("New");
+    assert!(ui.bounds("Zero").is_none());
+    assert!(ui.bounds("Duplicate").is_none());
+    assert!(
+        ui.nodes[&ui.toolset_header("Recovered")]
+            .bounds()
+            .unwrap()
+            .y0
+            < ui.nodes[&ui.toolset_header("Hatch")].bounds().unwrap().y0
+    );
+    ui.click("Customize Recovered panel");
+    assert!(ui.has_text("1/6"));
+    assert!(ui.bounds("Panel item: Line").is_some());
+    assert!(ui.bounds("Panel item: New Drop-down").is_some());
+    assert!(ui.bounds("Panel item: Rectangle").is_some());
+    assert!(ui.bounds("Panel item: Save").is_none());
+    assert!(!ui.has_text("obsolete"));
+    ui.replace_field("Search panel commands", "ID_Save");
+    ui.custom_action("Available command: Save", "Add command to panel");
+    assert!(ui.bounds("Panel item: Save").is_some());
+    ui.dismiss_popup();
+    ui.click("Add panel");
+    ui.click("Customize New Panel panel");
+    ui.replace_field("Rename Panel", "Second");
+    ui.dismiss_popup();
+    let mut normalized = PreferenceStorage::default();
+    ui.app.save(&mut normalized);
+    let mut ui = DrawingUi::with_storage(Some(&normalized));
+    ui.click("New");
+    ui.click("Reorder panels");
+    assert_eq!(
+        ui.nodes
+            .values()
+            .filter(|node| node.label() == Some("Reorder panel: Recovered"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        ui.nodes
+            .values()
+            .filter(|node| node.label() == Some("Reorder panel: Second"))
+            .count(),
+        1
+    );
+    assert_eq!(
+        ui.nodes
+            .values()
+            .filter(|node| node
+                .label()
+                .is_some_and(|label| label.starts_with("Reorder panel:")))
+            .count(),
+        11
+    );
+    ui.dismiss_popup();
+    ui.click("Customize Recovered panel");
+    assert!(ui.bounds("Panel item: Save").is_some());
 }
 
 #[test]

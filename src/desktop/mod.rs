@@ -4,6 +4,7 @@ mod commands;
 mod panels;
 mod preferences;
 mod shell;
+mod toolsets;
 
 pub use shell::{MenuItem, MenuStatus, menu_action_status, native_menus, queue_menu_action};
 

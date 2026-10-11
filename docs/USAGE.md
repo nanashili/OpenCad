@@ -42,16 +42,29 @@ Escape or click outside the list to close it. Assistive technology can use the
 **Move panel up** and **Move panel down** actions on each eligible row.
 
 Panel order is saved after each move and applies in both full and slim views.
-The current implementation reorders the existing Drafting panels. Creating
-custom panels and editing the Modeling toolset remain unfinished; **Add panel**
-is disabled.
+Both system and custom Drafting panels can be reordered. Editing the Modeling
+toolset remains unfinished.
+
+## Custom toolset panels
+
+Click **Add panel** at the bottom left, then the new panel's gear to customize
+it. Rename the panel, choose one of six layouts, and search the command browser.
+Drag commands into the outline; double-click or use **Add command to panel**
+with assistive technology to insert at the selection. **Add Drop-down** creates
+a named group of commands. Drag commands into or out of it, or select an item
+and click **Delete** to remove it. Unimplemented commands remain unavailable.
+
+Panel edits save immediately. Escape closes the editor and cancels an active
+drag. The header's delete control asks for confirmation before removing a user
+panel. Custom drop-down buttons expose an **Open command menu** accessibility
+action.
 
 ## Workspace preferences
 
 OpenCad remembers palette visibility, full/slim toolset width, panel order,
 collapsed toolset sections, command visibility, status-item visibility, recent
 files and the recent-file list/grid presentation. Preferences are saved on
-normal exit and every 30 seconds; panel moves also save immediately. Recent
+normal exit and every 30 seconds; panel edits and moves also save immediately. Recent
 files retain their absolute paths and most-recent-first order, with up to 20
 entries. Missing files remain listed and report an error if
 opened. Drawing contents and unsaved edits are not stored in preferences.

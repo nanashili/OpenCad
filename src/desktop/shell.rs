@@ -1,3 +1,4 @@
+use super::toolsets::{PanelEditor, PanelKey, ToolButton, UserPanel};
 use super::*;
 use egui::{Align, Align2, Button, FontId, RichText, Stroke};
 
@@ -57,8 +58,13 @@ pub(super) struct Workspace {
     pub slim_tools: bool,
     pub(super) tool_visibility: HashMap<(&'static str, usize), bool>,
     pub(super) collapsed_tools: HashSet<&'static str>,
-    pub(super) tool_order: Vec<&'static ToolGroup>,
-    reorder_selection: Option<&'static str>,
+    pub(super) tool_order: Vec<PanelKey>,
+    pub(super) user_panels: Vec<UserPanel>,
+    pub(super) next_panel_id: u64,
+    pub(super) panel_editor: Option<PanelEditor>,
+    pub(super) scroll_to_panel: Option<u64>,
+    pub(super) delete_panel: Option<u64>,
+    pub(super) reorder_selection: Option<PanelKey>,
     pub(super) save_preferences_requested: bool,
 }
 
@@ -82,7 +88,15 @@ impl Default for Workspace {
             slim_tools: false,
             tool_visibility: HashMap::new(),
             collapsed_tools: HashSet::new(),
-            tool_order: catalog::TOOL_GROUPS.iter().collect(),
+            tool_order: catalog::TOOL_GROUPS
+                .iter()
+                .map(|group| PanelKey::System(group.label))
+                .collect(),
+            user_panels: Vec::new(),
+            next_panel_id: 1,
+            panel_editor: None,
+            scroll_to_panel: None,
+            delete_panel: None,
             reorder_selection: None,
             save_preferences_requested: false,
         }
@@ -107,17 +121,13 @@ impl Workspace {
             .unwrap_or(group.items[index].visible)
     }
 
-    fn move_tool_group(&mut self, label: &'static str, destination: usize) {
-        let Some(source) = self
-            .tool_order
-            .iter()
-            .position(|group| group.label == label)
-        else {
+    fn move_tool_group(&mut self, key: PanelKey, destination: usize) {
+        let Some(source) = self.tool_order.iter().position(|known| *known == key) else {
             return;
         };
         let destination = destination.min(self.tool_order.len());
         let destination = destination.saturating_sub(usize::from(source < destination));
-        self.reorder_selection = Some(label);
+        self.reorder_selection = Some(key);
         if source != destination {
             let group = self.tool_order.remove(source);
             self.tool_order.insert(destination, group);
@@ -128,7 +138,7 @@ impl Workspace {
 
 struct PanelDrag {
     table: egui::Id,
-    label: &'static str,
+    key: PanelKey,
 }
 
 #[derive(Clone, Default)]
@@ -301,7 +311,7 @@ pub(super) fn install_system_font(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-fn action_info(id: &str) -> Option<&'static ActionInfo> {
+pub(super) fn action_info(id: &str) -> Option<&'static ActionInfo> {
     catalog::ACTIONS
         .binary_search_by_key(&id, |action| action.id)
         .ok()
@@ -358,7 +368,7 @@ impl OpenCadApp {
         }
     }
 
-    fn load_icon(&mut self, ctx: &egui::Context, id: &'static str) {
+    pub(super) fn load_icon(&mut self, ctx: &egui::Context, id: &'static str) {
         if !self.icons.contains_key(id)
             && let Some(bytes) = action_info(id).and_then(|action| action.image)
             && let Ok(image) = image::load_from_memory(bytes)
@@ -607,8 +617,18 @@ impl OpenCadApp {
                     .id_salt("toolsets_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for group in self.workspace.tool_order.clone() {
-                            self.tool_group_header(ui, group);
+                        for key in self.workspace.tool_order.clone() {
+                            match key {
+                                PanelKey::System(label) => {
+                                    if let Some(group) = catalog::TOOL_GROUPS
+                                        .iter()
+                                        .find(|group| group.label == label)
+                                    {
+                                        self.tool_group_header(ui, group);
+                                    }
+                                }
+                                PanelKey::User(id) => self.user_panel_header(ui, id),
+                            }
                         }
                     });
             });
@@ -632,25 +652,27 @@ impl OpenCadApp {
         child.spacing_mut().item_spacing.x = 0.0;
         child.spacing_mut().button_padding = egui::Vec2::ZERO;
         child.spacing_mut().interact_size = egui::Vec2::splat(24.0);
-        let add = child.add_enabled(
-            false,
+        let add = child.add(
             Button::new("")
                 .frame(false)
                 .min_size(egui::Vec2::splat(24.0)),
         );
-        add.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, false, "Add panel"));
+        add.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Add panel"));
         let center = add.rect.center();
         child.painter().hline(
             center.x - 7.0..=center.x + 7.0,
             center.y,
-            Stroke::new(1.0, MUTED.gamma_multiply(0.5)),
+            Stroke::new(1.0, MUTED),
         );
         child.painter().vline(
             center.x,
             center.y - 7.0..=center.y + 7.0,
-            Stroke::new(1.0, MUTED.gamma_multiply(0.5)),
+            Stroke::new(1.0, MUTED),
         );
-        add.on_disabled_hover_text("Create a new panel — custom panels are not available yet.");
+        if add.clicked() && !self.workspace.add_user_panel() {
+            self.message("Unable to create another panel.", true);
+        }
+        add.on_hover_text("Create a new panel");
         let reorder = child.add(
             Button::new("")
                 .frame(false)
@@ -727,23 +749,26 @@ impl OpenCadApp {
             .min_scrolled_height(300.0)
             .auto_shrink([false, false])
             .show(&mut list, |ui| {
-                for (index, group) in groups.iter().enumerate() {
-                    let id = table.with(group.label);
+                for (index, &key) in groups.iter().enumerate() {
+                    let Some(label) = self.workspace.panel_name(key).map(str::to_owned) else {
+                        continue;
+                    };
+                    let id = table.with(key);
                     let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), 17.0));
                     last_row_bottom = rect.bottom();
                     let row = ui
                         .interact(rect, id, egui::Sense::click_and_drag())
                         .on_hover_cursor(egui::CursorIcon::Grab);
                     if row.clicked() {
-                        self.workspace.reorder_selection = Some(group.label);
+                        self.workspace.reorder_selection = Some(key);
                     }
-                    let selected = self.workspace.reorder_selection == Some(group.label);
+                    let selected = self.workspace.reorder_selection == Some(key);
                     row.widget_info(|| {
                         egui::WidgetInfo::selected(
                             egui::WidgetType::SelectableLabel,
                             true,
                             selected,
-                            format!("Reorder panel: {}", group.label),
+                            format!("Reorder panel: {label}"),
                         )
                     });
                     ui.ctx().accesskit_node_builder(id, |node| {
@@ -779,7 +804,7 @@ impl OpenCadApp {
                             })
                     });
                     if let Some(destination) = action {
-                        movement = Some((group.label, destination));
+                        movement = Some((key, destination));
                     }
                     if selected || row.has_focus() {
                         ui.painter()
@@ -788,14 +813,11 @@ impl OpenCadApp {
                     ui.painter().text(
                         rect.left_center() + egui::vec2(3.0, 0.0),
                         Align2::LEFT_CENTER,
-                        group.label,
+                        &label,
                         FontId::proportional(12.0),
                         ui.visuals().text_color(),
                     );
-                    row.dnd_set_drag_payload(PanelDrag {
-                        table,
-                        label: group.label,
-                    });
+                    row.dnd_set_drag_payload(PanelDrag { table, key });
                     if let Some(payload) = row.dnd_hover_payload::<PanelDrag>()
                         && payload.table == table
                     {
@@ -811,7 +833,7 @@ impl OpenCadApp {
                             Stroke::new(1.5, ACCENT),
                         );
                         if let Some(payload) = row.dnd_release_payload::<PanelDrag>() {
-                            movement = Some((payload.label, index + usize::from(below)));
+                            movement = Some((payload.key, index + usize::from(below)));
                         }
                     }
                 }
@@ -832,11 +854,11 @@ impl OpenCadApp {
                 Stroke::new(1.5, ACCENT),
             );
             if let Some(payload) = drop_area.dnd_release_payload::<PanelDrag>() {
-                movement = Some((payload.label, groups.len()));
+                movement = Some((payload.key, groups.len()));
             }
         }
-        if let Some((label, destination)) = movement {
-            self.workspace.move_tool_group(label, destination);
+        if let Some((key, destination)) = movement {
+            self.workspace.move_tool_group(key, destination);
             ui.ctx().request_repaint();
         }
         let mut instruction =
@@ -904,66 +926,15 @@ impl OpenCadApp {
 
     fn tool_group_header(&mut self, ui: &mut egui::Ui, group: &'static ToolGroup) {
         let id = ui.make_persistent_id(("toolset", group.label));
-        let mut state =
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
-        state.set_open(!self.workspace.collapsed_tools.contains(group.label));
-        let (_, header) = ui.allocate_space(egui::vec2(ui.available_width(), 20.0));
-        let gear_rect = egui::Rect::from_center_size(
-            egui::pos2(header.right() - 9.0, header.center().y),
-            egui::Vec2::splat(12.0),
-        );
-        let title_rect = egui::Rect::from_min_max(
-            header.min,
-            egui::pos2(gear_rect.left() - 3.0, header.bottom()),
-        );
-        let title = ui.interact(title_rect, id, egui::Sense::click());
-        if title.clicked() {
-            state.toggle(ui);
-            if state.is_open() {
-                self.workspace.collapsed_tools.remove(group.label);
-            } else {
-                self.workspace.collapsed_tools.insert(group.label);
-            }
+        let mut collapsed = self.workspace.collapsed_tools.contains(group.label);
+        let (mut state, gear, _) =
+            super::toolsets::toolset_header(ui, id, group.label, &mut collapsed, false);
+        if collapsed {
+            self.workspace.collapsed_tools.insert(group.label);
+        } else {
+            self.workspace.collapsed_tools.remove(group.label);
         }
-        title.widget_info(|| {
-            egui::WidgetInfo::selected(
-                egui::WidgetType::CollapsingHeader,
-                true,
-                state.is_open(),
-                group.label,
-            )
-        });
-        ui.ctx().accesskit_node_builder(title.id, |node| {
-            node.set_expanded(state.is_open());
-        });
-        ui.painter().text(
-            egui::pos2(header.left() + 9.0, header.center().y),
-            Align2::CENTER_CENTER,
-            if state.is_open() { "▾" } else { "▸" },
-            FontId::new(14.0, egui::FontFamily::Name("Collapse".into())),
-            ui.visuals().text_color(),
-        );
-        ui.painter().text(
-            egui::pos2(header.left() + 15.0, header.center().y),
-            Align2::LEFT_CENTER,
-            group.label,
-            FontId::new(10.0, egui::FontFamily::Name("Toolset".into())),
-            ui.visuals().text_color(),
-        );
-        let gear = ui.interact(gear_rect, id.with("settings"), egui::Sense::click());
         let label = format!("Customize {} panel", group.label);
-        gear.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &label));
-        if gear.hovered() || gear.has_focus() {
-            ui.painter()
-                .rect_filled(gear_rect, 0.0, Color32::from_rgb(80, 89, 109));
-        }
-        ui.painter().text(
-            gear_rect.center(),
-            Align2::CENTER_CENTER,
-            "⚙",
-            FontId::new(16.0, egui::FontFamily::Name("Mac Symbols".into())),
-            ui.visuals().text_color(),
-        );
         egui::Popup::menu(&gear.on_hover_text(label))
             .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
             .show(|ui| self.tool_group_settings(ui, group));
@@ -1039,8 +1010,22 @@ impl OpenCadApp {
             .iter()
             .enumerate()
             .filter(|(index, _)| self.workspace.tool_visible(group, *index))
-            .map(|(_, item)| item)
+            .map(|(index, item)| ToolButton {
+                key: index as u64,
+                label: item.label,
+                actions: item.actions.to_vec(),
+                dropdown_name: None,
+            })
             .collect();
+        let layout = group
+            .layout
+            .strip_prefix("Layout")
+            .and_then(|number| number.parse().ok())
+            .unwrap_or(6);
+        self.tool_buttons(ui, layout, &items);
+    }
+
+    pub(super) fn tool_buttons(&mut self, ui: &mut egui::Ui, layout: u8, items: &[ToolButton<'_>]) {
         if items.is_empty() {
             return;
         }
@@ -1057,14 +1042,7 @@ impl OpenCadApp {
             }
             return;
         }
-        let columns: &[u8] = match group.layout {
-            "Layout1" => &[1, 1, 1, 1],
-            "Layout2" => &[1, 1, 1, 22, 22],
-            "Layout3" => &[1, 22, 22, 1, 22, 22],
-            "Layout4" => &[1, 1, 22, 22, 22, 22],
-            "Layout5" => &[1, 22, 22, 22, 22, 22, 22],
-            _ => &[2, 2, 2, 2, 2, 2, 2, 2],
-        };
+        let columns = super::toolsets::layout_columns(layout);
         ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
         let mut index = 0;
         ui.horizontal(|ui| {
@@ -1091,7 +1069,7 @@ impl OpenCadApp {
                     let size = if column == 1 { 44.0 } else { 22.0 };
                     self.tool_item(
                         ui,
-                        items[index],
+                        &items[index],
                         size,
                         if column == 1 { 32.0 } else { 16.0 },
                     );
@@ -1113,8 +1091,24 @@ impl OpenCadApp {
         }
     }
 
-    fn tool_item(&mut self, ui: &mut egui::Ui, item: &'static ToolItem, size: f32, icon_size: f32) {
+    fn tool_item(&mut self, ui: &mut egui::Ui, item: &ToolButton<'_>, size: f32, icon_size: f32) {
+        ui.push_id(item.key, |ui| {
+            self.tool_item_inner(ui, item, size, icon_size)
+        });
+    }
+
+    fn tool_item_inner(
+        &mut self,
+        ui: &mut egui::Ui,
+        item: &ToolButton<'_>,
+        size: f32,
+        icon_size: f32,
+    ) {
         let Some(&id) = item.actions.first() else {
+            ui.add_enabled(false, Button::new("▾").min_size(egui::Vec2::splat(size)))
+                .widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, false, item.label)
+                });
             return;
         };
         let enabled = item
@@ -1124,7 +1118,11 @@ impl OpenCadApp {
         let response = self
             .icon_button(ui, id, size, icon_size, enabled)
             .on_hover_text(item.label);
-        let dropdown = item.actions.len() > 1;
+        if let Some(name) = item.dropdown_name {
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, name));
+        }
+        let dropdown = item.dropdown_name.is_some() || item.actions.len() > 1;
         if dropdown {
             let corner = response.rect.right_bottom() - egui::vec2(3.0, 3.0);
             ui.painter().add(egui::Shape::convex_polygon(
@@ -1137,7 +1135,27 @@ impl OpenCadApp {
                 Stroke::NONE,
             ));
         }
-        let open_menu = response.secondary_clicked()
+        let accessible_menu = dropdown
+            && ui.input(|input| {
+                input
+                    .accesskit_action_requests(response.id, egui::accesskit::Action::CustomAction)
+                    .any(|request| {
+                        matches!(
+                            request.data,
+                            Some(egui::accesskit::ActionData::CustomAction(1))
+                        )
+                    })
+            });
+        if dropdown {
+            ui.ctx().accesskit_node_builder(response.id, |node| {
+                node.set_custom_actions(vec![egui::accesskit::CustomAction {
+                    id: 1,
+                    description: "Open command menu".into(),
+                }])
+            });
+        }
+        let open_menu = accessible_menu
+            || response.secondary_clicked()
             || (response.clicked()
                 && dropdown
                 && (response.interact_pointer_pos().is_some_and(|position| {
@@ -1151,7 +1169,7 @@ impl OpenCadApp {
             egui::Popup::menu(&response)
                 .open_memory(open_menu.then_some(egui::SetOpenCommand::Toggle))
                 .show(|ui| {
-                    for &action in item.actions {
+                    for &action in &item.actions {
                         let label = action_info(action).map_or(action, |action| action.label);
                         if ui
                             .add_enabled(
