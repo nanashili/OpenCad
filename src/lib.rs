@@ -85,6 +85,8 @@ pub enum GeometryError {
     UnsupportedBreakEntity,
     UnsupportedBreakAtPoint,
     InvalidBreakPoints,
+    UnsupportedPolylineBreak,
+    InvalidPolylineBreak,
     UnrepresentableBreak,
     UnsupportedLengthenEntity,
     UnsupportedLengthenAngle,
@@ -154,6 +156,11 @@ impl fmt::Display for GeometryError {
             Self::InvalidBreakPoints => write!(
                 f,
                 "choose distinct break points, or one point inside an open curve"
+            ),
+            Self::UnsupportedPolylineBreak => write!(f, "vertex break requires an XY polyline"),
+            Self::InvalidPolylineBreak => write!(
+                f,
+                "choose at least one interior vertex when breaking an open polyline"
             ),
             Self::UnrepresentableBreak => write!(
                 f,

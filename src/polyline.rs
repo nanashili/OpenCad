@@ -134,6 +134,49 @@ impl Polyline2 {
         }
     }
 
+    /// Remove the stored-order range between two vertices, retaining both ends.
+    /// An open polyline splits or truncates; at least one vertex must be interior.
+    /// A closed polyline retains the complementary path through its closing edge
+    /// as one open polyline. Equal closed markers open the whole loop at that
+    /// vertex. Retained outgoing bulges, including dormant final values, survive.
+    pub fn break_vertices(&self, first: usize, second: usize) -> Result<Vec<Self>, GeometryError> {
+        let count = self.vertices.len();
+        if first >= count || second >= count {
+            return Err(GeometryError::InvalidVertexIndex);
+        }
+        let lower = first.min(second);
+        let upper = first.max(second);
+        if !self.closed
+            && ((lower == 0 && upper == count - 1)
+                || (lower == upper && (lower == 0 || lower == count - 1)))
+        {
+            return Err(GeometryError::InvalidPolylineBreak);
+        }
+        self.length()?;
+        self.extrema()?;
+        let fragment = |indices: Vec<usize>| -> Result<Self, GeometryError> {
+            let part = Self::with_bulges(
+                indices.iter().map(|&index| self.vertices[index]).collect(),
+                indices.iter().map(|&index| self.bulges[index]).collect(),
+                false,
+            )?;
+            part.length()?;
+            part.extrema()?;
+            Ok(part)
+        };
+        if self.closed {
+            return Ok(vec![fragment((upper..count).chain(0..=lower).collect())?]);
+        }
+        let mut parts = Vec::with_capacity(2);
+        if lower > 0 {
+            parts.push(fragment((0..=lower).collect())?);
+        }
+        if upper < count - 1 {
+            parts.push(fragment((upper..count).collect())?);
+        }
+        Ok(parts)
+    }
+
     pub fn set_elevation(&mut self, elevation: f64) -> Result<(), GeometryError> {
         if !elevation.is_finite() {
             return Err(GeometryError::NonFiniteCoordinate);

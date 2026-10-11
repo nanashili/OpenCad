@@ -499,6 +499,28 @@ impl Editor {
         self.replace_curve_parts(index, parts)
     }
 
+    /// Break a polyline at vertex indices in one protected transaction.
+    /// The first fragment keeps the source record; others inherit layer/style.
+    pub fn break_polyline_vertices(
+        &mut self,
+        index: usize,
+        first: usize,
+        second: usize,
+    ) -> Result<bool, EditError> {
+        let Some(source) = self.entities().get(index) else {
+            return Ok(false);
+        };
+        let Entity::Polyline(polyline) = source else {
+            return Err(GeometryError::UnsupportedPolylineBreak.into());
+        };
+        let parts = polyline
+            .break_vertices(first, second)?
+            .into_iter()
+            .map(Entity::Polyline)
+            .collect();
+        self.replace_curve_parts(index, parts)
+    }
+
     /// Change one endpoint in place, retaining source identity/style and one undo step.
     pub fn lengthen_entity(
         &mut self,

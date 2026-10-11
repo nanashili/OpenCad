@@ -4934,7 +4934,7 @@ fn pedit_straighten_commands_remove_ranges_convert_arcs_and_preserve_history() {
         }
     }
     ui.command("Go"); // Cleared start cannot be reused against shifted indices.
-    assert!(ui.has_text("Choose Straighten in Edit vertex first."));
+    assert!(ui.has_text("Choose Straighten or Break in Edit vertex first."));
     ui.command("SAVE");
     assert_eq!(fs::read_to_string(&path).unwrap(), first_straighten);
     ui.command("Exit");
@@ -5140,6 +5140,170 @@ fn pedit_straighten_canvas_previews_marks_ranges_and_cancels_with_keys() {
     assert!(!ui.has_text("Straighten start vertex"));
     assert!(ui.has_text("PEDIT vertex 2 of 5: -20,20,7"));
     press(&mut ui, egui::Key::S);
+    press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn pedit_break_commands_split_truncate_open_loops_and_restore_session_history() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-vertex-break.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("PLINE -40,-20,7 -20,20,7 0,0,7 20,20,7 40,-20,7");
+    ui.replace_field("Vertex 1 bulge", "0.5");
+    ui.replace_field("Vertex 4 bulge", "-0.5");
+    ui.click("Apply properties");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let original_doc = read();
+    let Entity::Polyline(original_polyline) = &original_doc.entities()[0] else {
+        panic!("polyline")
+    };
+
+    ui.command("PE 1 E");
+    ui.command("Break");
+    ui.command("Go");
+    assert!(ui.has_text("choose at least one interior vertex"));
+    assert!(ui.has_text("Break start vertex 1"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Next");
+    ui.command("Next");
+    ui.command("Go");
+    ui.command("SAVE");
+    let truncated = read();
+    assert_eq!(truncated.entities().len(), 1);
+    let Entity::Polyline(polyline) = &truncated.entities()[0] else {
+        panic!("truncated")
+    };
+    assert_eq!(polyline.vertices(), &original_polyline.vertices()[2..]);
+    assert_eq!(polyline.bulges(), &original_polyline.bulges()[2..]);
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    ui.command("Edit");
+    ui.command("Next");
+    ui.command("Break");
+    ui.command("Next");
+    ui.command("Next");
+    for option in ["Move 10,10", "Insert 10,10", "Straighten", "Break", "Undo"] {
+        ui.command(option);
+    }
+    assert!(ui.has_text("Use Go or Exit to finish Break first."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Go");
+    assert!(!ui.has_text("Break start vertex"));
+    assert!(ui.has_text("PEDIT vertex 1 of 2: -40,-20,7"));
+    ui.command("SAVE");
+    let split = read();
+    assert_eq!(split.entities().len(), 2);
+    let Entity::Polyline(prefix) = &split.entities()[0] else {
+        panic!("prefix")
+    };
+    let Entity::Polyline(suffix) = &split.entities()[1] else {
+        panic!("suffix")
+    };
+    assert_eq!(prefix.vertices(), &original_polyline.vertices()[..2]);
+    assert_eq!(suffix.vertices(), &original_polyline.vertices()[3..]);
+    assert_eq!(prefix.bulges(), &original_polyline.bulges()[..2]);
+    assert_eq!(suffix.bulges(), &original_polyline.bulges()[3..]);
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    ui.command("Close");
+    ui.command("Edit");
+    ui.command("Next");
+    ui.command("Next");
+    ui.command("Break");
+    ui.command("Go");
+    ui.command("SAVE");
+    let opened = read();
+    assert_eq!(opened.entities().len(), 1);
+    let Entity::Polyline(polyline) = &opened.entities()[0] else {
+        panic!("opened loop")
+    };
+    assert!(!polyline.is_closed());
+    assert_eq!(polyline.vertices().len(), 6);
+    assert_eq!(polyline.vertices()[0], original_polyline.vertices()[2]);
+    assert_eq!(polyline.vertices()[5], original_polyline.vertices()[2]);
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Edit");
+    ui.command("Move");
+    ui.command("Break");
+    assert!(ui.has_text("Exit point entry before choosing Break."));
+    ui.command("Exit");
+    ui.command("Next");
+    ui.command("Break");
+    ui.command("Next");
+    ui.command_with_enter("");
+    assert!(!ui.has_text("Break start vertex"));
+    assert!(ui.has_text("PEDIT vertex 3 of 5: 0,0,7"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn pedit_break_canvas_marks_previews_and_cancels_ranges_with_keyboard_options() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-vertex-break-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("PLINE -40,-20,7 -20,20,7 0,0,7 20,20,7 40,-20,7");
+    ui.replace_field("Vertex 1 bulge", "1");
+    ui.click("Apply properties");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let focus = |ui: &mut DrawingUi| ui.canvas_click(0.5, 0.5);
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("PE 1 E");
+    focus(&mut ui);
+    press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::B);
+    press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::N);
+    assert!(ui.has_text("Break start vertex 2"));
+    assert!(ui.has_text("PEDIT vertex 4 of 5: 20,20,7"));
+    ui.snapshot("pedit-break-range-preview");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    focus(&mut ui);
+    press(&mut ui, egui::Key::G);
+    assert!(!ui.has_text("Break start vertex"));
+    assert!(ui.has_text("PEDIT vertex 1 of 2: -40,-20,7"));
+    ui.snapshot("pedit-broken-range");
+    ui.command("SAVE");
+    let split = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(split.entities().len(), 2);
+    focus(&mut ui);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("PE 1 E");
+    focus(&mut ui);
+    press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::B);
+    press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::Enter);
+    assert!(!ui.has_text("Break start vertex"));
+    assert!(ui.has_text("PEDIT vertex 3 of 5: 0,0,7"));
+    press(&mut ui, egui::Key::B);
     press(&mut ui, egui::Key::N);
     press(&mut ui, egui::Key::Escape);
     ui.command("SAVE");

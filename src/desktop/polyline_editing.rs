@@ -9,7 +9,7 @@ pub(super) struct PeditInput {
     joining: bool,
     vertex: Option<usize>,
     point_edit: Option<VertexPointEdit>,
-    straighten: Option<usize>,
+    range: Option<VertexRangeEdit>,
     undo: Vec<(usize, u64)>,
 }
 
@@ -17,6 +17,27 @@ pub(super) struct PeditInput {
 enum VertexPointEdit {
     Move,
     Insert,
+}
+
+#[derive(Clone, Copy)]
+enum VertexRangeEdit {
+    Straighten(usize),
+    Break(usize),
+}
+
+impl VertexRangeEdit {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Straighten(_) => "Straighten",
+            Self::Break(_) => "Break",
+        }
+    }
+
+    fn start(self) -> usize {
+        match self {
+            Self::Straighten(start) | Self::Break(start) => start,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -49,10 +70,12 @@ impl OpenCadApp {
             "PEDIT Move vertex · Specify x,y[,z] or a canvas point. Relative @dx,dy[,dz] uses the marked vertex. Enter or Exit cancels this move; Escape ends PEDIT."
         } else if matches!(self.pedit_input.point_edit, Some(VertexPointEdit::Insert)) {
             "PEDIT Insert vertex · Specify x,y[,z] or a canvas point after the marked vertex. Relative @dx,dy[,dz] uses the marked vertex. Enter or Exit cancels insertion; Escape ends PEDIT."
-        } else if self.pedit_input.straighten.is_some() {
+        } else if matches!(self.pedit_input.range, Some(VertexRangeEdit::Straighten(_))) {
             "PEDIT Straighten · Next / Previous chooses the other vertex. Go applies; Enter or Exit cancels the range. Escape ends PEDIT."
+        } else if matches!(self.pedit_input.range, Some(VertexRangeEdit::Break(_))) {
+            "PEDIT Break · Next / Previous chooses the other vertex. Go removes the range; Enter or Exit cancels. Escape ends PEDIT."
         } else if self.pedit_input.vertex.is_some() {
-            "PEDIT Edit vertex · Next / Previous / Move / Insert / Straighten; Enter or Exit returns to PEDIT. Escape ends the session."
+            "PEDIT Edit vertex · Next / Previous / Move / Insert / Straighten / Break; Enter or Exit returns to PEDIT. Escape ends the session."
         } else if self.pedit_input.joining {
             "PEDIT Join · Select touching XY lines, arcs or open polylines; Enter joins. Source stays selected. Shift removes; All selects visible objects. Escape ends PEDIT."
         } else if self.pedit_input.conversion {
@@ -93,21 +116,22 @@ impl OpenCadApp {
         ))
     }
 
-    pub(super) fn pedit_straighten_start(&self) -> Option<(usize, Point3)> {
+    pub(super) fn pedit_range_start(&self) -> Option<(usize, Point3, &'static str)> {
         self.pedit_marked_vertex()?;
         let source = self.pedit_input.source?;
-        let start = self.pedit_input.straighten?;
+        let range = self.pedit_input.range?;
+        let start = range.start();
         let Entity::Polyline(polyline) = self.editor.entities().get(source)? else {
             return None;
         };
-        Some((start, *polyline.vertices().get(start)?))
+        Some((start, *polyline.vertices().get(start)?, range.label()))
     }
 
     pub(super) fn pedit_straightened_polyline(&self) -> Result<(Polyline2, usize), String> {
         let (vertex, _, _) = self.pedit_marked_vertex().ok_or("No marked vertex.")?;
-        let (start, _) = self
-            .pedit_straighten_start()
-            .ok_or("Choose Straighten in Edit vertex first.")?;
+        let Some(VertexRangeEdit::Straighten(start)) = self.pedit_input.range else {
+            return Err("Choose Straighten in Edit vertex first.".into());
+        };
         let source = self.pedit_input.source.expect("marked source exists");
         let Entity::Polyline(original) = &self.editor.entities()[source] else {
             unreachable!("marked source is a polyline");
@@ -130,19 +154,58 @@ impl OpenCadApp {
         Ok((replacement, lower))
     }
 
-    fn pedit_straighten_go(&mut self) -> Result<(), String> {
-        let (polyline, vertex) = self.pedit_straightened_polyline()?;
+    pub(super) fn pedit_range_preview(&self) -> Result<Vec<Polyline2>, String> {
+        match self.pedit_input.range {
+            Some(VertexRangeEdit::Straighten(_)) => self
+                .pedit_straightened_polyline()
+                .map(|(polyline, _)| vec![polyline]),
+            Some(VertexRangeEdit::Break(start)) => {
+                let (vertex, _, _) = self.pedit_marked_vertex().ok_or("No marked vertex.")?;
+                let source = self.pedit_input.source.expect("marked source exists");
+                let Entity::Polyline(polyline) = &self.editor.entities()[source] else {
+                    unreachable!("marked source is a polyline");
+                };
+                polyline
+                    .break_vertices(start, vertex)
+                    .map_err(|error| error.to_string())
+            }
+            None => Err("Choose Straighten or Break in Edit vertex first.".into()),
+        }
+    }
+
+    pub(super) fn pedit_range_preview_source(&self) -> Option<usize> {
+        self.pedit_range_start()?;
+        self.pedit_range_preview().ok()?;
+        self.pedit_input.source
+    }
+
+    fn pedit_range_go(&mut self) -> Result<(), String> {
+        let (current, _, _) = self.pedit_marked_vertex().ok_or("No marked vertex.")?;
         let source = self.pedit_input.source.expect("marked source exists");
-        if self
-            .editor
-            .update(source, Entity::Polyline(polyline))
-            .map_err(|error| error.to_string())?
-        {
+        let (changed, vertex) = match self.pedit_input.range {
+            Some(VertexRangeEdit::Straighten(_)) => {
+                let (polyline, vertex) = self.pedit_straightened_polyline()?;
+                let changed = self
+                    .editor
+                    .update(source, Entity::Polyline(polyline))
+                    .map_err(|error| error.to_string())?;
+                self.editor.select(vec![source]);
+                (changed, vertex)
+            }
+            Some(VertexRangeEdit::Break(start)) => {
+                let changed = self
+                    .editor
+                    .break_polyline_vertices(source, start, current)
+                    .map_err(|error| error.to_string())?;
+                (changed, 0)
+            }
+            None => return Err("Choose Straighten or Break in Edit vertex first.".into()),
+        };
+        if changed {
             self.pedit_checkpoint(source);
         }
-        self.pedit_input.straighten = None;
+        self.pedit_input.range = None;
         self.pedit_input.vertex = Some(vertex);
-        self.editor.select(vec![source]);
         self.pedit_vertex_message();
         Ok(())
     }
@@ -164,8 +227,8 @@ impl OpenCadApp {
     }
 
     fn pedit_start_vertex_point(&mut self, edit: VertexPointEdit) -> Result<(), String> {
-        if self.pedit_input.straighten.is_some() {
-            return Err("Use Go or Exit to finish Straighten first.".into());
+        if let Some(range) = self.pedit_input.range {
+            return Err(format!("Use Go or Exit to finish {} first.", range.label()));
         }
         let (_, _, point) = self
             .pedit_marked_vertex()
@@ -258,7 +321,7 @@ impl OpenCadApp {
                 self.pedit_input.point_edit = None;
                 self.points.clear();
                 self.pedit_vertex_message();
-            } else if self.pedit_input.straighten.take().is_some() {
+            } else if self.pedit_input.range.take().is_some() {
                 self.pedit_vertex_message();
             } else {
                 self.pedit_input.vertex = None;
@@ -266,22 +329,37 @@ impl OpenCadApp {
             }
             return Some(Ok(()));
         }
-        if input.eq_ignore_ascii_case("STRAIGHTEN") || input.eq_ignore_ascii_case("S") {
+        if matches!(
+            input.to_ascii_uppercase().as_str(),
+            "STRAIGHTEN" | "S" | "BREAK" | "B"
+        ) {
             return Some((|| {
                 if self.pedit_input.point_edit.is_some() {
-                    return Err("Exit point entry before choosing Straighten.".into());
+                    let label =
+                        if input.eq_ignore_ascii_case("BREAK") || input.eq_ignore_ascii_case("B") {
+                            "Break"
+                        } else {
+                            "Straighten"
+                        };
+                    return Err(format!("Exit point entry before choosing {label}."));
                 }
-                if self.pedit_input.straighten.is_some() {
-                    return Err("Use Go or Exit to finish Straighten first.".into());
+                if let Some(range) = self.pedit_input.range {
+                    return Err(format!("Use Go or Exit to finish {} first.", range.label()));
                 }
                 let (vertex, _, _) = self.pedit_marked_vertex().ok_or("No marked vertex.")?;
-                self.pedit_input.straighten = Some(vertex);
+                self.pedit_input.range = Some(
+                    if input.eq_ignore_ascii_case("BREAK") || input.eq_ignore_ascii_case("B") {
+                        VertexRangeEdit::Break(vertex)
+                    } else {
+                        VertexRangeEdit::Straighten(vertex)
+                    },
+                );
                 self.pedit_vertex_message();
                 Ok(())
             })());
         }
         if input.eq_ignore_ascii_case("GO") || input.eq_ignore_ascii_case("G") {
-            return Some(self.pedit_straighten_go());
+            return Some(self.pedit_range_go());
         }
         if matches!(
             input.to_ascii_uppercase().as_str(),
@@ -337,7 +415,7 @@ impl OpenCadApp {
         }
         if matches!(
             input.to_ascii_uppercase().as_str(),
-            "BREAK" | "B" | "TANGENT" | "T" | "WIDTH" | "W" | "REGEN"
+            "TANGENT" | "T" | "WIDTH" | "W" | "REGEN"
         ) {
             return Some(Err(
                 "This Edit vertex option is not implemented yet; use Next, Previous, Move, Insert, Straighten or Exit."

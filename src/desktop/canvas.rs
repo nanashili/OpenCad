@@ -171,8 +171,8 @@ impl OpenCadApp {
                             point.z()
                         ));
                     }
-                    if let Some((start, _)) = self.pedit_straighten_start() {
-                        description.push_str(&format!("; Straighten start vertex {}", start + 1));
+                    if let Some((start, _, label)) = self.pedit_range_start() {
+                        description.push_str(&format!("; {label} start vertex {}", start + 1));
                     }
                     if let Some((_, angle)) = self.polar_guide {
                         description.push_str(&format!("; Polar guide: {angle:.2} degrees"));
@@ -332,6 +332,7 @@ impl OpenCadApp {
                     self.draw_grid(&painter, rect);
                 }
                 let break_preview_source = self.break_preview_source();
+                let pedit_range_source = self.pedit_range_preview_source();
                 let lengthen_preview = if self.tool == Tool::Lengthen {
                     self.cursor.and_then(|point| {
                         let hit = self
@@ -346,6 +347,7 @@ impl OpenCadApp {
                 for (index, entity) in self.editor.entities().iter().enumerate() {
                     if !self.editor.is_entity_visible(index)
                         || break_preview_source == Some(index)
+                        || pedit_range_source == Some(index)
                         || lengthen_preview
                             .as_ref()
                             .is_some_and(|(source, _)| *source == index)
@@ -393,7 +395,7 @@ impl OpenCadApp {
                 }
                 self.draw_polar_guide(&painter, rect);
                 self.draw_preview(&painter, rect);
-                if let Some((start, point)) = self.pedit_straighten_start()
+                if let Some((start, point, _)) = self.pedit_range_start()
                     && let Some(position) = self.camera.screen(point.x(), point.y(), rect)
                     && rect.contains(position)
                 {
@@ -733,9 +735,11 @@ impl OpenCadApp {
 
     fn draw_preview(&self, painter: &Painter, rect: Rect) {
         let stroke = Stroke::new(1.3, ACCENT);
-        if self.pedit_straighten_start().is_some() {
-            if let Ok((polyline, _)) = self.pedit_straightened_polyline() {
-                self.draw_entity(painter, &Entity::Polyline(polyline), rect, stroke);
+        if self.pedit_range_start().is_some() {
+            if let Ok(polylines) = self.pedit_range_preview() {
+                for polyline in polylines {
+                    self.draw_entity(painter, &Entity::Polyline(polyline), rect, stroke);
+                }
             }
             return;
         }

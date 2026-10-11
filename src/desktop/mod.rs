@@ -776,6 +776,7 @@ impl OpenCadApp {
                     (Key::M, "Move"),
                     (Key::I, "Insert"),
                     (Key::S, "Straighten"),
+                    (Key::B, "Break"),
                     (Key::G, "Go"),
                 ] {
                     if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {

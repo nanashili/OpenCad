@@ -383,6 +383,26 @@ the pending range. Escape ends PEDIT while retaining completed edits. Range
 direction, closing-edge handling, marker placement and these defaults are
 OpenCad policies; exact native parity for those cases remains unverified.
 
+**Break** (B) also saves the marked vertex. Navigate to the other vertex and
+choose **Go** (G) to remove the intervening segments and vertices. On an open
+polyline, an interior range leaves two polylines; a range starting or ending
+at an endpoint truncates it. Both endpoints together, or one endpoint without
+moving the marker, are rejected. The same interior vertex splits without a gap.
+The saved start remains circled and accessible, and preview highlights the
+retained fragments before Go. Enter or Exit cancels the range; Save retains it.
+
+OpenCad deletes the stored-order range between the lower and higher indices,
+regardless of navigation direction. For a closed polyline it keeps the
+complementary path through the closing edge as one open polyline. A single
+marked vertex opens the whole loop there, repeating that vertex at the end.
+These closed-loop and direction rules are OpenCad policies; native parity
+remains unverified. Retained edges keep their original bulges and elevation;
+final outgoing bulges remain stored but dormant. The first fragment keeps the
+source record and layer/style; additional fragments inherit layer/style. Go
+marks the first vertex of the first fragment. A completed Break is one Undo
+step, including all fragments; Escape retains completed edits. Width/fitting
+data and unknown per-vertex metadata identity are not handled by this workflow.
+
 ```text
 PE 2
 Yes
@@ -424,7 +444,7 @@ its start remains open until Close is chosen. Invalid geometry in an otherwise
 eligible candidate, or a protected source/consumed layer, rejects the whole
 join before mutation. Hidden candidates are ignored by All and window selection.
 
-Multiple selection, fuzz-distance/Jointype joining, width, vertex Break,
+Multiple selection, fuzz-distance/Jointype joining, width,
 Tangent and Regen within PEDIT, curve fitting,
 DELOBJ retention choices, PLINETYPE/PLINECONVERTMODE conversion settings and
 general UCS editing remain unfinished. Existing property controls still edit

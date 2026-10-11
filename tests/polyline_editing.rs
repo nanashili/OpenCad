@@ -199,3 +199,218 @@ fn editor_conversion_copies_properties_replaces_only_the_source_and_rolls_back_p
         assert!(!editor.convert_to_polyline(99).unwrap());
     }
 }
+
+#[test]
+fn vertex_break_open_ranges_split_truncate_and_retain_signed_arc_loci() {
+    let vertices = vec![
+        p(-40.0, -20.0, 7.0),
+        p(-20.0, 10.0, 7.0),
+        p(0.0, 0.0, 7.0),
+        p(20.0, 10.0, 7.0),
+        p(40.0, -20.0, 7.0),
+    ];
+    let original =
+        Polyline2::with_bulges(vertices, vec![0.5, -0.25, 1.0, -0.5, 9.0], false).unwrap();
+    let original_segments: Vec<_> = original.segments().map(Result::unwrap).collect();
+    for (first, second, expected) in [
+        (0, 2, vec![vec![2, 3, 4]]),
+        (2, 4, vec![vec![0, 1, 2]]),
+        (1, 3, vec![vec![0, 1], vec![3, 4]]),
+        (2, 2, vec![vec![0, 1, 2], vec![2, 3, 4]]),
+        (1, 2, vec![vec![0, 1], vec![2, 3, 4]]),
+    ] {
+        let parts = original.break_vertices(first, second).unwrap();
+        assert_eq!(parts, original.break_vertices(second, first).unwrap());
+        assert_eq!(parts.len(), expected.len());
+        for (part, indices) in parts.iter().zip(expected) {
+            assert!(!part.is_closed());
+            assert_eq!(
+                part.vertices(),
+                indices
+                    .iter()
+                    .map(|&i| original.vertices()[i])
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(
+                part.bulges(),
+                indices
+                    .iter()
+                    .map(|&i| original.bulges()[i])
+                    .collect::<Vec<_>>()
+            );
+            for (segment, &index) in part.segments().zip(&indices) {
+                let segment = segment.unwrap();
+                for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                    assert_eq!(
+                        segment.point_at_fraction(fraction).unwrap(),
+                        original_segments[index]
+                            .point_at_fraction(fraction)
+                            .unwrap()
+                    );
+                }
+            }
+        }
+    }
+    for (first, second) in [(0, 0), (4, 4), (0, 4), (4, 0)] {
+        assert_eq!(
+            original.break_vertices(first, second),
+            Err(GeometryError::InvalidPolylineBreak)
+        );
+    }
+    assert_eq!(
+        original.break_vertices(5, 2),
+        Err(GeometryError::InvalidVertexIndex)
+    );
+}
+
+#[test]
+fn vertex_break_closed_ranges_keep_the_complement_and_open_at_a_single_marker() {
+    let original = Polyline2::with_bulges(
+        vec![
+            p(-40.0, -20.0, 7.0),
+            p(-20.0, 10.0, 7.0),
+            p(0.0, 0.0, 7.0),
+            p(20.0, 10.0, 7.0),
+            p(40.0, -20.0, 7.0),
+        ],
+        vec![0.5, -0.25, 1.0, -0.5, 0.25],
+        true,
+    )
+    .unwrap();
+    let segments: Vec<_> = original.segments().map(Result::unwrap).collect();
+    for (first, second, indices) in [
+        (1, 3, vec![3, 4, 0, 1]),
+        (3, 1, vec![3, 4, 0, 1]),
+        (2, 2, vec![2, 3, 4, 0, 1, 2]),
+        (0, 4, vec![4, 0]),
+        (0, 0, vec![0, 1, 2, 3, 4, 0]),
+        (4, 4, vec![4, 0, 1, 2, 3, 4]),
+    ] {
+        let parts = original.break_vertices(first, second).unwrap();
+        assert_eq!(parts.len(), 1);
+        let part = &parts[0];
+        assert!(!part.is_closed());
+        assert_eq!(
+            part.vertices(),
+            indices
+                .iter()
+                .map(|&i| original.vertices()[i])
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            part.bulges(),
+            indices
+                .iter()
+                .map(|&i| original.bulges()[i])
+                .collect::<Vec<_>>()
+        );
+        for (segment, &index) in part.segments().zip(&indices) {
+            for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                assert_eq!(
+                    segment.unwrap().point_at_fraction(fraction).unwrap(),
+                    segments[index].point_at_fraction(fraction).unwrap()
+                );
+            }
+        }
+        if first == second {
+            near(part.length().unwrap(), original.length().unwrap());
+        }
+    }
+    let two = Polyline2::with_bulges(
+        vec![p(0.0, 0.0, 0.0), p(10.0, 0.0, 0.0)],
+        vec![1.0, -1.0],
+        true,
+    )
+    .unwrap();
+    assert_eq!(
+        two.break_vertices(0, 1).unwrap()[0].vertices(),
+        &[two.vertices()[1], two.vertices()[0]]
+    );
+    assert_eq!(two.break_vertices(1, 1).unwrap()[0].vertices().len(), 3);
+}
+
+#[test]
+fn vertex_break_editor_preserves_source_and_fragment_properties_with_atomic_history() {
+    let mut document = DxfDocument::default();
+    document.add_layer("DETAIL").unwrap();
+    document.push(Entity::Circle(
+        Circle3::new(p(50.0, 0.0, 7.0), 5.0).unwrap(),
+    ));
+    document
+        .push_on_layer(
+            Entity::Polyline(
+                Polyline2::with_bulges(
+                    vec![
+                        p(0.0, 0.0, 7.0),
+                        p(10.0, 10.0, 7.0),
+                        p(20.0, 0.0, 7.0),
+                        p(30.0, 10.0, 7.0),
+                    ],
+                    vec![0.5, -0.5, 1.0, 9.0],
+                    false,
+                )
+                .unwrap(),
+            ),
+            "DETAIL",
+        )
+        .unwrap();
+    document.set_entity_color(1, 3).unwrap();
+    document.set_entity_linetype_scale(1, 2.0).unwrap();
+    let original = document.to_dxf().replacen(
+        "POLYLINE\n",
+        "POLYLINE\n5\nD4\n999\nvertex-break-source\n",
+        1,
+    );
+    let mut editor = Editor::new(DxfDocument::parse(&original).unwrap());
+    let style = editor.entity_style(1).unwrap().clone();
+    editor.select(vec![1]);
+    assert!(editor.break_polyline_vertices(1, 1, 2).unwrap());
+    let broken = editor.to_dxf();
+    assert_eq!(editor.selection(), &[1, 2]);
+    assert_eq!(editor.entities()[0], document.entities()[0]);
+    assert_eq!(broken.matches("vertex-break-source").count(), 1);
+    assert!(broken.contains("5\nD4\n"));
+    for index in [1, 2] {
+        assert_eq!(editor.entity_layer(index), Some("DETAIL"));
+        assert_eq!(editor.entity_style(index), Some(&style));
+    }
+    assert_eq!(
+        DxfDocument::parse(&broken).unwrap().entities(),
+        editor.entities()
+    );
+    assert!(editor.undo());
+    assert_eq!(editor.to_dxf(), original);
+    assert_eq!(editor.selection(), &[1]);
+    assert!(!editor.can_undo());
+    assert!(editor.redo());
+    assert_eq!(editor.to_dxf(), broken);
+    for hidden in [false, true] {
+        let mut protected = document.clone();
+        if hidden {
+            protected.set_layer_visible("DETAIL", false).unwrap();
+        } else {
+            protected.set_layer_locked("DETAIL", true).unwrap();
+        }
+        let mut editor = Editor::new(protected);
+        let before = editor.to_dxf();
+        assert!(editor.break_polyline_vertices(1, 1, 2).is_err());
+        assert_eq!(editor.to_dxf(), before);
+        assert!(!editor.can_undo());
+    }
+    let mut editor = Editor::new(document);
+    let before = editor.to_dxf();
+    for (first, second) in [(0, 0), (0, 3), (3, 3), (1, 99)] {
+        assert!(editor.break_polyline_vertices(1, first, second).is_err());
+        assert_eq!(editor.to_dxf(), before);
+        assert!(!editor.can_undo());
+    }
+    assert!(editor.break_polyline_vertices(0, 1, 2).is_err());
+    assert!(!editor.break_polyline_vertices(99, 1, 2).unwrap());
+    let invalid = Polyline2::with_bulges(
+        vec![p(-1e308, 0.0, 7.0), p(0.0, 1.0, 7.0), p(1e308, 0.0, 7.0)],
+        vec![1e308, 0.0, 0.0],
+        false,
+    )
+    .unwrap();
+    assert!(invalid.break_vertices(1, 1).is_err());
+}
