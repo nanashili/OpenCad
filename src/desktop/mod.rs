@@ -771,7 +771,13 @@ impl OpenCadApp {
                 self.execute("All");
             }
             if self.pedit_vertex_active() {
-                for (key, option) in [(Key::P, "Previous"), (Key::M, "Move"), (Key::I, "Insert")] {
+                for (key, option) in [
+                    (Key::P, "Previous"),
+                    (Key::M, "Move"),
+                    (Key::I, "Insert"),
+                    (Key::S, "Straighten"),
+                    (Key::G, "Go"),
+                ] {
                     if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
                         self.execute(option);
                     }

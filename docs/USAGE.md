@@ -364,6 +364,25 @@ final bulge to the new final vertex. A point equal to either adjacent vertex,
 an off-plane point or an unrepresentable result rejects before mutation.
 Native bulge handling and the post-insertion marker have not been verified.
 
+**Straighten** (S) saves the marked vertex as the start of a range. Use Next or
+Previous to choose the other endpoint, then **Go** (G) to remove interior
+vertices and connect the retained endpoints with a straight segment. The saved
+start has a circle and label; the canvas accessibility description exposes its
+vertex number. A preview shows the proposed geometry before Go.
+
+With the same marked vertex, Go straightens its outgoing arc. OpenCad treats an
+already straight edge or the last vertex of an open polyline as a no-op; the
+last vertex of a closed polyline straightens its closing edge. A range uses
+stored vertex order between the lower and higher indices, including backward
+navigation, and preserves the closing edge. Go clears the saved range and
+marks its lower endpoint. Other vertices, bulges, closed state and source
+properties are retained. Changed geometry is one Undo step; a no-op adds none.
+
+Enter or Exit cancels Straighten and retains the current marker; Save retains
+the pending range. Escape ends PEDIT while retaining completed edits. Range
+direction, closing-edge handling, marker placement and these defaults are
+OpenCad policies; exact native parity for those cases remains unverified.
+
 ```text
 PE 2
 Yes
@@ -378,6 +397,9 @@ Next
 Move
 @5,10
 Insert 15,10
+Straighten
+Next
+Go
 Exit
 Undo
 ```
@@ -402,8 +424,8 @@ its start remains open until Close is chosen. Invalid geometry in an otherwise
 eligible candidate, or a protected source/consumed layer, rejects the whole
 join before mutation. Hidden candidates are ignored by All and window selection.
 
-Multiple selection, fuzz-distance/Jointype joining, width, vertex Straighten,
-Break, Tangent and Regen within PEDIT, curve fitting,
+Multiple selection, fuzz-distance/Jointype joining, width, vertex Break,
+Tangent and Regen within PEDIT, curve fitting,
 DELOBJ retention choices, PLINETYPE/PLINECONVERTMODE conversion settings and
 general UCS editing remain unfinished. Existing property controls still edit
 polyline vertices and bulges independently of PEDIT.

@@ -4356,7 +4356,7 @@ fn pedit_vertex_commands_traverse_closed_curves_move_with_validation_and_preserv
         "0,10,8",
         "1e308,1e308",
         "Next",
-        "Straighten",
+        "Tangent",
         "-20,0",
         "20,0",
     ] {
@@ -4849,6 +4849,299 @@ fn pedit_insert_canvas_previews_snaps_marks_new_vertex_and_cancels() {
         Point3::new(-30.0, -10.0, 7.0).unwrap()
     );
     ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn pedit_straighten_commands_remove_ranges_convert_arcs_and_preserve_history() {
+    use opencad::{Circle3, Polyline2};
+
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-straighten.dxf");
+    let p = |x, y| Point3::new(x, y, 7.0).unwrap();
+    let vertices = vec![
+        p(-40.0, -20.0),
+        p(-20.0, 10.0),
+        p(0.0, 0.0),
+        p(20.0, 10.0),
+        p(40.0, -20.0),
+    ];
+    let bulges = vec![0.5, -0.25, 1.0, -0.5, 9.0];
+    let mut document = DxfDocument::default();
+    document.add_layer("DETAIL").unwrap();
+    document.push(Entity::Circle(Circle3::new(p(60.0, 20.0), 5.0).unwrap()));
+    document
+        .push_on_layer(
+            Entity::Polyline(
+                Polyline2::with_bulges(vertices.clone(), bulges.clone(), false).unwrap(),
+            ),
+            "DETAIL",
+        )
+        .unwrap();
+    document.set_entity_color(1, 3).unwrap();
+    let original = document.to_dxf().replacen(
+        "POLYLINE\n",
+        "POLYLINE\n5\nC3\n999\nstraighten-source-identity\n",
+        1,
+    );
+    fs::write(&path, &original).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut ui = DrawingUi::new();
+    ui.command(&format!("OPEN {}", path.display()));
+    ui.command("PE 2 E");
+    ui.command("Straighten");
+    ui.command("Next");
+    ui.command("Next");
+    assert!(ui.has_text("Straighten start vertex 1"));
+    assert!(ui.has_text("PEDIT vertex 3 of 5: 0,0,7"));
+    for input in ["Move 10,10", "Insert 10,10", "Straighten", "Undo"] {
+        ui.command(input);
+    }
+    assert!(ui.has_text("Use Go or Exit to finish Straighten first."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Go");
+    assert!(ui.has_text("PEDIT vertex 1 of 4: -40,-20,7"));
+    assert!(!ui.has_text("Straighten start vertex"));
+    ui.command("SAVE");
+    let first_straighten = fs::read_to_string(&path).unwrap();
+    let result = read();
+    let Entity::Polyline(polyline) = &result.entities()[1] else {
+        panic!("straightened range")
+    };
+    assert_eq!(
+        polyline.vertices(),
+        &[vertices[0], vertices[2], vertices[3], vertices[4]]
+    );
+    assert_eq!(polyline.bulges(), &[0.0, 1.0, -0.5, 9.0]);
+    assert!(!polyline.is_closed());
+    assert_eq!(result.entity_style(1), document.entity_style(1));
+    assert_eq!(result.entity_layer(1), Some("DETAIL"));
+    assert_eq!(result.entities()[0], document.entities()[0]);
+    assert!(first_straighten.contains("straighten-source-identity"));
+    let Entity::Polyline(before) = &document.entities()[1] else {
+        unreachable!()
+    };
+    for index in 2..4 {
+        let unchanged = before.segments().nth(index).unwrap().unwrap();
+        let shifted = polyline.segments().nth(index - 1).unwrap().unwrap();
+        for fraction in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            assert_eq!(
+                unchanged.point_at_fraction(fraction).unwrap(),
+                shifted.point_at_fraction(fraction).unwrap()
+            );
+        }
+    }
+    ui.command("Go"); // Cleared start cannot be reused against shifted indices.
+    assert!(ui.has_text("Choose Straighten in Edit vertex first."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), first_straighten);
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    ui.command("Edit");
+    for _ in 0..4 {
+        ui.command("Next");
+    }
+    ui.command("S");
+    ui.command("Previous");
+    ui.command("Previous");
+    ui.command("G");
+    assert!(ui.has_text("PEDIT vertex 3 of 4: 0,0,7"));
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[1].clone() else {
+        panic!("backward range")
+    };
+    assert_eq!(
+        polyline.vertices(),
+        &[vertices[0], vertices[1], vertices[2], vertices[4]]
+    );
+    assert_eq!(polyline.bulges(), &[0.5, -0.25, 0.0, 9.0]);
+    ui.command("Exit");
+    ui.command("Undo");
+
+    ui.command("Edit");
+    for _ in 0..2 {
+        ui.command("Straighten");
+        ui.command("Go");
+    }
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[1].clone() else {
+        panic!("same marker arc")
+    };
+    assert_eq!(polyline.vertices(), vertices);
+    assert_eq!(polyline.bulges(), &[0.0, -0.25, 1.0, -0.5, 9.0]);
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("Undo");
+    assert!(ui.has_text("No more operations in this PEDIT session."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    ui.command("Edit");
+    for _ in 0..4 {
+        ui.command("Next");
+    }
+    ui.command("Straighten");
+    ui.command("Go"); // Open final edge is dormant and must stay unchanged.
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Edit");
+    ui.command("Straighten");
+    for _ in 0..4 {
+        ui.command("Next");
+    }
+    ui.command("Go");
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[1].clone() else {
+        panic!("whole open range")
+    };
+    assert_eq!(polyline.vertices(), &[vertices[0], vertices[4]]);
+    assert_eq!(polyline.bulges(), &[0.0, 9.0]);
+    assert!(!polyline.is_closed());
+    ui.command("Exit");
+    ui.command("Undo");
+
+    ui.command("Close");
+    ui.command("SAVE");
+    let closed = fs::read_to_string(&path).unwrap();
+    ui.command("Edit");
+    for _ in 0..4 {
+        ui.command("Next");
+    }
+    ui.command("Straighten");
+    ui.command("Go");
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[1].clone() else {
+        panic!("closed final edge")
+    };
+    assert!(polyline.is_closed());
+    assert_eq!(polyline.vertices(), vertices);
+    assert_eq!(polyline.bulges(), &[0.5, -0.25, 1.0, -0.5, 0.0]);
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), closed);
+    ui.command("Edit");
+    for _ in 0..4 {
+        ui.command("Next");
+    }
+    ui.command("Straighten");
+    for _ in 0..4 {
+        ui.command("Previous");
+    }
+    ui.command("Go");
+    ui.command("SAVE");
+    let Entity::Polyline(polyline) = read().entities()[1].clone() else {
+        panic!("closed stored-order range")
+    };
+    assert!(polyline.is_closed());
+    assert_eq!(polyline.vertices(), &[vertices[0], vertices[4]]);
+    assert_eq!(polyline.bulges(), &[0.0, 9.0]); // Closure lies outside the range.
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    ui.command("Edit");
+    ui.command("Straighten");
+    ui.command("Next");
+    ui.command_with_enter("");
+    assert!(!ui.has_text("Straighten start vertex"));
+    assert!(ui.has_text("PEDIT vertex 2 of 5: -20,10,7"));
+    ui.command("Straighten");
+    ui.command("Next");
+    ui.command("Exit");
+    assert!(!ui.has_text("Straighten start vertex"));
+    ui.command("Move");
+    ui.command("Straighten");
+    assert!(ui.has_text("Exit point entry before choosing Straighten."));
+    ui.command("Exit");
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    let protected_path = scratch.0.join("pedit-straighten-protected.dxf");
+    document.set_layer_locked("DETAIL", true).unwrap();
+    fs::write(&protected_path, document.to_dxf()).unwrap();
+    let protected_original = fs::read_to_string(&protected_path).unwrap();
+    let mut protected = DrawingUi::new();
+    protected.command(&format!("OPEN {}", protected_path.display()));
+    protected.command("PE 2 E");
+    protected.command("Straighten");
+    protected.command("Next");
+    protected.command("Next");
+    protected.command("Go");
+    assert!(protected.has_text("unlock layer DETAIL before editing it"));
+    assert!(protected.has_text("Straighten start vertex 1"));
+    protected.command("SAVE");
+    assert_eq!(
+        fs::read_to_string(&protected_path).unwrap(),
+        protected_original
+    );
+}
+
+#[test]
+fn pedit_straighten_canvas_previews_marks_ranges_and_cancels_with_keys() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-straighten-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("PLINE -40,-20,7 -20,20,7 0,0,7 20,20,7 40,-20,7");
+    ui.replace_field("Vertex 1 bulge", "1");
+    ui.click("Apply properties");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let focus = |ui: &mut DrawingUi| ui.canvas_click(0.5, 0.5);
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("PE 1 E");
+    focus(&mut ui);
+    press(&mut ui, egui::Key::S);
+    press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::N);
+    assert!(ui.has_text("Straighten start vertex 1"));
+    assert!(ui.has_text("PEDIT vertex 3 of 5: 0,0,7"));
+    ui.snapshot("pedit-straighten-range-preview");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    focus(&mut ui);
+    press(&mut ui, egui::Key::G);
+    assert!(!ui.has_text("Straighten start vertex"));
+    ui.snapshot("pedit-straightened-range");
+    ui.command("SAVE");
+    let saved = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let Entity::Polyline(polyline) = &saved.entities()[0] else {
+        panic!("keyboard straightening")
+    };
+    assert_eq!(polyline.vertices().len(), 4);
+    assert_eq!(polyline.vertices()[1], Point3::new(0.0, 0.0, 7.0).unwrap());
+    assert_eq!(polyline.bulges(), &[0.0, 0.0, 0.0, 0.0]);
+    focus(&mut ui);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+
+    ui.command("PE 1 E");
+    focus(&mut ui);
+    press(&mut ui, egui::Key::S);
+    press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::Enter);
+    assert!(!ui.has_text("Straighten start vertex"));
+    assert!(ui.has_text("PEDIT vertex 2 of 5: -20,20,7"));
+    press(&mut ui, egui::Key::S);
+    press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::Escape);
     ui.command("SAVE");
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
 }
