@@ -6,7 +6,24 @@ enum OptionPrompt {
     Radius,
     FirstDistance,
     SecondDistance(f64),
+    AngleDistance,
+    Angle(f64),
+    Method,
     Trim,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum ChamferMethod {
+    #[default]
+    Distance,
+    Angle,
+}
+
+struct CornerUndo {
+    revision: u64,
+    drawing: bool,
+    method: ChamferMethod,
+    angle: [f64; 2],
 }
 
 #[derive(Default)]
@@ -14,7 +31,7 @@ pub(super) struct CornerInput {
     first: Option<(usize, Point3)>,
     option: Option<OptionPrompt>,
     multiple: bool,
-    undo: Vec<u64>,
+    undo: Vec<CornerUndo>,
 }
 
 impl OpenCadApp {
@@ -29,6 +46,15 @@ impl OpenCadApp {
             Some(OptionPrompt::SecondDistance(_)) => {
                 "CHAMFER · Enter the second distance (Enter keeps the drawing's second distance)."
             }
+            Some(OptionPrompt::AngleDistance) => {
+                "CHAMFER · Enter the distance along the first line (Enter keeps the session's Angle distance)."
+            }
+            Some(OptionPrompt::Angle(_)) => {
+                "CHAMFER · Enter the angle from the first line in degrees (Enter keeps the session's angle)."
+            }
+            Some(OptionPrompt::Method) => {
+                "CHAMFER · Enter Distance or Angle (Enter keeps the current method)."
+            }
             Some(OptionPrompt::Trim) => {
                 "FILLET/CHAMFER · Enter Trim or NoTrim (Enter keeps the workspace setting)."
             }
@@ -39,7 +65,7 @@ impl OpenCadApp {
                 "FILLET · Pick the first line on the side to keep, or enter entity-number x,y[,z]; [Radius/Trim/Multiple/Undo/Exit]."
             }
             None => {
-                "CHAMFER · Pick the first line on the side to keep, or enter entity-number x,y[,z]; [Distance/Trim/Multiple/Undo/Exit]."
+                "CHAMFER · Pick the first line on the side to keep, or enter entity-number x,y[,z]; [Distance/Angle/Method/Trim/Multiple/Undo/Exit]."
             }
         }
     }
@@ -51,6 +77,8 @@ impl OpenCadApp {
             } else {
                 self.editor.corner_value(CornerParameter::FilletRadius)
             })
+        } else if !sharp && self.chamfer_method == ChamferMethod::Angle {
+            Corner::chamfer_angle(self.chamfer_angle[0], self.chamfer_angle[1].to_radians())
         } else {
             Corner::chamfer(
                 if sharp {
@@ -73,6 +101,11 @@ impl OpenCadApp {
             format!(
                 "Radius {}",
                 self.editor.corner_value(CornerParameter::FilletRadius)
+            )
+        } else if self.chamfer_method == ChamferMethod::Angle {
+            format!(
+                "Angle method: distance {}, angle {}° (session defaults)",
+                self.chamfer_angle[0], self.chamfer_angle[1]
             )
         } else {
             format!(
@@ -110,6 +143,7 @@ impl OpenCadApp {
             return Ok(());
         };
         let corner = self.current_corner(sharp)?;
+        let previous = self.corner_checkpoint();
         if !self
             .editor
             .corner_lines([first, (source, pick)], corner, self.corner_trim)
@@ -117,7 +151,7 @@ impl OpenCadApp {
         {
             return Err("The corner leaves the drawing unchanged.".into());
         }
-        self.corner_input.undo.push(self.editor.revision());
+        self.remember_corner_change(previous, true);
         self.corner_input.first = None;
         let created = format!("{} created.", self.tool.name());
         if !self.corner_input.multiple {
@@ -162,13 +196,47 @@ impl OpenCadApp {
         Some(parts)
     }
 
-    fn set_corner_dimensions(&mut self, values: &[(CornerParameter, f64)]) -> Result<(), String> {
-        if self
+    fn corner_checkpoint(&self) -> CornerUndo {
+        CornerUndo {
+            revision: self.editor.revision(),
+            drawing: false,
+            method: self.chamfer_method,
+            angle: self.chamfer_angle,
+        }
+    }
+
+    fn remember_corner_change(&mut self, previous: CornerUndo, drawing: bool) {
+        self.corner_input.undo.push(CornerUndo {
+            revision: self.editor.revision(),
+            drawing,
+            ..previous
+        });
+    }
+
+    fn set_chamfer_method(&mut self, method: ChamferMethod) {
+        if method != self.chamfer_method {
+            let previous = self.corner_checkpoint();
+            self.chamfer_method = method;
+            self.remember_corner_change(previous, false);
+        }
+    }
+
+    fn set_corner_dimensions(
+        &mut self,
+        values: &[(CornerParameter, f64)],
+        method: Option<ChamferMethod>,
+    ) -> Result<(), String> {
+        let previous = self.corner_checkpoint();
+        let drawing = self
             .editor
             .set_corner_values(values)
-            .map_err(|error| error.to_string())?
-        {
-            self.corner_input.undo.push(self.editor.revision());
+            .map_err(|error| error.to_string())?;
+        let method_changed = method.is_some_and(|method| method != self.chamfer_method);
+        if let Some(method) = method {
+            self.chamfer_method = method;
+        }
+        if drawing || method_changed {
+            self.remember_corner_change(previous, drawing);
         }
         Ok(())
     }
@@ -177,8 +245,24 @@ impl OpenCadApp {
         if !matches!(self.tool, Tool::Fillet | Tool::Chamfer) {
             return None;
         }
+        if input.eq_ignore_ascii_case("EXIT") || input.eq_ignore_ascii_case("X") {
+            self.finish();
+            self.message("Corner command finished.", false);
+            return Some(Ok(()));
+        }
         if let Some(option) = self.corner_input.option {
             let result = match option {
+                OptionPrompt::Method => {
+                    let method = match input.to_ascii_uppercase().as_str() {
+                        "" => self.chamfer_method,
+                        "D" | "DISTANCE" => ChamferMethod::Distance,
+                        "A" | "ANGLE" => ChamferMethod::Angle,
+                        _ => return Some(Err("Enter Distance or Angle.".into())),
+                    };
+                    self.set_chamfer_method(method);
+                    self.corner_input.option = None;
+                    Ok(())
+                }
                 OptionPrompt::Trim => {
                     let trim = match input.to_ascii_uppercase().as_str() {
                         "" => self.corner_trim,
@@ -207,17 +291,18 @@ impl OpenCadApp {
             "T" | "TRIM" => self.corner_input.option = Some(OptionPrompt::Trim),
             "M" | "MULTIPLE" => self.corner_input.multiple = true,
             "U" | "UNDO" => return Some(self.undo_corner()),
-            "A" | "ANGLE" | "METHOD" if self.tool == Tool::Chamfer => {
-                return Some(Err(
-                    "The chamfer angle method is not implemented yet; use Distance.".into(),
-                ));
+            "A" | "ANGLE" if self.tool == Tool::Chamfer => {
+                self.corner_input.option = Some(OptionPrompt::AngleDistance)
+            }
+            "E" | "METHOD" if self.tool == Tool::Chamfer => {
+                self.corner_input.option = Some(OptionPrompt::Method)
             }
             "P" | "POLYLINE" => {
                 return Some(Err(
                     "Polyline corners are not implemented yet; pick two straight lines.".into(),
                 ));
             }
-            "" | "X" | "EXIT" => {
+            "" => {
                 self.finish();
                 self.message("Corner command finished.", false);
                 return Some(Ok(()));
@@ -237,6 +322,31 @@ impl OpenCadApp {
     }
 
     fn corner_dimension_text(&mut self, input: &str, option: OptionPrompt) -> Result<(), String> {
+        if matches!(option, OptionPrompt::AngleDistance | OptionPrompt::Angle(_)) {
+            let index = usize::from(matches!(option, OptionPrompt::Angle(_)));
+            let value = if input.is_empty() {
+                self.chamfer_angle[index]
+            } else {
+                number(input)?
+            };
+            if let OptionPrompt::Angle(distance) = option {
+                Corner::chamfer_angle(distance, value.to_radians())
+                    .map_err(|error| error.to_string())?;
+                let previous = self.corner_checkpoint();
+                if self.chamfer_angle != [distance, value]
+                    || self.chamfer_method != ChamferMethod::Angle
+                {
+                    self.chamfer_angle = [distance, value];
+                    self.chamfer_method = ChamferMethod::Angle;
+                    self.remember_corner_change(previous, false);
+                }
+                self.corner_input.option = None;
+            } else {
+                crate::corner::dimension(value).map_err(|error| error.to_string())?;
+                self.corner_input.option = Some(OptionPrompt::Angle(value));
+            }
+            return Ok(());
+        }
         let parameter = match option {
             OptionPrompt::Radius => CornerParameter::FilletRadius,
             OptionPrompt::FirstDistance => CornerParameter::ChamferFirst,
@@ -252,12 +362,15 @@ impl OpenCadApp {
             self.corner_input.option = Some(OptionPrompt::SecondDistance(value));
         } else {
             if let OptionPrompt::SecondDistance(first) = option {
-                self.set_corner_dimensions(&[
-                    (CornerParameter::ChamferFirst, first),
-                    (CornerParameter::ChamferSecond, value),
-                ])?;
+                self.set_corner_dimensions(
+                    &[
+                        (CornerParameter::ChamferFirst, first),
+                        (CornerParameter::ChamferSecond, value),
+                    ],
+                    Some(ChamferMethod::Distance),
+                )?;
             } else {
-                self.set_corner_dimensions(&[(parameter, value)])?;
+                self.set_corner_dimensions(&[(parameter, value)], None)?;
             }
             self.corner_input.option = None;
         }
@@ -276,19 +389,25 @@ impl OpenCadApp {
     }
 
     fn undo_corner(&mut self) -> Result<(), String> {
-        let revision = self
+        let previous = self
             .corner_input
             .undo
             .last()
-            .ok_or("There are no drawing edits to undo in this corner command.")?;
-        if *revision != self.editor.revision() {
+            .ok_or("There are no edits to undo in this corner command.")?;
+        if previous.revision != self.editor.revision() {
             self.corner_input.undo.clear();
             return Err("Corner Undo is unavailable after another drawing edit.".into());
         }
-        if !self.editor.undo() {
+        if previous.drawing && !self.editor.undo() {
             return Err("The corner undo history is unavailable.".into());
         }
-        self.corner_input.undo.pop();
+        let previous = self
+            .corner_input
+            .undo
+            .pop()
+            .expect("checked corner history");
+        self.chamfer_method = previous.method;
+        self.chamfer_angle = previous.angle;
         self.corner_input.first = None;
         self.message(
             format!("Corner edit undone. {}", self.corner_settings()),
@@ -303,9 +422,11 @@ impl OpenCadApp {
             self.message(self.corner_settings(), false);
             return Ok(());
         }
+        let angle = chamfer && tokens[0].eq_ignore_ascii_case("ANGLE");
+        let tokens = if angle { &tokens[1..] } else { tokens };
         let count = if chamfer { 6 } else { 5 };
         if tokens.len() != count && tokens.len() != count + 1 {
-            return Err("Corner syntax: FILLET radius first-number first-pick second-number second-pick [TRIM|NOTRIM]; CHAMFER first-distance second-distance first-number first-pick second-number second-pick [TRIM|NOTRIM].".into());
+            return Err("Corner syntax: FILLET radius first-number first-pick second-number second-pick [TRIM|NOTRIM]; CHAMFER first-distance second-distance first-number first-pick second-number second-pick [TRIM|NOTRIM]; CHAMFER ANGLE first-distance angle-degrees first-number first-pick second-number second-pick [TRIM|NOTRIM].".into());
         }
         let trim = if tokens.len() == count {
             self.corner_trim
@@ -316,7 +437,12 @@ impl OpenCadApp {
                 _ => return Err("The corner trim option must be TRIM or NOTRIM.".into()),
             }
         };
-        let (corner, offset) = if chamfer {
+        let (corner, offset) = if angle {
+            (
+                Corner::chamfer_angle(number(tokens[0])?, number(tokens[1])?.to_radians()),
+                2,
+            )
+        } else if chamfer {
             (Corner::chamfer(number(tokens[0])?, number(tokens[1])?), 2)
         } else {
             (Corner::fillet(number(tokens[0])?), 1)

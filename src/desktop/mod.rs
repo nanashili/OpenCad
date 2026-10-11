@@ -144,6 +144,8 @@ pub struct OpenCadApp {
     pedit_accept: bool,
     pline_reverse_widths: bool,
     corner_trim: bool,
+    chamfer_method: corners::ChamferMethod,
+    chamfer_angle: [f64; 2],
     camera: canvas::Camera,
     fit_pending: bool,
     grid: bool,
@@ -234,6 +236,8 @@ impl OpenCadApp {
             pedit_accept: false,
             pline_reverse_widths: false,
             corner_trim: true,
+            chamfer_method: corners::ChamferMethod::default(),
+            chamfer_angle: [0.0, 0.0],
             camera: canvas::Camera::default(),
             fit_pending: true,
             grid: false,
@@ -857,6 +861,8 @@ impl OpenCadApp {
                         Key::M => "Multiple",
                         _ => "Trim",
                     });
+                } else if self.tool == Tool::Chamfer && matches!(key, Key::A | Key::E) {
+                    self.execute(if key == Key::A { "Angle" } else { "Method" });
                 } else if matches!(self.tool, Tool::Trim | Tool::Extend)
                     && matches!(key, Key::C | Key::E)
                 {

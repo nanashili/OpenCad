@@ -304,21 +304,35 @@ use `entity-number x,y[,z]`. Hover the second line to preview the result.
 
 **Radius** sets the fillet radius; **Distance** sets the chamfer's first and second
 distances in selection order. Enter retains the corresponding drawing value.
+**Angle** asks for a distance along the first picked line and an angle from that
+line in decimal degrees. Enter retains the corresponding session value.
+**Method** chooses Distance or Angle using the values already accepted for that
+method. Completing a Distance or Angle pair also selects that method. Canvas
+**A** opens Angle; **E** opens Method; **M** opens Multiple.
 **Trim** offers Trim/NoTrim. **Multiple** keeps the command active after each
-corner. **Undo** reverses drawing edits in the current command, including a
-radius or completed distance-pair change. Escape/Exit ends the command. Holding
-Shift for the second canvas pick temporarily uses zero dimensions; stored
+corner. **Undo** reverses edits in the current command, including a radius,
+completed distance/angle pair or method change. Escape/Exit ends the command;
+an incomplete pair is discarded. Holding Shift for the second canvas pick
+temporarily uses zero dimensions; stored
 defaults stay unchanged. Zero dimensions with NoTrim leave the drawing unchanged.
 
 `FILLETRAD`, `CHAMFERA` and `CHAMFERB` query drawing defaults; append a nonnegative
 number to set them. Defaults save in the R12 DXF header and support undo. New
 drawings start at zero. Trim/NoTrim is a workspace preference, initially Trim.
-These initial values are OpenCad policies. Direct forms use dimensions for that
-operation without changing the drawing defaults:
+`CHAMMODE` queries the session method; `CHAMMODE 0` chooses Distance and
+`CHAMMODE 1` chooses Angle. On app launch the method is Distance and both Angle
+values are zero. Angle defaults currently remain in the session: `$CHAMFERC`
+and `$CHAMFERD` in an imported DXF are preserved without interpretation or modification. Their
+drawing-default compatibility remains unfinished; the consulted Autodesk DXF
+table does not establish the angle's storage units. OpenCad does not yet use
+`AUNITS`, `ANGBASE` or `ANGDIR` for this input.
+These defaults and input policies are OpenCad choices. Direct forms use
+dimensions for that operation without changing the defaults:
 
 ```text
 FILLET 5 1 20,0 2 0,20 TRIM
 CHAMFER 3 6 1 20,0 2 0,20 NOTRIM
+CHAMFER ANGLE 3 30 1 20,0 2 0,20 TRIM
 ```
 
 Supported pairs are nonparallel, equal-Z world-XY LINEs. Both retained sides must
@@ -327,9 +341,13 @@ mode. Sources retain their identity/style; the connector uses BYLAYER defaults
 on their common layer, or the current layer when they differ. Both source edits
 and the connector undo together. Near-parallel lines (normalized determinant
 at most `1e-12`), ambiguous picks and precision collapse are rejected. These are
-OpenCad numerical policies. Parallel-line fillets, curved/polyline sources,
-chamfer Angle/Method, and 3D corners remain unfinished. The canvas **F** key fits
-the drawing; `F` in the command field starts FILLET.
+OpenCad numerical policies. Angle input must be finite, at least zero and less
+than 180 degrees; it must also be less than 180 degrees minus the angle between
+the picked rays. A zero first distance yields a sharp corner; a zero angle with
+a positive distance connects the first chamfer point to the intersection.
+These limits and degenerate cases have not been verified against AutoCAD.
+Parallel-line fillets, curved/polyline sources and 3D corners remain unfinished.
+The canvas **F** key fits the drawing; `F` in the command field starts FILLET.
 
 ## Break and break at point
 

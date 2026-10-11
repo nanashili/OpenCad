@@ -159,6 +159,23 @@ impl OpenCadApp {
                     false,
                 );
             }
+            "CHAMMODE" => {
+                if !rest.is_empty() {
+                    self.chamfer_method = match rest {
+                        "0" => corners::ChamferMethod::Distance,
+                        "1" => corners::ChamferMethod::Angle,
+                        _ => return Err("CHAMMODE must be 0 or 1.".into()),
+                    };
+                    self.finish();
+                }
+                self.message(
+                    format!(
+                        "CHAMMODE = {}",
+                        u8::from(self.chamfer_method == corners::ChamferMethod::Angle)
+                    ),
+                    false,
+                );
+            }
             "ENTITY" => {
                 if tokens.len() != 2 {
                     return Err("ENTITY syntax: ENTITY COLOR BYLAYER|BYBLOCK|1..255; ENTITY LINETYPE name; ENTITY LTSCALE nonnegative-number".into());

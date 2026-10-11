@@ -106,6 +106,8 @@ pub enum GeometryError {
     NoBoundaryIntersection,
     AmbiguousCurvePick,
     InvalidCornerDimension,
+    InvalidChamferAngle,
+    IncompatibleChamferAngle,
     UnsupportedCornerEntities,
     ParallelCorner,
     AmbiguousCornerPick,
@@ -222,6 +224,18 @@ impl fmt::Display for GeometryError {
             ),
             Self::InvalidCornerDimension => {
                 write!(f, "corner dimensions must be finite and nonnegative")
+            }
+            Self::InvalidChamferAngle => {
+                write!(
+                    f,
+                    "chamfer angles must be finite, at least 0 and less than 180 degrees"
+                )
+            }
+            Self::IncompatibleChamferAngle => {
+                write!(
+                    f,
+                    "the chamfer angle cannot meet the second line on its picked side"
+                )
             }
             Self::UnsupportedCornerEntities => write!(
                 f,

@@ -29,6 +29,165 @@ fn connector_line(entity: Option<&Entity>) -> Line3 {
 }
 
 #[test]
+fn chamfer_angle_respects_first_pick_distance_and_relative_angle() {
+    for (x, y) in [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+        for reversed in [false, true] {
+            let a = line(-20.0, 0.0, 20.0, 0.0);
+            let b = line(0.0, 20.0, 0.0, -20.0);
+            let (a, b) = if reversed {
+                (
+                    Line3::new(a.end(), a.start()),
+                    Line3::new(b.end(), b.start()),
+                )
+            } else {
+                (a, b)
+            };
+            let result = Corner::chamfer_angle(3.0, PI / 6.0)
+                .unwrap()
+                .between_lines(a, point(x * 10.0, 0.0), b, point(0.0, y * 10.0))
+                .unwrap();
+            let connector = connector_line(result.connector());
+            near_point(connector.start(), point(x * 3.0, 0.0));
+            near_point(connector.end(), point(0.0, y * 3.0_f64.sqrt()));
+            let dx = connector.end().x() - connector.start().x();
+            let dy = connector.end().y() - connector.start().y();
+            near(((-x * dy).abs()).atan2(-x * dx), PI / 6.0);
+            for (trimmed, source) in [(result.first(), a), (result.second(), b)] {
+                let dx = trimmed.end().x() - trimmed.start().x();
+                let dy = trimmed.end().y() - trimmed.start().y();
+                assert!(
+                    dx * (source.end().x() - source.start().x())
+                        + dy * (source.end().y() - source.start().y())
+                        > 0.0
+                );
+            }
+        }
+    }
+    let result = Corner::chamfer_angle(3.0, PI / 6.0)
+        .unwrap()
+        .between_lines(
+            line(0.0, 20.0, 0.0, 6.0),
+            point(0.0, 10.0),
+            line(5.0, 0.0, 20.0, 0.0),
+            point(10.0, 0.0),
+        )
+        .unwrap();
+    let connector = connector_line(result.connector());
+    near_point(connector.start(), point(0.0, 3.0));
+    near_point(connector.end(), point(3.0_f64.sqrt(), 0.0));
+}
+
+#[test]
+fn chamfer_angle_handles_oblique_lines_zero_values_and_numeric_scales() {
+    // A 30 degree wedge admits a 120 degree bevel angle from the first line.
+    let result = Corner::chamfer_angle(2.0, 2.0 * PI / 3.0)
+        .unwrap()
+        .between_lines(
+            line(5.0, 0.0, 20.0, 0.0),
+            point(10.0, 0.0),
+            line(0.0, 0.0, 10.0 * 3.0_f64.sqrt(), 10.0),
+            point(5.0 * 3.0_f64.sqrt(), 5.0),
+        )
+        .unwrap();
+    let connector = connector_line(result.connector());
+    near_point(connector.start(), point(2.0, 0.0));
+    near_point(connector.end(), point(3.0, 3.0_f64.sqrt()));
+    for (distance, angle) in [(0.0, 0.0), (0.0, PI / 4.0), (2.0, 0.0)] {
+        let result = Corner::chamfer_angle(distance, angle)
+            .unwrap()
+            .between_lines(
+                line(5.0, 0.0, 20.0, 0.0),
+                point(10.0, 0.0),
+                line(0.0, 20.0, 0.0, 6.0),
+                point(0.0, 10.0),
+            )
+            .unwrap();
+        near_point(result.first().start(), point(distance, 0.0));
+        near_point(result.second().end(), point(0.0, 0.0));
+        assert_eq!(result.connector().is_none(), distance == 0.0);
+    }
+    for scale in [1.0e-150, 1.0, 1.0e150] {
+        let result = Corner::chamfer_angle(3.0 * scale, PI / 4.0)
+            .unwrap()
+            .between_lines(
+                line(0.0, 0.0, 20.0 * scale, 0.0),
+                point(10.0 * scale, 0.0),
+                line(0.0, 20.0 * scale, 0.0, 0.0),
+                point(0.0, 10.0 * scale),
+            )
+            .unwrap();
+        let connector = connector_line(result.connector());
+        near(connector.start().x() / scale, 3.0);
+        near(connector.end().y() / scale, 3.0);
+    }
+}
+
+#[test]
+fn chamfer_angle_rejects_invalid_values_and_impossible_picked_sides() {
+    for angle in [-1.0, PI, f64::NAN, f64::INFINITY] {
+        assert_eq!(
+            Corner::chamfer_angle(2.0, angle).unwrap_err(),
+            GeometryError::InvalidChamferAngle
+        );
+    }
+    assert_eq!(
+        Corner::chamfer_angle(-1.0, PI / 4.0).unwrap_err(),
+        GeometryError::InvalidCornerDimension
+    );
+    for angle in [FRAC_PI_2, 2.0 * PI / 3.0] {
+        assert_eq!(
+            Corner::chamfer_angle(2.0, angle)
+                .unwrap()
+                .between_lines(
+                    line(5.0, 0.0, 20.0, 0.0),
+                    point(10.0, 0.0),
+                    line(0.0, 20.0, 0.0, 6.0),
+                    point(0.0, 10.0),
+                )
+                .unwrap_err(),
+            GeometryError::IncompatibleChamferAngle
+        );
+    }
+    assert_eq!(
+        Corner::chamfer_angle(20.0, PI / 4.0)
+            .unwrap()
+            .between_lines(
+                line(5.0, 0.0, 20.0, 0.0),
+                point(10.0, 0.0),
+                line(0.0, 20.0, 0.0, 6.0),
+                point(0.0, 10.0),
+            )
+            .unwrap_err(),
+        GeometryError::CornerOutsideSources
+    );
+    let origin = 1.0e16;
+    assert_eq!(
+        Corner::chamfer_angle(0.9, 166.0_f64.to_radians())
+            .unwrap()
+            .between_lines(
+                line(origin, origin, origin + 1000.0, origin),
+                point(origin + 500.0, origin),
+                line(origin, origin, origin + 984.0, origin + 174.0),
+                point(origin + 984.0, origin + 174.0),
+            )
+            .unwrap_err(),
+        GeometryError::UnrepresentableCorner
+    );
+    assert_eq!(
+        Corner::chamfer_angle(f64::MIN_POSITIVE, f64::from_bits(1))
+            .unwrap()
+            .between_lines(
+                line(0.0, 0.0, 20.0, 0.0),
+                point(10.0, 0.0),
+                line(0.0, 20.0, 0.0, 0.0),
+                point(0.0, 10.0),
+            )
+            .unwrap_err(),
+        GeometryError::UnrepresentableCorner
+    );
+}
+
+#[test]
 fn fillet_is_tangent_in_each_quadrant_and_preserves_source_order() {
     for (x, y) in [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
         let a = line(-20.0, 0.0, 20.0, 0.0);

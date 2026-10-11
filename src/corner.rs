@@ -31,9 +31,10 @@ impl CornerParameter {
 enum Mode {
     Fillet(f64),
     Chamfer(f64, f64),
+    ChamferAngle(f64, f64),
 }
 
-/// Validated dimensions for a fillet or a two-distance chamfer.
+/// Validated dimensions for a fillet or chamfer.
 #[derive(Clone, Copy, Debug)]
 pub struct Corner(Mode);
 
@@ -65,6 +66,15 @@ impl Corner {
 
     pub fn chamfer(first: f64, second: f64) -> Result<Self, GeometryError> {
         Ok(Self(Mode::Chamfer(dimension(first)?, dimension(second)?)))
+    }
+
+    /// The angle is in radians, measured from the first line toward the corner
+    /// to the connector. The picked sides must admit that angle.
+    pub fn chamfer_angle(first: f64, angle: f64) -> Result<Self, GeometryError> {
+        if !angle.is_finite() || !(0.0..PI).contains(&angle) {
+            return Err(GeometryError::InvalidChamferAngle);
+        }
+        Ok(Self(Mode::ChamferAngle(dimension(first)?, angle)))
     }
 
     /// Each pick chooses the ray from the supporting-line intersection to keep.
@@ -102,15 +112,32 @@ impl Corner {
                 (distance, distance)
             }
             Mode::Chamfer(a, b) => (a, b),
+            Mode::ChamferAngle(distance, chamfer_angle) => {
+                if chamfer_angle >= PI - angle {
+                    return Err(GeometryError::IncompatibleChamferAngle);
+                }
+                // The triangle's other angles are the picked-ray angle and
+                // PI - angle - chamfer_angle. Use the sine rule for its second
+                // leg, preserving the first selected line's distance.
+                let second =
+                    finite(distance * (chamfer_angle.sin() / (angle + chamfer_angle).sin()))?;
+                if distance > 0.0 && chamfer_angle > 0.0 && second == 0.0 {
+                    return Err(GeometryError::UnrepresentableCorner);
+                }
+                (distance, second)
+            }
         };
         let tangent_a = along(intersection, u, distance_a)?;
         let tangent_b = along(intersection, v, distance_b)?;
         let first = retained(first, intersection, u, forward_a, distance_a, tangent_a)?;
         let second = retained(second, intersection, v, forward_b, distance_b, tangent_b)?;
         let connector = match self.0 {
-            Mode::Fillet(0.0) | Mode::Chamfer(0.0, 0.0) => None,
-            Mode::Chamfer(_, _) => {
-                if tangent_a == tangent_b {
+            Mode::Fillet(0.0) | Mode::Chamfer(0.0, 0.0) | Mode::ChamferAngle(0.0, _) => None,
+            Mode::Chamfer(_, _) | Mode::ChamferAngle(_, _) => {
+                if tangent_a == tangent_b
+                    || (distance_a > 0.0 && tangent_a == intersection)
+                    || (distance_b > 0.0 && tangent_b == intersection)
+                {
                     return Err(GeometryError::UnrepresentableCorner);
                 }
                 Some(Entity::Line(Line3::new(tangent_a, tangent_b)))

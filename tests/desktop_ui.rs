@@ -2454,7 +2454,7 @@ fn fillet_chamfer_commands_persist_dimensions_and_undo_complete_corner_edits() {
     ui.command("Undo");
     ui.command("Undo");
     ui.command("Undo");
-    assert!(ui.has_text("There are no drawing edits to undo in this corner command."));
+    assert!(ui.has_text("There are no edits to undo in this corner command."));
     ui.command("SAVE");
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
     ui.command("Exit");
@@ -7751,4 +7751,285 @@ fn pline_line_length_numeric_range_and_failed_values_preserve_the_tangent() {
         assert!((polyline.vertices()[2].x() / expected_x - 1.0).abs() < 1e-12);
         assert_eq!(polyline.vertices()[2].y(), 0.0);
     }
+}
+
+#[test]
+fn chamfer_angle_method_stages_defaults_and_keeps_imported_angle_headers_opaque() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("angle-defaults.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    for command in [
+        "LINE 5,0,7 40,0,7",
+        "LINE 0,40,7 0,5,7",
+        "CHAMFERA 3",
+        "CHAMFERB 5",
+    ] {
+        ui.command(command);
+    }
+    ui.command(&format!("SAVEAS {}", path.display()));
+    drop(ui);
+    let opaque = "9\n$CHAMFERC\n40\n17.2500\n9\n$CHAMFERD\n40\n0.7853981633974483\n999\nkeep original angle text\n";
+    let original = fs::read_to_string(&path)
+        .unwrap()
+        .replace("9\n$CHAMFERA\n", &format!("{opaque}9\n$CHAMFERA\n"));
+    assert!(original.contains(opaque));
+    fs::write(&path, &original).unwrap();
+    let mut ui = DrawingUi::with_storage_and_path(None, Some(path.clone()));
+    ui.command("CHAMMODE");
+    assert!(ui.has_text("CHAMMODE = 0"));
+    ui.command("CHAMMODE 2");
+    assert!(ui.has_text("CHAMMODE must be 0 or 1."));
+    ui.command("CHAMMODE 1");
+    for command in ["CHA", "Multiple", "Angle", "6", "180"] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("less than 180 degrees"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("30");
+    assert!(ui.has_text("Angle method: distance 6, angle 30°"));
+    for command in ["1 20,0", "2 0,20", "SAVE"] {
+        ui.command(command);
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    assert!(saved.contains(opaque));
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 3);
+    assert_eq!(
+        document.corner_value(opencad::CornerParameter::ChamferFirst),
+        3.0
+    );
+    assert_eq!(
+        document.corner_value(opencad::CornerParameter::ChamferSecond),
+        5.0
+    );
+    let Entity::Line(connector) = document.entities()[2] else {
+        panic!("chamfer")
+    };
+    assert_eq!(connector.start(), Point3::new(6.0, 0.0, 7.0).unwrap());
+    assert!((connector.end().y() - 2.0 * 3.0_f64.sqrt()).abs() < 1e-9);
+    assert!(connector.end().x().abs() < 1e-9);
+    assert_eq!(connector.end().z(), 7.0);
+    ui.command("Undo");
+    ui.command("Undo");
+    assert!(ui.has_text("Angle method: distance 0, angle 0°"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Undo");
+    assert!(ui.has_text("There are no edits to undo in this corner command."));
+    for command in ["Angle", "6", "30", "Method", "invalid"] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("Enter Distance or Angle."));
+    ui.command("Distance");
+    assert!(ui.has_text("Distances 3, 5"));
+    ui.command("Undo");
+    assert!(ui.has_text("Angle method: distance 6, angle 30°"));
+    for command in ["Distance", "7", "9"] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("Distances 7, 9"));
+    ui.command("Undo");
+    assert!(ui.has_text("Angle method: distance 6, angle 30°"));
+    for command in ["Angle", "10", "-1", "NaN"] {
+        ui.command(command);
+    }
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("CHA");
+    assert!(ui.has_text("Angle method: distance 6, angle 30°"));
+    // Enter keeps each accepted session default, rather than the partial pair.
+    for command in ["Angle", "", "", "SAVE"] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("Angle method: distance 6, angle 30°"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    for commands in [
+        vec!["Angle", "Exit"],
+        vec!["Angle", "10", "X"],
+        vec!["Method", "Exit"],
+        vec!["Distance", "10", "Exit"],
+    ] {
+        for command in commands {
+            ui.command(command);
+        }
+        assert!(ui.has_text("Current tool: Select"));
+        ui.command("CHA");
+        assert!(ui.has_text("Angle method: distance 6, angle 30°"));
+        ui.command("SAVE");
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+    ui.command("Exit");
+    let mut storage = PreferenceStorage::default();
+    ui.app.save(&mut storage);
+    drop(ui);
+    let mut ui = DrawingUi::with_storage_and_path(Some(&storage), Some(path.clone()));
+    ui.command("CHAMMODE");
+    assert!(ui.has_text("CHAMMODE = 0"));
+    for command in ["CHAMFER", "Method", "Angle"] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("Angle method: distance 0, angle 0°"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn chamfer_angle_direct_form_validates_and_preserves_notrim_sources() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("direct-angle.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE 5,0,7 40,0,7");
+    ui.command("LINE 0,40,7 0,5,7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    for command in [
+        "CHAMFER ANGLE",
+        "CHAMFER ANGLE -1 30 1 20,0 2 0,20",
+        "CHAMFER ANGLE 6 180 1 20,0 2 0,20",
+        "CHAMFER ANGLE 6 90 1 20,0 2 0,20",
+        "CHAMFER ANGLE 50 30 1 20,0 2 0,20",
+        "CHAMFER ANGLE 6 30 1 20,0 1 30,0",
+        "CHAMFER ANGLE 6 30 1 20,0 2 0,20 invalid",
+    ] {
+        ui.command(command);
+        ui.command("SAVE");
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+    ui.command("CHAMFER ANGLE 6 30 1 20,0 2 0,20 NOTRIM");
+    assert!(ui.has_text("Chamfer created."));
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        &document.entities()[..2],
+        DxfDocument::parse(&original).unwrap().entities()
+    );
+    let Entity::Line(connector) = document.entities()[2] else {
+        panic!("chamfer")
+    };
+    assert_eq!(connector.start(), Point3::new(6.0, 0.0, 7.0).unwrap());
+    assert!((connector.end().y() - 2.0 * 3.0_f64.sqrt()).abs() < 1e-9);
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("CHAMMODE");
+    assert!(ui.has_text("CHAMMODE = 0"));
+}
+
+#[test]
+fn chamfer_angle_canvas_shortcuts_preview_shift_and_cancel_work() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("canvas-angle.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE -50,0,7 50,0,7");
+    ui.command("LINE 0,-40,7 0,40,7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let position = |ui: &DrawingUi, x: f64, y: f64| {
+        let bounds = ui
+            .nodes
+            .values()
+            .find(|node| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Drawing canvas,"))
+            })
+            .and_then(|node| node.bounds())
+            .unwrap();
+        egui::pos2(
+            ((bounds.x0 + bounds.x1) * 0.5 + 4.0 * x) as f32,
+            ((bounds.y0 + bounds.y1) * 0.5 - 4.0 * y) as f32,
+        )
+    };
+    let click = |ui: &mut DrawingUi, x: f64, y: f64, modifiers| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    let canvas_key = |ui: &mut DrawingUi, pressed| {
+        let canvas = ui
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Drawing canvas,"))
+            })
+            .map(|(id, _)| *id)
+            .unwrap();
+        ui.action(canvas, accesskit::Action::Focus);
+        ui.step(vec![key(pressed, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(pressed, egui::Modifiers::NONE, false)]);
+    };
+    ui.click("Fillet");
+    ui.custom_action("Fillet", "Open command menu");
+    ui.click("Chamfer");
+    canvas_key(&mut ui, egui::Key::A);
+    assert!(ui.has_text("Enter the distance along the first line"));
+    ui.command("12");
+    ui.command("30");
+    canvas_key(&mut ui, egui::Key::E);
+    assert!(ui.has_text("Enter Distance or Angle"));
+    ui.command("Angle");
+    canvas_key(&mut ui, egui::Key::M);
+    click(&mut ui, 25.0, 0.0, egui::Modifiers::NONE);
+    let hover = position(&ui, 0.0, 25.0);
+    ui.step(vec![Event::PointerMoved(hover)]);
+    ui.snapshot("chamfer-angle-preview");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    click(&mut ui, 0.0, 25.0, egui::Modifiers::SHIFT);
+    assert!(ui.has_text("Chamfer created."));
+    ui.command("SAVE");
+    let sharp = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(sharp.entities().len(), 2);
+    for entity in sharp.entities() {
+        let Entity::Line(line) = entity else {
+            panic!("line")
+        };
+        assert_eq!(line.start(), Point3::new(0.0, 0.0, 7.0).unwrap());
+    }
+    ui.command("Undo");
+    assert!(ui.has_text("Angle method: distance 12, angle 30°"));
+    for command in ["Trim", "NoTrim"] {
+        ui.command(command);
+    }
+    click(&mut ui, 25.0, 0.0, egui::Modifiers::NONE);
+    ui.step(vec![Event::PointerMoved(hover)]);
+    ui.snapshot("chamfer-angle-notrim-preview");
+    click(&mut ui, 0.0, 25.0, egui::Modifiers::NONE);
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(
+        &document.entities()[..2],
+        DxfDocument::parse(&original).unwrap().entities()
+    );
+    let Entity::Line(connector) = document.entities()[2] else {
+        panic!("chamfer")
+    };
+    assert!((connector.start().x() - 12.0).abs() < 1e-9);
+    assert!((connector.end().y() - 4.0 * 3.0_f64.sqrt()).abs() < 1e-9);
+    let moved = position(&ui, 25.0, 15.0);
+    ui.step(vec![Event::PointerMoved(moved)]);
+    ui.snapshot("chamfer-angle-finished");
+    click(&mut ui, 25.0, 0.0, egui::Modifiers::NONE);
+    canvas_key(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
 }
