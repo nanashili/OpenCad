@@ -116,11 +116,15 @@ impl OpenCadApp {
             return None;
         }
         let upper = input.to_ascii_uppercase();
+        let is_keyword = |keyword: &str| {
+            let response = upper.strip_prefix('_').unwrap_or(&upper);
+            !response.is_empty() && keyword.starts_with(response)
+        };
         match self.offset_input.option_prompt {
             OptionPrompt::Erase => {
                 match upper.as_str() {
-                    "Y" | "YES" => self.offset_input.options.erase_source = true,
-                    "N" | "NO" => self.offset_input.options.erase_source = false,
+                    _ if is_keyword("YES") => self.offset_input.options.erase_source = true,
+                    _ if is_keyword("NO") => self.offset_input.options.erase_source = false,
                     "" => {}
                     _ => return Some(Err("Erase source must be Yes or No.".into())),
                 }
@@ -128,8 +132,12 @@ impl OpenCadApp {
             }
             OptionPrompt::Layer => {
                 match upper.as_str() {
-                    "C" | "CURRENT" => self.offset_input.options.layer = OffsetLayer::Current,
-                    "S" | "SOURCE" => self.offset_input.options.layer = OffsetLayer::Source,
+                    _ if is_keyword("CURRENT") => {
+                        self.offset_input.options.layer = OffsetLayer::Current
+                    }
+                    _ if is_keyword("SOURCE") => {
+                        self.offset_input.options.layer = OffsetLayer::Source
+                    }
                     "" => {}
                     _ => return Some(Err("Offset layer must be Current or Source.".into())),
                 }
