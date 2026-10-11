@@ -6299,3 +6299,198 @@ fn polyline_properties_vertices_styles_and_copy_survive_real_widget_save() {
     ui.command("SAVE");
     assert_eq!(fs::read_to_string(drawing).unwrap(), saved);
 }
+
+#[test]
+fn pline_creation_widths_stage_carry_close_and_undo_atomically() {
+    use opencad::PolylineWidth;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-creation-widths.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("PLINEWID");
+    assert!(ui.has_text("PLINEWID = 0"));
+    for invalid in ["-1", "NaN", "inf", "2 3"] {
+        ui.command(&format!("PLINEWID {invalid}"));
+    }
+    ui.command("PLINEWID 2");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    ui.command("PLINE -10,0 10,0");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert!(
+        polyline
+            .widths()
+            .iter()
+            .all(|width| *width == PolylineWidth::new(2.0, 2.0).unwrap())
+    );
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("PLINE -10,0 10,0 10,10 CLOSE");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert!(polyline.is_closed());
+    assert!(
+        polyline
+            .widths()
+            .iter()
+            .all(|width| *width == PolylineWidth::new(2.0, 2.0).unwrap())
+    );
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+
+    ui.command("PLINE");
+    ui.command("Width");
+    assert!(ui.has_text("Specify the PLINE starting point"));
+    ui.command("0,0,3");
+    ui.command("Width 1 2 3");
+    ui.command("Width");
+    assert!(ui.has_text("PLINE Width · Starting width"));
+    for invalid in ["-1", "NaN", "inf", "10,0"] {
+        ui.command(invalid);
+    }
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command(""); // starting default is the current width, 2
+    assert!(ui.has_text("PLINE Width · Ending width"));
+    ui.command(""); // ending default is the entered starting value
+    ui.command("Width 2 6");
+    ui.command("10,0");
+    ui.command("20,0"); // ending width 6 carries forward uniformly
+    ui.command("Halfwidth");
+    ui.command("1");
+    ui.command("SAVE"); // a draft and a half-entered pair are not serialized
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("-1");
+    ui.command("2"); // full widths are 2 -> 4
+    ui.command("30,0");
+    ui.command("U");
+    ui.command("30,10"); // Undo restores the removed segment's taper
+    ui.command("Width 9");
+    ui.command("Exit"); // cancels both staged values, retaining carried width 4
+    ui.step(vec![Event::PointerMoved(egui::pos2(1000.0, 450.0))]);
+    ui.snapshot("pline-tapered-draft");
+    ui.command("Close");
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.pline_width(), 2.0); // in-command choices don't alter PLINEWID
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert!(polyline.is_closed());
+    assert_eq!(polyline.vertices().len(), 4);
+    assert!(polyline.vertices().iter().all(|point| point.z() == 3.0));
+    assert_eq!(
+        polyline.widths(),
+        &[(2.0, 6.0), (6.0, 6.0), (2.0, 4.0), (4.0, 4.0)]
+            .map(|(start, end)| PolylineWidth::new(start, end).unwrap())
+    );
+    ui.snapshot("pline-tapered-closed");
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command("PLINE");
+    ui.command("0,0");
+    ui.command("Width 8");
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_width_defaults_follow_open_drawings_and_canvas_input() {
+    use opencad::PolylineWidth;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-default.dxf");
+    let invalid = scratch.0.join("invalid-default.dxf");
+    let zero = scratch.0.join("missing-default.dxf");
+    let minimal = "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n";
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$PLINEWID\n40\n7.00\n0\nENDSEC\n{minimal}"
+    );
+    fs::write(&path, &source).unwrap();
+    fs::write(&invalid, source.replace("7.00", "NaN")).unwrap();
+    fs::write(&zero, minimal).unwrap();
+    let mut ui = DrawingUi::with_storage_and_path(None, Some(path.clone()));
+    ui.command("PLINEWID");
+    assert!(ui.has_text("PLINEWID = 7"));
+    ui.command(&format!("OPEN {}", invalid.display()));
+    ui.command("PLINEWID");
+    assert!(ui.has_text("PLINEWID = 7"));
+    ui.command("OSNAP OFF");
+    ui.command("SNAP OFF");
+    ui.command("PLINE");
+    ui.canvas_click(0.4, 0.5);
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    press(&mut ui, egui::Key::W);
+    ui.canvas_click(0.5, 0.4); // width prompt rejects adding a point
+    press(&mut ui, egui::Key::Enter);
+    press(&mut ui, egui::Key::Enter);
+    ui.command("PLINEWID 9"); // the current draft retains its accepted width
+    ui.canvas_click(0.6, 0.5);
+    ui.command("Halfwidth 1e308 1"); // doubled halfwidth must be finite
+    ui.canvas_click(0.6, 0.5); // focus canvas after the rejected option
+    press(&mut ui, egui::Key::U); // remove this coincident draft vertex
+    press(&mut ui, egui::Key::H);
+    assert!(ui.has_text("PLINE Halfwidth · Starting halfwidth"));
+    press(&mut ui, egui::Key::Enter);
+    press(&mut ui, egui::Key::Enter);
+    ui.canvas_click(0.7, 0.4);
+    press(&mut ui, egui::Key::Enter);
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.pline_width(), 9.0);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert_eq!(polyline.vertices().len(), 3);
+    assert!(
+        polyline
+            .widths()
+            .iter()
+            .all(|width| *width == PolylineWidth::new(7.0, 7.0).unwrap())
+    );
+    ui.command("PLINE 0,0 10,0");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let Entity::Polyline(polyline) = &document.entities()[1] else {
+        panic!("polyline")
+    };
+    assert!(
+        polyline
+            .widths()
+            .iter()
+            .all(|width| *width == PolylineWidth::new(9.0, 9.0).unwrap())
+    );
+    ui.command(&format!("OPEN {}", zero.display()));
+    ui.command("PLINEWID");
+    assert!(ui.has_text("PLINEWID = 0"));
+    ui.command("PLINE 0,0 10,0");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&zero).unwrap()).unwrap();
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert!(
+        polyline
+            .widths()
+            .iter()
+            .all(|width| *width == PolylineWidth::default())
+    );
+}

@@ -20,7 +20,8 @@ impl OpenCadApp {
         let input = input.trim();
         if input.is_empty() {
             if let Some(result) = self
-                .corner_text(input)
+                .pline_text(input)
+                .or_else(|| self.corner_text(input))
                 .or_else(|| self.explode_text(input))
                 .or_else(|| self.join_text(input))
                 .or_else(|| self.pedit_text(input))
@@ -50,6 +51,9 @@ impl OpenCadApp {
     }
 
     fn command_result(&mut self, input: &str) -> Result<(), String> {
+        if let Some(result) = self.pline_text(input) {
+            return result;
+        }
         if let Some(result) = self.pedit_text(input) {
             return result;
         }
@@ -113,6 +117,17 @@ impl OpenCadApp {
         let rest = rest.trim();
         let tokens: Vec<_> = rest.split_whitespace().collect();
         match verb.to_ascii_uppercase().as_str() {
+            "PLINEWID" => {
+                if !rest.is_empty() {
+                    self.editor
+                        .set_pline_width(number(rest)?)
+                        .map_err(|error| error.to_string())?;
+                    if self.tool != Tool::Polyline {
+                        self.finish();
+                    }
+                }
+                self.message(format!("PLINEWID = {}", self.editor.pline_width()), false);
+            }
             "PLINEREVERSEWIDTHS" => {
                 if !rest.is_empty() {
                     self.pline_reverse_widths = match rest {
@@ -309,8 +324,12 @@ impl OpenCadApp {
                         .iter()
                         .map(|token| parse_point(token, self.elevation))
                         .collect::<Result<Vec<_>, _>>()?;
-                    let polyline =
+                    let mut polyline =
                         Polyline2::new(vertices, closed).map_err(|error| error.to_string())?;
+                    polyline
+                        .set_uniform_width(self.editor.pline_width())
+                        .map_err(|error| error.to_string())?;
+                    polyline.extrema().map_err(|error| error.to_string())?;
                     self.add_entities(vec![Entity::Polyline(polyline)])?;
                     self.finish();
                     self.message("Polyline created.", false);
@@ -633,9 +652,8 @@ impl OpenCadApp {
     }
 
     pub(super) fn undo_line_point(&mut self) {
-        if self.tool == Tool::Polyline && !self.points.is_empty() {
-            self.points.pop();
-            self.message(self.prompt(), false);
+        if self.tool == Tool::Polyline {
+            self.pline_undo_point();
             return;
         }
         if self.tool == Tool::Line && self.points.len() > 1 {

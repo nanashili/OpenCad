@@ -848,20 +848,9 @@ impl OpenCadApp {
         };
         match self.tool {
             Tool::Polyline => {
-                for pair in self.points.windows(2) {
-                    self.draw_entity(
-                        painter,
-                        &Entity::Line(Line3::new(pair[0], pair[1])),
-                        rect,
-                        stroke,
-                    );
+                if let Ok(polyline) = self.pline_candidate(Some(cursor), false) {
+                    self.draw_entity(painter, &Entity::Polyline(polyline), rect, stroke);
                 }
-                self.draw_entity(
-                    painter,
-                    &Entity::Line(Line3::new(base, cursor)),
-                    rect,
-                    stroke,
-                );
             }
             Tool::Line => self.draw_entity(
                 painter,

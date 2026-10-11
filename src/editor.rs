@@ -200,6 +200,12 @@ impl Editor {
     pub fn corner_value(&self, parameter: CornerParameter) -> f64 {
         self.current.document.corner_value(parameter)
     }
+    pub fn pline_width(&self) -> f64 {
+        self.current.document.pline_width()
+    }
+    pub fn set_pline_width(&mut self, width: f64) -> Result<bool, GeometryError> {
+        self.edit_document(|document| document.set_pline_width(width))
+    }
     pub fn set_corner_value(
         &mut self,
         parameter: CornerParameter,

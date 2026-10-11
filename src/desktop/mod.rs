@@ -8,6 +8,7 @@ mod joining;
 mod lengthening;
 mod offsets;
 mod panels;
+mod polyline_drawing;
 mod polyline_editing;
 mod preferences;
 mod shell;
@@ -131,6 +132,7 @@ pub struct OpenCadApp {
     name: String,
     tool: Tool,
     points: Vec<Point3>,
+    pline_input: polyline_drawing::PlineInput,
     transform_input: transforms::TransformInput,
     offset_input: offsets::OffsetInput,
     trim_input: trimming::TrimInput,
@@ -220,6 +222,7 @@ impl OpenCadApp {
             name: "Drawing1".into(),
             tool: Tool::Select,
             points: Vec::new(),
+            pline_input: polyline_drawing::PlineInput::default(),
             transform_input: transforms::TransformInput::default(),
             offset_input: offsets::OffsetInput::default(),
             trim_input: trimming::TrimInput::default(),
@@ -298,6 +301,7 @@ impl OpenCadApp {
         }
         self.tool = tool;
         self.points.clear();
+        self.pline_input = polyline_drawing::PlineInput::new(self.editor.pline_width());
         self.transform_input = transforms::TransformInput::default();
         self.offset_input = offsets::OffsetInput::default();
         self.trim_input = trimming::TrimInput::default();
@@ -314,6 +318,11 @@ impl OpenCadApp {
     }
 
     fn prompt(&self) -> &'static str {
+        if self.tool == Tool::Polyline
+            && let Some(prompt) = self.pline_width_prompt()
+        {
+            return prompt;
+        }
         match (self.tool, self.points.len()) {
             (Tool::Select, _) => {
                 "Select an entity. Shift adds to selection; drag selects a window."
@@ -322,7 +331,7 @@ impl OpenCadApp {
             (Tool::Line, _) => "LINE · Next point, U to undo, C to close, or Enter to finish.",
             (Tool::Polyline, 0) => "PLINE · Specify first point: x,y[,z]",
             (Tool::Polyline, _) => {
-                "PLINE · Next vertex, U to undo, C to close, or Enter to finish."
+                "PLINE · Next vertex, Width / Halfwidth, U to undo, C to close, or Enter to finish."
             }
             (Tool::Circle, 0) => "CIRCLE · Specify center: x,y[,z]",
             (Tool::Circle, _) => "CIRCLE · Specify radius or a point on the circle.",
@@ -353,6 +362,7 @@ impl OpenCadApp {
     fn finish(&mut self) {
         self.tool = Tool::Select;
         self.points.clear();
+        self.pline_input = polyline_drawing::PlineInput::default();
         self.transform_input = transforms::TransformInput::default();
         self.offset_input = offsets::OffsetInput::default();
         self.trim_input = trimming::TrimInput::default();
@@ -398,8 +408,10 @@ impl OpenCadApp {
     }
 
     fn finish_polyline(&mut self, closed: bool) -> Result<(), String> {
-        let polyline =
-            Polyline2::new(self.points.clone(), closed).map_err(|error| error.to_string())?;
+        if self.pline_width_prompt().is_some() {
+            return Err("Complete or cancel the PLINE width values before finishing.".into());
+        }
+        let polyline = self.pline_candidate(None, closed)?;
         self.add_entities(vec![Entity::Polyline(polyline)])?;
         self.finish();
         self.message("Polyline created.", false);
@@ -424,14 +436,7 @@ impl OpenCadApp {
                 return Err("Pick a curve on the canvas or enter entity-number x,y[,z].".into());
             }
             Tool::Polyline => {
-                if self
-                    .points
-                    .first()
-                    .is_some_and(|first| first.z() != point.z())
-                {
-                    return Err(crate::GeometryError::NonPlanarPolyline.to_string());
-                }
-                self.points.push(point);
+                self.pline_point(point)?;
             }
             Tool::Line => {
                 if let Some(previous) = self.points.last().copied() {
@@ -788,6 +793,13 @@ impl OpenCadApp {
                 }
             }
         }
+        if self.tool == Tool::Polyline {
+            for (key, option) in [(Key::W, "Width"), (Key::H, "Halfwidth")] {
+                if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
+                    self.execute(option);
+                }
+            }
+        }
         if self.tool == Tool::Mirror && self.points.len() == 2 {
             for (key, answer) in [(Key::Y, "Yes"), (Key::N, "No")] {
                 if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
@@ -911,14 +923,11 @@ impl OpenCadApp {
                     | Tool::Join
                     | Tool::Pedit
             ) || (self.tool == Tool::Mirror && self.points.len() == 2)
+                || (self.tool == Tool::Polyline && !self.points.is_empty())
             {
                 self.execute("");
             } else if self.points.is_empty() {
                 self.command_focus = true;
-            } else if self.tool == Tool::Polyline {
-                if let Err(error) = self.finish_polyline(false) {
-                    self.message(error, true);
-                }
             } else {
                 self.finish();
                 self.message("Command finished.", false);

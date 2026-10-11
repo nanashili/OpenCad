@@ -256,9 +256,9 @@ struct LinetypeData {
 }
 
 #[derive(Clone, Debug, Default)]
-struct CornerData {
-    values: [f64; 3],
-    fields: [Option<Coordinate>; 3],
+struct DimensionData {
+    values: [f64; 4],
+    fields: [Option<Coordinate>; 4],
 }
 
 /// An R12 document with editable geometry and layers, retaining source records.
@@ -273,7 +273,7 @@ pub struct DxfDocument {
     entity_styles: Vec<EntityStyle>,
     layer_data: LayerData,
     linetype_data: LinetypeData,
-    corner_data: CornerData,
+    dimension_data: DimensionData,
 }
 
 impl DxfDocument {
@@ -303,7 +303,7 @@ impl DxfDocument {
                 }
                 let layer_data = read_layers(input)?;
                 let linetype_data = read_linetypes(input)?;
-                let corner_data = read_corners(input)?;
+                let dimension_data = read_dimensions(input)?;
                 let entity_layers = records
                     .iter()
                     .map(|record| {
@@ -344,7 +344,7 @@ impl DxfDocument {
                     entity_styles,
                     layer_data,
                     linetype_data,
-                    corner_data,
+                    dimension_data,
                 });
             }
             if (marker.code, marker.value) != (0, "SECTION") {
@@ -491,7 +491,21 @@ impl DxfDocument {
     }
 
     pub fn corner_value(&self, parameter: CornerParameter) -> f64 {
-        self.corner_data.values[parameter.index()]
+        self.dimension_data.values[parameter.index()]
+    }
+
+    pub fn pline_width(&self) -> f64 {
+        self.dimension_data.values[3]
+    }
+
+    pub fn set_pline_width(&mut self, value: f64) -> Result<bool, GeometryError> {
+        PolylineWidth::new(value, value)?;
+        let current = &mut self.dimension_data.values[3];
+        if *current == value {
+            return Ok(false);
+        }
+        *current = value;
+        Ok(true)
     }
 
     pub fn set_corner_value(
@@ -500,7 +514,7 @@ impl DxfDocument {
         value: f64,
     ) -> Result<bool, GeometryError> {
         let value = crate::corner::dimension(value)?;
-        let current = &mut self.corner_data.values[parameter.index()];
+        let current = &mut self.dimension_data.values[parameter.index()];
         if *current == value {
             return Ok(false);
         }
@@ -903,7 +917,7 @@ impl DxfDocument {
             &mut header,
             self.layer_data.table.as_ref(),
         );
-        self.corner_data.write_changes(&mut changes, &mut header);
+        self.dimension_data.write_changes(&mut changes, &mut header);
         if !header.is_empty() {
             if let Some(at) = self.linetype_data.header_end {
                 changes.push((at, at, header));
@@ -1255,24 +1269,30 @@ impl LinetypeData {
     }
 }
 
-impl CornerData {
+impl DimensionData {
+    fn names() -> impl Iterator<Item = &'static str> {
+        CornerParameter::ALL
+            .into_iter()
+            .map(CornerParameter::name)
+            .chain(std::iter::once("PLINEWID"))
+    }
+
     fn write_changes(&self, changes: &mut Vec<(usize, usize, String)>, header: &mut String) {
-        for parameter in CornerParameter::ALL {
-            let index = parameter.index();
+        for (index, name) in Self::names().enumerate() {
             let value = self.values[index];
             if let Some(field) = self.fields[index] {
                 if value != field.value {
                     changes.push((field.start, field.end, value.to_string()));
                 }
             } else if value != 0.0 {
-                write!(header, "9\n${}\n40\n{value}\n", parameter.name()).expect("String write");
+                write!(header, "9\n${name}\n40\n{value}\n").expect("String write");
             }
         }
     }
 }
 
-fn read_corners(input: &str) -> Result<CornerData, DxfError> {
-    let mut data = CornerData::default();
+fn read_dimensions(input: &str) -> Result<DimensionData, DxfError> {
+    let mut data = DimensionData::default();
     let mut groups = Groups::new(input);
     let mut in_header = false;
     while let Some(group) = groups.next()? {
@@ -1280,13 +1300,11 @@ fn read_corners(input: &str) -> Result<CornerData, DxfError> {
             (0, "SECTION") => in_header = groups.required()?.value == "HEADER",
             (0, "ENDSEC") => in_header = false,
             (9, variable) if in_header => {
-                let Some(parameter) = CornerParameter::ALL
-                    .into_iter()
-                    .find(|parameter| variable.strip_prefix('$') == Some(parameter.name()))
+                let Some(index) = DimensionData::names()
+                    .position(|name| variable.strip_prefix('$') == Some(name))
                 else {
                     continue;
                 };
-                let index = parameter.index();
                 if data.fields[index].is_some() {
                     return Err(DxfError {
                         line: group.line,
@@ -1297,22 +1315,29 @@ fn read_corners(input: &str) -> Result<CornerData, DxfError> {
                 if field.code != 40 {
                     return Err(DxfError {
                         line: field.line,
-                        kind: DxfErrorKind::Expected("corner dimension in group 40"),
+                        kind: DxfErrorKind::Expected("drawing dimension in group 40"),
                     });
                 }
-                let coordinate = coordinate(field)?;
-                let value =
+                let coordinate = if index == 3 {
+                    read_width(field)?
+                } else {
+                    coordinate(field)?
+                };
+                let value = if index == 3 {
+                    coordinate.value
+                } else {
                     crate::corner::dimension(coordinate.value).map_err(|error| DxfError {
                         line: field.line,
                         kind: DxfErrorKind::Corner(error),
-                    })?;
+                    })?
+                };
                 if groups
                     .peek()?
                     .is_some_and(|next| !matches!(next.code, 0 | 9))
                 {
                     return Err(DxfError {
                         line: field.line,
-                        kind: DxfErrorKind::Expected("one corner dimension value"),
+                        kind: DxfErrorKind::Expected("one drawing dimension value"),
                     });
                 }
                 data.values[index] = value;

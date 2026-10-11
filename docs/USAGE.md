@@ -35,6 +35,46 @@ Command-W closes through the dirty-file prompt. Command-1 toggles Properties,
 Command-3 the command area, Command-5 toolsets and F2 history. Text fields retain
 their own editing shortcuts. Returning to Start keeps the active drawing.
 
+## Polyline creation widths
+
+`PLINEWID` reports the active drawing's default polyline width; `PLINEWID 2`
+sets it. The value is saved in the DXF HEADER, defaults to zero when absent,
+and follows drawing Undo/Redo. It applies to new PLINE objects, including direct
+point-list commands. Existing objects and PEDIT conversions retain their widths.
+
+After the first PLINE point, **Width** (`W`) requests starting and ending widths
+for the next segment. **Halfwidth** (`H`) requests distances from the centerline
+to one edge, so each value is doubled for storage. Enter accepts the current
+starting default, then the entered start as the ending default. Both values are
+staged together. The ending width carries forward uniformly on following
+segments until changed. Short forms include `Width 2 6` and `Halfwidth 1 2`.
+W/H and Enter work with canvas focus; text fields retain their normal shortcuts.
+
+```text
+PLINEWID 2
+PLINE
+0,0
+Width 2 6
+10,0
+20,0
+Halfwidth 1 2
+30,10
+Close
+```
+
+The preview displays filled widths. Enter finishes the open polyline as one
+undoable object. Exit cancels a pending width option; Escape discards the whole
+draft. Save writes the committed drawing while retaining the draft. Widths must
+be finite and nonnegative; doubled halfwidths must also be finite.
+
+OpenCad shares full-width storage between Width/Halfwidth, uses the current pair
+on a closing edge, and restores the removed edge's pair on draft U/Undo. Duplicate
+points are accepted; their zero-length edges have no filled area. In-command
+width choices leave PLINEWID unchanged; setting PLINEWID during a draft affects
+later PLINE commands. These details are OpenCad policies whose native parity is
+unverified. PLINE currently creates straight segments; its arc mode remains
+unfinished. Curved segments can be set through the bulge properties afterward.
+
 ## Rotate, scale and mirror
 
 Select entities first, then choose **Rotate**, **Scale** or **Mirror** in Modify,

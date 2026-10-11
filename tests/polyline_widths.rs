@@ -244,3 +244,62 @@ fn tapered_lines_and_signed_arc_strips_share_finite_svg_and_display_geometry() {
     coincident.set_uniform_width(10.0).unwrap();
     assert!(coincident.width_quads_xy().unwrap().is_empty());
 }
+
+#[test]
+fn pline_default_width_is_drawing_scoped_source_preserved_and_undoable() {
+    let minimal = "0\nSECTION\n2\nENTITIES\n0\nENDSEC\n0\nEOF\n";
+    let source = format!(
+        "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$PLINEWID\n40\n2.500000e0\n999\nkeep-width-comment\n9\n$PLINEGEN\n70\n1\n0\nENDSEC\n{minimal}"
+    );
+    let mut editor = Editor::new(DxfDocument::parse(&source).unwrap());
+    assert_eq!(editor.pline_width(), 2.5);
+    assert_eq!(editor.to_dxf(), source);
+    assert!(!editor.set_pline_width(2.5).unwrap());
+    assert!(!editor.can_undo());
+    for invalid in [-1.0, f64::NAN, f64::INFINITY] {
+        assert!(editor.set_pline_width(invalid).is_err());
+        assert_eq!(editor.to_dxf(), source);
+        assert!(!editor.can_undo());
+    }
+    assert!(editor.set_pline_width(4.0).unwrap());
+    let updated = source.replace("2.500000e0", "4");
+    assert_eq!(editor.to_dxf(), updated);
+    assert_eq!(DxfDocument::parse(&updated).unwrap().pline_width(), 4.0);
+    assert!(editor.undo());
+    assert_eq!(editor.to_dxf(), source);
+    assert!(!editor.can_undo());
+    assert!(editor.redo());
+    assert_eq!(editor.to_dxf(), updated);
+
+    let mut document = DxfDocument::parse(minimal).unwrap();
+    assert_eq!(document.pline_width(), 0.0);
+    assert!(!document.set_pline_width(0.0).unwrap());
+    assert_eq!(document.to_dxf(), minimal);
+    document.set_linetype_scale(2.0).unwrap();
+    document
+        .set_corner_value(opencad::CornerParameter::FilletRadius, 3.0)
+        .unwrap();
+    document.set_pline_width(4.0).unwrap();
+    let saved = document.to_dxf();
+    assert_eq!(saved.matches("2\nHEADER\n").count(), 1);
+    let parsed = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(parsed.pline_width(), 4.0);
+    assert_eq!(parsed.linetype_scale(), 2.0);
+    assert_eq!(
+        parsed.corner_value(opencad::CornerParameter::FilletRadius),
+        3.0
+    );
+    for fields in [
+        "40\n-1\n",
+        "40\nNaN\n",
+        "40\ninf\n",
+        "70\n1\n",
+        "40\n1\n40\n2\n",
+        "40\n1\n9\n$PLINEWID\n40\n2\n",
+    ] {
+        let invalid = format!(
+            "0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n9\n$PLINEWID\n{fields}0\nENDSEC\n{minimal}"
+        );
+        assert!(DxfDocument::parse(&invalid).is_err(), "accepted {fields}");
+    }
+}
