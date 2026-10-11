@@ -46,16 +46,21 @@ cargo clippy --locked --all-features --all-targets -- -D warnings
 cargo test --locked --all-features
 ```
 
-Desktop tests exercise real widgets through accessibility actions and keyboard
-input without opening a window. They check connected actions, focus, dirty-file
-prompts, geometry and saved DXF results. Native OS chrome, file dialogs and GPU
-presentation still need manual testing on the target platform.
+Desktop tests exercise real widgets through accessibility actions, keyboard
+input and pointer drags without opening a window. They check connected actions,
+focus, dirty-file prompts, geometry and saved DXF results. Reorder tests also
+exercise custom accessibility actions and Escape during a drag. Native OS
+chrome, file dialogs and GPU presentation still need manual testing on the
+target platform.
 
 Workspace persistence uses eframe's native storage lifecycle and a versioned
 `opencad.workspace.v1` record in `app.ron` (see [locations and reset instructions](USAGE.md#workspace-preferences)).
 The record contains UI preferences and recent paths, with explicit defaults for
-missing fields. Catalog command IDs identify tool visibility overrides; removed
-IDs and unknown fields are ignored. Native filenames are retained losslessly.
+missing fields. Catalog command IDs identify tool visibility overrides; panel
+labels identify the saved order. Removed identifiers and unknown fields are
+ignored, duplicate panels are skipped, and newly introduced panels are appended.
+Panel moves request an immediate native storage save and flush after the UI pass.
+Native filenames are retained losslessly.
 Drawing data and transient widget memory are excluded. Restart tests reconstruct
 the application with a fresh egui context through `CreationContext.storage` and
 `App::save`; they never read or write the developer's personal profile.
@@ -81,11 +86,12 @@ The README images are reproducible captures of actual OpenCad egui paint output:
 
 ```sh
 OPENCAD_UI_SNAPSHOT_DIR="$PWD/docs/screenshots" cargo test --locked --features desktop --test desktop_ui reference_start_page_preserves_dirty_drawing_and_reopens_recent_files -- --exact
+OPENCAD_UI_SNAPSHOT_DIR="$PWD/docs/screenshots" cargo test --locked --features desktop --test desktop_ui panel_reordering_supports_drag_accessibility_and_restart -- --exact
 ```
 
-The command above uses a POSIX shell; in PowerShell, set
+The commands above use a POSIX shell; in PowerShell, set
 `$env:OPENCAD_UI_SNAPSHOT_DIR = "$PWD/docs/screenshots"` before running the same Cargo
-command. Font metrics can differ across operating systems. These software captures
+commands. Font metrics can differ across operating systems. These software captures
 exclude native window title bars and menus.
 
 ## Releases

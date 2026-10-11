@@ -57,6 +57,9 @@ pub(super) struct Workspace {
     pub slim_tools: bool,
     pub(super) tool_visibility: HashMap<(&'static str, usize), bool>,
     pub(super) collapsed_tools: HashSet<&'static str>,
+    pub(super) tool_order: Vec<&'static ToolGroup>,
+    reorder_selection: Option<&'static str>,
+    pub(super) save_preferences_requested: bool,
 }
 
 impl Default for Workspace {
@@ -79,6 +82,9 @@ impl Default for Workspace {
             slim_tools: false,
             tool_visibility: HashMap::new(),
             collapsed_tools: HashSet::new(),
+            tool_order: catalog::TOOL_GROUPS.iter().collect(),
+            reorder_selection: None,
+            save_preferences_requested: false,
         }
     }
 }
@@ -100,6 +106,29 @@ impl Workspace {
             .copied()
             .unwrap_or(group.items[index].visible)
     }
+
+    fn move_tool_group(&mut self, label: &'static str, destination: usize) {
+        let Some(source) = self
+            .tool_order
+            .iter()
+            .position(|group| group.label == label)
+        else {
+            return;
+        };
+        let destination = destination.min(self.tool_order.len());
+        let destination = destination.saturating_sub(usize::from(source < destination));
+        self.reorder_selection = Some(label);
+        if source != destination {
+            let group = self.tool_order.remove(source);
+            self.tool_order.insert(destination, group);
+            self.save_preferences_requested = true;
+        }
+    }
+}
+
+struct PanelDrag {
+    table: egui::Id,
+    label: &'static str,
 }
 
 #[derive(Clone, Default)]
@@ -568,15 +597,255 @@ impl OpenCadApp {
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
                 self.toolset_selector(ui);
+                if !self.workspace.status {
+                    egui::Panel::bottom("toolset_bottom")
+                        .exact_size(24.0)
+                        .frame(egui::Frame::NONE)
+                        .show(ui, |ui| self.toolset_bottom_bar(ui));
+                }
                 egui::ScrollArea::vertical()
                     .id_salt("toolsets_scroll")
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        for group in catalog::TOOL_GROUPS {
+                        for group in self.workspace.tool_order.clone() {
                             self.tool_group_header(ui, group);
                         }
                     });
             });
+    }
+
+    fn toolset_bottom_bar(&mut self, ui: &mut egui::Ui) {
+        let (_, bar) = ui.allocate_space(egui::vec2(self.workspace.toolset_width(), 24.0));
+        ui.painter()
+            .rect_filled(bar, 0.0, Color32::from_rgb(60, 68, 82));
+        ui.painter().hline(
+            bar.x_range(),
+            bar.top(),
+            Stroke::new(1.5, Color32::from_rgb(47, 52, 63)),
+        );
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt("toolset_bottom_bar")
+                .max_rect(bar)
+                .layout(egui::Layout::left_to_right(Align::Center)),
+        );
+        child.spacing_mut().item_spacing.x = 0.0;
+        child.spacing_mut().button_padding = egui::Vec2::ZERO;
+        child.spacing_mut().interact_size = egui::Vec2::splat(24.0);
+        let add = child.add_enabled(
+            false,
+            Button::new("")
+                .frame(false)
+                .min_size(egui::Vec2::splat(24.0)),
+        );
+        add.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, false, "Add panel"));
+        let center = add.rect.center();
+        child.painter().hline(
+            center.x - 7.0..=center.x + 7.0,
+            center.y,
+            Stroke::new(1.0, MUTED.gamma_multiply(0.5)),
+        );
+        child.painter().vline(
+            center.x,
+            center.y - 7.0..=center.y + 7.0,
+            Stroke::new(1.0, MUTED.gamma_multiply(0.5)),
+        );
+        add.on_disabled_hover_text("Create a new panel — custom panels are not available yet.");
+        let reorder = child.add(
+            Button::new("")
+                .frame(false)
+                .min_size(egui::Vec2::splat(24.0)),
+        );
+        reorder.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Reorder panels")
+        });
+        let center = reorder.rect.center();
+        for offset in [-4.0, 0.0, 4.0] {
+            child.painter().hline(
+                center.x - 7.0..=center.x + 4.0,
+                center.y + offset,
+                Stroke::new(1.0, MUTED),
+            );
+        }
+        child.painter().line_segment(
+            [
+                center + egui::vec2(6.0, -7.0),
+                center + egui::vec2(6.0, 7.0),
+            ],
+            Stroke::new(1.0, MUTED),
+        );
+        if reorder.clicked() {
+            self.workspace.reorder_selection = None;
+        }
+        // DragAndDrop consumes Escape before popovers process it. The same
+        // press must both abandon the drag and leave the reorder interface.
+        if child.input(|input| {
+            input.raw.events.iter().any(|event| {
+                matches!(
+                    event,
+                    egui::Event::Key {
+                        key: Key::Escape,
+                        pressed: true,
+                        ..
+                    }
+                )
+            })
+        }) {
+            egui::Popup::close_id(child.ctx(), egui::Popup::default_response_id(&reorder));
+        }
+        egui::Popup::menu(&reorder.on_hover_text("Reorder Panels"))
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .frame(egui::Frame::popup(child.style()).inner_margin(egui::Margin::ZERO))
+            .width(200.0)
+            .show(|ui| self.toolset_reorder(ui));
+    }
+
+    fn toolset_reorder(&mut self, ui: &mut egui::Ui) {
+        use egui::accesskit::{Action, ActionData, CustomAction};
+        const MOVE_UP: i32 = 1;
+        const MOVE_DOWN: i32 = 2;
+
+        let (_, content) = ui.allocate_space(egui::vec2(200.0, 330.0));
+        let table_rect = egui::Rect::from_min_size(
+            content.min + egui::vec2(12.0, 0.0),
+            egui::vec2(176.0, 300.0),
+        );
+        let table = ui.make_persistent_id("panel_order");
+        let drop_area = ui.interact(table_rect, table, egui::Sense::hover());
+        let mut list = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(table)
+                .max_rect(table_rect)
+                .layout(egui::Layout::top_down(Align::Min)),
+        );
+        list.spacing_mut().item_spacing = egui::vec2(0.0, 2.0);
+        let mut movement = None;
+        let mut last_row_bottom = table_rect.top();
+        let groups = self.workspace.tool_order.clone();
+        egui::ScrollArea::vertical()
+            .max_height(300.0)
+            .min_scrolled_height(300.0)
+            .auto_shrink([false, false])
+            .show(&mut list, |ui| {
+                for (index, group) in groups.iter().enumerate() {
+                    let id = table.with(group.label);
+                    let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), 17.0));
+                    last_row_bottom = rect.bottom();
+                    let row = ui
+                        .interact(rect, id, egui::Sense::click_and_drag())
+                        .on_hover_cursor(egui::CursorIcon::Grab);
+                    if row.clicked() {
+                        self.workspace.reorder_selection = Some(group.label);
+                    }
+                    let selected = self.workspace.reorder_selection == Some(group.label);
+                    row.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
+                            true,
+                            selected,
+                            format!("Reorder panel: {}", group.label),
+                        )
+                    });
+                    ui.ctx().accesskit_node_builder(id, |node| {
+                        node.set_selected(selected);
+                        let mut actions = Vec::new();
+                        if index > 0 {
+                            actions.push(CustomAction {
+                                id: MOVE_UP,
+                                description: "Move panel up".into(),
+                            });
+                        }
+                        if index + 1 < groups.len() {
+                            actions.push(CustomAction {
+                                id: MOVE_DOWN,
+                                description: "Move panel down".into(),
+                            });
+                        }
+                        node.set_custom_actions(actions);
+                    });
+                    let action = ui.input(|input| {
+                        input
+                            .accesskit_action_requests(id, Action::CustomAction)
+                            .find_map(|request| match request.data {
+                                Some(ActionData::CustomAction(MOVE_UP)) if index > 0 => {
+                                    Some(index - 1)
+                                }
+                                Some(ActionData::CustomAction(MOVE_DOWN))
+                                    if index + 1 < groups.len() =>
+                                {
+                                    Some(index + 2)
+                                }
+                                _ => None,
+                            })
+                    });
+                    if let Some(destination) = action {
+                        movement = Some((group.label, destination));
+                    }
+                    if selected || row.has_focus() {
+                        ui.painter()
+                            .rect_filled(rect, 0.0, ui.visuals().selection.bg_fill);
+                    }
+                    ui.painter().text(
+                        rect.left_center() + egui::vec2(3.0, 0.0),
+                        Align2::LEFT_CENTER,
+                        group.label,
+                        FontId::proportional(12.0),
+                        ui.visuals().text_color(),
+                    );
+                    row.dnd_set_drag_payload(PanelDrag {
+                        table,
+                        label: group.label,
+                    });
+                    if let Some(payload) = row.dnd_hover_payload::<PanelDrag>()
+                        && payload.table == table
+                    {
+                        let below = ui.input(|input| {
+                            input
+                                .pointer
+                                .interact_pos()
+                                .is_some_and(|pos| pos.y > rect.center().y)
+                        });
+                        ui.painter().hline(
+                            rect.x_range(),
+                            if below { rect.bottom() } else { rect.top() },
+                            Stroke::new(1.5, ACCENT),
+                        );
+                        if let Some(payload) = row.dnd_release_payload::<PanelDrag>() {
+                            movement = Some((payload.label, index + usize::from(below)));
+                        }
+                    }
+                }
+            });
+        if drop_area.contains_pointer()
+            && ui.input(|input| {
+                input
+                    .pointer
+                    .interact_pos()
+                    .is_some_and(|pos| pos.y >= last_row_bottom)
+            })
+            && let Some(payload) = drop_area.dnd_hover_payload::<PanelDrag>()
+            && payload.table == table
+        {
+            ui.painter().hline(
+                table_rect.x_range(),
+                last_row_bottom,
+                Stroke::new(1.5, ACCENT),
+            );
+            if let Some(payload) = drop_area.dnd_release_payload::<PanelDrag>() {
+                movement = Some((payload.label, groups.len()));
+            }
+        }
+        if let Some((label, destination)) = movement {
+            self.workspace.move_tool_group(label, destination);
+            ui.ctx().request_repaint();
+        }
+        let mut instruction =
+            ui.new_child(egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                content.min + egui::vec2(10.0, 312.0),
+                egui::vec2(180.0, 16.0),
+            )));
+        instruction
+            .add(egui::Label::new(RichText::new("Drag to reorder.").size(12.0)).selectable(false));
     }
 
     fn toolset_selector(&mut self, ui: &mut egui::Ui) {
@@ -913,7 +1182,9 @@ impl OpenCadApp {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 0.0;
-                    ui.add_space(self.workspace.toolset_width());
+                    if self.workspace.tools {
+                        self.toolset_bottom_bar(ui);
+                    }
                     ui.add_sized([58.0, 23.0], Button::selectable(true, "Model"));
                     ui.add_enabled(false, Button::new("+").min_size(egui::vec2(22.0, 23.0)));
                     ui.add_enabled(

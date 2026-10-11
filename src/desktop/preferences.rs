@@ -13,6 +13,7 @@ struct Preferences {
     slim_tools: bool,
     hidden_status: BTreeSet<String>,
     collapsed_toolsets: BTreeSet<String>,
+    toolset_order: Vec<String>,
     // Group label -> first command ID -> visibility. Command IDs survive
     // catalog insertion/reordering, unlike the runtime item indices.
     tool_visibility: BTreeMap<String, BTreeMap<String, bool>>,
@@ -122,6 +123,24 @@ impl OpenCadApp {
                 }
             }
         }
+        let mut order = Vec::new();
+        for label in &preferences.toolset_order {
+            if let Some(group) = catalog::TOOL_GROUPS
+                .iter()
+                .find(|group| group.label == label)
+                && !order
+                    .iter()
+                    .any(|known: &&shell::ToolGroup| known.label == group.label)
+            {
+                order.push(group);
+            }
+        }
+        for group in catalog::TOOL_GROUPS {
+            if !order.iter().any(|known| known.label == group.label) {
+                order.push(group);
+            }
+        }
+        self.workspace.tool_order = order;
         self.recent_list = preferences.recent_list;
         for path in preferences
             .recent_files
@@ -171,6 +190,12 @@ impl OpenCadApp {
                 .collapsed_tools
                 .iter()
                 .map(|label| (*label).to_owned())
+                .collect(),
+            toolset_order: self
+                .workspace
+                .tool_order
+                .iter()
+                .map(|group| group.label.to_owned())
                 .collect(),
             tool_visibility,
             recent_files: self

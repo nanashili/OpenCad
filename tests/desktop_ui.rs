@@ -657,6 +657,227 @@ fn reference_palette_shortcuts_preserve_property_edits_and_compact_command_bound
 }
 
 #[test]
+fn panel_reordering_supports_drag_accessibility_and_restart() {
+    fn row(ui: &DrawingUi, panel: &str) -> (accesskit::NodeId, egui::Rect) {
+        let label = format!("Reorder panel: {panel}");
+        let (&id, node) = ui
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some(label.as_str()))
+            .unwrap_or_else(|| panic!("missing reorder row {panel}"));
+        let bounds = node.bounds().expect("reorder row bounds");
+        (
+            id,
+            egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            ),
+        )
+    }
+    fn drag(ui: &mut DrawingUi, source: egui::Pos2, destination: egui::Pos2, cancel: bool) {
+        ui.step(vec![
+            Event::PointerMoved(source),
+            Event::PointerButton {
+                pos: source,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            },
+        ]);
+        ui.step(vec![Event::PointerMoved(source + egui::vec2(0.0, 8.0))]);
+        ui.step(vec![Event::PointerMoved(destination)]);
+        if cancel {
+            ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+            ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+        }
+        ui.step(vec![Event::PointerButton {
+            pos: destination,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        }]);
+        ui.step(Vec::new());
+    }
+    fn move_accessibly(ui: &mut DrawingUi, panel: &str, description: &str) {
+        let (target, _) = row(ui, panel);
+        let action = ui.nodes[&target]
+            .custom_actions()
+            .iter()
+            .find(|action| action.description.as_ref() == description)
+            .expect("accessible move action")
+            .id;
+        ui.step(vec![Event::AccessKitActionRequest(
+            accesskit::ActionRequest {
+                action: accesskit::Action::CustomAction,
+                target_tree: accesskit::TreeId::ROOT,
+                target_node: target,
+                data: Some(accesskit::ActionData::CustomAction(action)),
+            },
+        )]);
+        ui.step(Vec::new());
+    }
+    fn before(ui: &DrawingUi, first: &str, second: &str) {
+        let first = ui.nodes[&ui.toolset_header(first)].bounds().unwrap();
+        let second = ui.nodes[&ui.toolset_header(second)].bounds().unwrap();
+        assert!(first.y0 < second.y0);
+    }
+
+    let scratch = Scratch::new();
+    let drawing = scratch.0.join("reordered.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE 0,0 10,0");
+    ui.replace_field("End X", "15");
+    before(&ui, "Draw", "Hatch");
+    ui.click("Reorder panels");
+    assert!(ui.has_text("Drag to reorder."));
+    let (_, source) = row(&ui, "Draw");
+    let (_, target) = row(&ui, "Block");
+    drag(
+        &mut ui,
+        source.center(),
+        egui::pos2(target.center().x, target.bottom() - 2.0),
+        false,
+    );
+    assert!(row(&ui, "Hatch").1.top() < row(&ui, "Block").1.top());
+    assert!(row(&ui, "Block").1.top() < row(&ui, "Draw").1.top());
+    assert_eq!(ui.nodes[&row(&ui, "Draw").0].is_selected(), Some(true));
+    // Capture the settled popover rather than a frame from its opening fade.
+    for _ in 0..20 {
+        ui.step(Vec::new());
+    }
+    ui.snapshot("toolsets-reorder");
+    ui.dismiss_popup();
+    before(&ui, "Hatch", "Block");
+    before(&ui, "Block", "Draw");
+    assert_eq!(ui.nodes[&ui.field("End X")].value(), Some("15"));
+    ui.click("Apply properties");
+    ui.command(&format!("SAVEAS {}", drawing.display()));
+
+    ui.click("Reorder panels");
+    let (_, source) = row(&ui, "Draw");
+    let (_, target) = row(&ui, "Hatch");
+    drag(
+        &mut ui,
+        source.center(),
+        egui::pos2(target.center().x, target.top() + 2.0),
+        false,
+    );
+    assert!(row(&ui, "Draw").1.top() < row(&ui, "Hatch").1.top());
+    assert!(
+        ui.nodes[&row(&ui, "Draw").0]
+            .custom_actions()
+            .iter()
+            .all(|action| action.description.as_ref() != "Move panel up")
+    );
+    assert!(
+        ui.nodes[&row(&ui, "Parametric").0]
+            .custom_actions()
+            .iter()
+            .all(|action| action.description.as_ref() != "Move panel down")
+    );
+    move_accessibly(&mut ui, "Draw", "Move panel down");
+    assert!(row(&ui, "Hatch").1.top() < row(&ui, "Draw").1.top());
+    move_accessibly(&mut ui, "Draw", "Move panel up");
+    assert!(row(&ui, "Draw").1.top() < row(&ui, "Hatch").1.top());
+    move_accessibly(&mut ui, "Draw", "Move panel down");
+
+    let (_, source) = row(&ui, "Draw");
+    let (_, target) = row(&ui, "Parametric");
+    drag(&mut ui, source.center(), target.center(), true);
+    assert!(!ui.has_text("Reorder panel:"));
+    before(&ui, "Hatch", "Draw");
+    before(&ui, "Draw", "Block");
+    ui.click("Collapse toolsets");
+    ui.click("Reorder panels");
+    assert!(row(&ui, "Hatch").1.top() < row(&ui, "Draw").1.top());
+    let (_, source) = row(&ui, "Draw");
+    let (_, last) = row(&ui, "Parametric");
+    drag(
+        &mut ui,
+        source.center(),
+        egui::pos2(last.center().x, last.bottom() + 20.0),
+        false,
+    );
+    assert!(row(&ui, "Parametric").1.top() < row(&ui, "Draw").1.top());
+    let (_, source) = row(&ui, "Draw");
+    let (_, first) = row(&ui, "Hatch");
+    drag(
+        &mut ui,
+        source.center(),
+        egui::pos2(first.center().x, first.top() + 2.0),
+        false,
+    );
+    assert!(row(&ui, "Draw").1.top() < row(&ui, "Hatch").1.top());
+    move_accessibly(&mut ui, "Draw", "Move panel down");
+    ui.dismiss_popup();
+    let mut storage = PreferenceStorage::default();
+    ui.app.save(&mut storage);
+    drop(ui);
+
+    let mut restored = DrawingUi::with_storage(Some(&storage));
+    restored.click("reordered.dxf");
+    before(&restored, "Hatch", "Draw");
+    before(&restored, "Draw", "Block");
+    restored.click("Reorder panels");
+    assert!(row(&restored, "Hatch").1.top() < row(&restored, "Draw").1.top());
+    restored.dismiss_popup();
+    restored.command("SAVE");
+    let doc = DxfDocument::parse(&fs::read_to_string(drawing).unwrap()).unwrap();
+    assert_eq!(doc.entities().len(), 1);
+    let Entity::Line(line) = &doc.entities()[0] else {
+        panic!("drawing must retain its line");
+    };
+    assert_eq!(line.end().x(), 15.0);
+}
+
+#[test]
+fn saved_panel_order_ignores_removed_and_duplicate_panels() {
+    let storage = PreferenceStorage(HashMap::from([(
+        "opencad.workspace.v1".into(),
+        r#"(toolset_order: ["Parametric", "Hatch", "Parametric", "removed-panel"])"#.into(),
+    )]));
+    let mut ui = DrawingUi::with_storage(Some(&storage));
+    ui.click("New");
+    let expected = [
+        "Parametric",
+        "Hatch",
+        "Draw",
+        "Block",
+        "Modify",
+        "Text",
+        "Dimension",
+        "Leader",
+        "Table",
+    ];
+    let positions: Vec<_> = expected
+        .iter()
+        .map(|label| ui.nodes[&ui.toolset_header(label)].bounds().unwrap().y0)
+        .collect();
+    assert!(positions.windows(2).all(|pair| pair[0] < pair[1]));
+    ui.click("Reorder panels");
+    let rows = ui
+        .nodes
+        .values()
+        .filter(|node| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Reorder panel:"))
+        })
+        .count();
+    assert_eq!(rows, expected.len());
+    assert!(!ui.has_text("removed-panel"));
+    ui.dismiss_popup();
+    // The toolbar remains usable when the drawing status bar is hidden.
+    ui.command("STATUSBAR");
+    assert!(ui.bounds("Model").is_none());
+    ui.click("Reorder panels");
+    assert!(ui.has_text("Drag to reorder."));
+    ui.dismiss_popup();
+    ui.command("LINE 0,0 5,5");
+    assert_eq!(ui.nodes[&ui.field("End X")].value(), Some("5"));
+}
+
+#[test]
 fn toolset_gears_and_slim_palette_preserve_drafting_and_property_edits() {
     fn settle(ui: &mut DrawingUi) {
         for _ in 0..12 {

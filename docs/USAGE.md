@@ -34,13 +34,26 @@ Command-W closes through the dirty-file prompt. Command-1 toggles Properties,
 Command-3 the command area, Command-5 toolsets and F2 history. Text fields retain
 their own editing shortcuts. Returning to Start keeps the active drawing.
 
+## Reordering toolset panels
+
+Click **Reorder panels** at the bottom left of the Drafting toolset. Drag a panel
+name within the list to move it; the drawing toolset updates immediately. Press
+Escape or click outside the list to close it. Assistive technology can use the
+**Move panel up** and **Move panel down** actions on each eligible row.
+
+Panel order is saved after each move and applies in both full and slim views.
+The current implementation reorders the existing Drafting panels. Creating
+custom panels and editing the Modeling toolset remain unfinished; **Add panel**
+is disabled.
+
 ## Workspace preferences
 
-OpenCad remembers palette visibility, full/slim toolset width, collapsed toolset
-sections, command visibility, status-item visibility, recent files and the
-recent-file list/grid presentation. Preferences are saved on normal exit and
-every 30 seconds. Recent files retain their absolute paths and most-recent-first
-order, with up to 20 entries. Missing files remain listed and report an error if
+OpenCad remembers palette visibility, full/slim toolset width, panel order,
+collapsed toolset sections, command visibility, status-item visibility, recent
+files and the recent-file list/grid presentation. Preferences are saved on
+normal exit and every 30 seconds; panel moves also save immediately. Recent
+files retain their absolute paths and most-recent-first order, with up to 20
+entries. Missing files remain listed and report an error if
 opened. Drawing contents and unsaved edits are not stored in preferences.
 
 The native app stores preferences and window geometry in `app.ron`:

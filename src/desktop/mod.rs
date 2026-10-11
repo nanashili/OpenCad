@@ -719,7 +719,7 @@ impl eframe::App for OpenCadApp {
         }
     }
 
-    fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         if self.pending.is_none()
             && let Some(path) = ctx.input(|i| {
@@ -744,6 +744,12 @@ impl eframe::App for OpenCadApp {
         self.command_panel(&ctx);
         self.dialogs(&ctx);
         self.publish_menu_state(&ctx);
+        if std::mem::take(&mut self.workspace.save_preferences_requested)
+            && let Some(storage) = frame.storage_mut()
+        {
+            self.save_preferences(storage);
+            storage.flush();
+        }
         if self.allow_close {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
