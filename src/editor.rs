@@ -694,6 +694,66 @@ impl Editor {
         Ok(count)
     }
 
+    /// Merge visible compatible candidates into one source, retaining its
+    /// record/layer/style. Incompatible objects are ignored. All consumed
+    /// layers and geometry are validated before one history checkpoint.
+    pub fn join_entities(
+        &mut self,
+        source: usize,
+        candidates: &[usize],
+    ) -> Result<usize, EditError> {
+        let Some(entity) = self.entities().get(source) else {
+            return Ok(0);
+        };
+        entity.join_xy(&[])?;
+        let mut consumed = Vec::new();
+        for &index in candidates {
+            if index == source || !self.is_entity_visible(index) || consumed.contains(&index) {
+                continue;
+            }
+            if let Some(candidate) = self.entities().get(index)
+                && entity.join_compatible_xy(candidate)?
+            {
+                consumed.push(index);
+            }
+        }
+        if consumed.is_empty() {
+            return Ok(0);
+        }
+        let others: Vec<_> = consumed
+            .iter()
+            .map(|index| self.entities()[*index].clone())
+            .collect();
+        let result = entity.join_xy(&others)?;
+        for index in std::iter::once(&source).chain(consumed.iter()) {
+            self.editable_layer(self.entity_layer(*index).expect("validated join index"))?;
+        }
+        consumed.sort_unstable();
+        self.checkpoint();
+        self.current
+            .document
+            .replace_entity(source, result)
+            .expect("same join source type");
+        for &index in consumed.iter().rev() {
+            self.current
+                .document
+                .remove(index)
+                .expect("validated join candidate");
+        }
+        self.select(vec![
+            source - consumed.iter().filter(|index| **index < source).count(),
+        ]);
+        Ok(consumed.len())
+    }
+
+    pub fn close_arc_entity(&mut self, index: usize) -> Result<bool, EditError> {
+        let Some(source) = self.entities().get(index) else {
+            return Ok(false);
+        };
+        let circle = source.close_arc_xy()?;
+        self.replace_curve_parts(index, vec![circle])
+    }
+
     pub fn delete_selection(&mut self) -> Result<bool, LayerError> {
         if self.selection().is_empty() {
             return Ok(false);

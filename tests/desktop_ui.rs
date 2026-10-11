@@ -3440,6 +3440,318 @@ fn explode_canvas_selects_curves_and_windows_with_shift_removal_enter_and_escape
 }
 
 #[test]
+fn join_commands_stage_sources_filter_candidates_preserve_style_and_close_arcs() {
+    use opencad::desktop::{menu_action_status, queue_menu_action};
+    use opencad::{Arc3, Circle3, Line3};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("join-commands.dxf");
+    let p = |x, y| Point3::new(x, y, 7.0).unwrap();
+    let mut document = DxfDocument::default();
+    for (a, b) in [
+        ((-5.0, 5.0), (0.0, 5.0)),
+        ((10.0, 5.0), (20.0, 5.0)),
+        ((0.0, 10.0), (5.0, 10.0)),
+        ((40.0, 5.0), (30.0, 5.0)),
+    ] {
+        if document.entities().len() == 1 {
+            document.push(Entity::Circle(Circle3::new(p(70.0, 0.0), 5.0).unwrap()));
+        }
+        document.push(Entity::Line(Line3::new(p(a.0, a.1), p(b.0, b.1))));
+    }
+    for (start, end) in [(300_f64, 330_f64), (350.0, 20.0), (20.0, 300.0)] {
+        document.push(Entity::Arc(
+            Arc3::new(p(50.0, -20.0), 10.0, start.to_radians(), end.to_radians()).unwrap(),
+        ));
+    }
+    document.add_layer("DETAIL").unwrap();
+    document.add_layer("TARGET").unwrap();
+    for (index, layer, color, scale) in [
+        (2, "DETAIL", 3, 2.0),
+        (5, "DETAIL", 5, 0.5),
+        (0, "TARGET", 1, 1.0),
+        (4, "TARGET", 1, 1.0),
+    ] {
+        document.set_entity_layer(index, layer).unwrap();
+        document.set_entity_color(index, color).unwrap();
+        document.set_entity_linetype_scale(index, scale).unwrap();
+    }
+    let original = document.to_dxf();
+    fs::write(&path, &original).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command(&format!("OPEN {}", path.display()));
+    assert!(menu_action_status(&ui.ctx, "ID_Join").enabled);
+    queue_menu_action(&ui.ctx, "ID_Join");
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Join"));
+    ui.command("3");
+    ui.command_with_enter("");
+    assert!(ui.has_text("Source stays selected"));
+    ui.command("1 5 2 4 1");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command_with_enter("");
+    assert!(ui.has_text("2 objects joined to source."));
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let joined = read();
+    assert_eq!(joined.entities().len(), 6);
+    assert_eq!(
+        joined.entities()[1],
+        Entity::Line(Line3::new(p(-5.0, 5.0), p(40.0, 5.0)))
+    );
+    assert_eq!(joined.entity_layer(1), document.entity_layer(2));
+    assert_eq!(joined.entity_style(1), document.entity_style(2));
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command("UNDO");
+    ui.command("J 3 5 1 5 2");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command("UNDO");
+    for command in [
+        "JOIN 0 3",
+        "JOIN 3 99",
+        "JOIN 3 invalid",
+        "JOIN 3 CLOSE",
+        "JOIN 3 1 CLOSE",
+        "JOIN 6 7 8",
+    ] {
+        ui.command(command);
+        if command == "JOIN 3 CLOSE" {
+            assert!(ui.has_text("Join cLose requires an arc"));
+        }
+        ui.command("SAVE");
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+    assert!(ui.has_text("this arc join requires a full turn"));
+    for action in ["LOCK", "HIDE"] {
+        ui.command(&format!("LAYER {action} TARGET"));
+        ui.command("SAVE");
+        let protected = fs::read_to_string(&path).unwrap();
+        ui.command("JOIN 3 1 5");
+        assert!(ui.has_text(if action == "LOCK" {
+            "unlock layer TARGET before editing it"
+        } else {
+            "Join objects must be visible."
+        }));
+        ui.command("SAVE");
+        assert_eq!(fs::read_to_string(&path).unwrap(), protected);
+        ui.command("UNDO");
+    }
+    ui.command("SELECT 3");
+    ui.command("JOIN"); // One preselected object starts source mode.
+    assert!(ui.has_text("Source stays selected"));
+    ui.command("1 5");
+    ui.command_with_enter("");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command("UNDO");
+    ui.command("SELECT 3 1 5");
+    ui.command("J"); // Multiple preselection uses the lowest supported source index.
+    ui.command("SAVE");
+    assert_eq!(read().entities().len(), 6);
+    assert_eq!(read().entity_style(0), document.entity_style(0));
+    ui.command("UNDO");
+    ui.command("SELECT");
+    ui.command("JOIN");
+    ui.command("ALL");
+    ui.command_with_enter(""); // Only the source's compatible group is consumed.
+    ui.command("SAVE");
+    assert_eq!(read().entities().len(), 6);
+    ui.command("UNDO");
+    ui.command("JOIN 6 7");
+    ui.command("SAVE");
+    let arcs = read();
+    let Entity::Arc(joined_arc) = arcs.entities()[5] else {
+        panic!("arc")
+    };
+    assert!((joined_arc.sweep().to_degrees() - 80.0).abs() < 1e-9);
+    assert_eq!(arcs.entity_style(5), document.entity_style(5));
+    ui.command("UNDO");
+    ui.command("JOIN 6 CLOSE");
+    ui.command("SAVE");
+    let closed = fs::read_to_string(&path).unwrap();
+    assert!(ui.has_text("Arc closed into a circle."));
+    assert!(matches!(read().entities()[7], Entity::Circle(_)));
+    assert_eq!(read().entity_style(7), document.entity_style(5));
+    assert_eq!(read().entity_layer(7), document.entity_layer(5));
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), closed);
+    ui.command(&format!("OPEN {}", path.display()));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), closed);
+}
+
+#[test]
+fn join_canvas_confirms_source_selects_curves_and_windows_and_handles_close_and_cancel_keys() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("join-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.screen_size = egui::vec2(1440.0, 1120.0);
+    ui.click("New");
+    for command in [
+        "LINE -60,-10,7 -40,-10,7",
+        "LINE -20,-10,7 0,-10,7",
+        "LINE 20,-10,7 40,-10,7",
+        "LINE 60,-10,7 60,10,7",
+        "ARC 0,35,7 10 0 90",
+        "ARC 0,35,7 10 180 270",
+    ] {
+        ui.command(command);
+    }
+    ui.command("SELECT");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let read = || DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(read().entities().len(), 6);
+    let position = |ui: &DrawingUi, x: f64, y: f64| {
+        let bounds = ui
+            .bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
+            .unwrap();
+        egui::pos2(
+            bounds.center().x + 4.0 * x as f32,
+            bounds.center().y - 4.0 * y as f32,
+        )
+    };
+    let click = |ui: &mut DrawingUi, x: f64, y: f64, modifiers| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    let drag = |ui: &mut DrawingUi, from: (f64, f64), to: (f64, f64), modifiers| {
+        let from = position(ui, from.0, from.1);
+        let to = position(ui, to.0, to.1);
+        ui.step(vec![
+            Event::PointerMoved(from),
+            Event::PointerButton {
+                pos: from,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerMoved(to)]);
+        ui.step(vec![Event::PointerButton {
+            pos: to,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.click("Join");
+    click(&mut ui, -10.0, -10.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Enter);
+    assert!(ui.has_text("Source stays selected"));
+    click(&mut ui, -10.0, -10.0, egui::Modifiers::SHIFT);
+    assert!(ui.has_text("1 selected")); // A confirmed source cannot be removed.
+    for (x, y) in [(30.0, -10.0), (-50.0, -10.0), (60.0, 0.0)] {
+        click(&mut ui, x, y, egui::Modifiers::NONE);
+    }
+    assert!(ui.has_text("4 selected"));
+    click(&mut ui, 60.0, 0.0, egui::Modifiers::SHIFT);
+    ui.snapshot("join-selected-gapped-lines");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    click(&mut ui, -10.0, -10.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Enter);
+    assert!(ui.has_text("2 objects joined to source."));
+    ui.snapshot("join-line-envelope");
+    ui.command("SAVE");
+    assert_eq!(read().entities().len(), 4);
+    let Entity::Line(joined) = read().entities()[0] else {
+        panic!("line")
+    };
+    assert_eq!(joined.start(), Point3::new(-60.0, -10.0, 7.0).unwrap());
+    assert_eq!(joined.end(), Point3::new(40.0, -10.0, 7.0).unwrap());
+    ui.command("UNDO");
+    ui.command("SELECT");
+    ui.click("Join");
+    drag(&mut ui, (-70.0, 0.0), (50.0, -20.0), egui::Modifiers::NONE);
+    assert!(ui.has_text("3 selected"));
+    drag(
+        &mut ui,
+        (-65.0, -5.0),
+        (-35.0, -15.0),
+        egui::Modifiers::SHIFT,
+    );
+    assert!(ui.has_text("2 selected"));
+    press(&mut ui, egui::Key::Enter);
+    ui.command("SAVE");
+    assert_eq!(read().entities().len(), 5);
+    let Entity::Line(joined) = read().entities()[1] else {
+        panic!("line")
+    };
+    assert_eq!(joined.start(), Point3::new(-20.0, -10.0, 7.0).unwrap());
+    assert_eq!(joined.end(), Point3::new(40.0, -10.0, 7.0).unwrap());
+    ui.command("UNDO");
+    ui.command("SELECT");
+    ui.click("Join");
+    click(&mut ui, 7.0710678, 42.0710678, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Enter);
+    click(&mut ui, -7.0710678, 27.9289322, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Enter);
+    ui.snapshot("join-arc-envelope");
+    ui.command("SAVE");
+    let Entity::Arc(joined) = read().entities()[4] else {
+        panic!("arc")
+    };
+    assert!((joined.sweep().to_degrees() - 270.0).abs() < 1e-5);
+    ui.command("UNDO");
+    ui.command("JOIN 5");
+    click(&mut ui, 7.0710678, 42.0710678, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::L);
+    assert!(ui.has_text("Arc closed into a circle."));
+    ui.snapshot("join-arc-close");
+    ui.command("SAVE");
+    assert!(matches!(read().entities()[5], Entity::Circle(_)));
+    ui.command("UNDO");
+    ui.command("SELECT");
+    ui.click("Join");
+    click(&mut ui, -10.0, -10.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Enter);
+    click(&mut ui, 30.0, -10.0, egui::Modifiers::NONE);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("SELECT");
+    ui.command("JOIN");
+    ui.command("1 2 3");
+    ui.command("Exit");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");

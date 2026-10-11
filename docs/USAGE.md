@@ -271,6 +271,42 @@ widths. LWPOLYLINE, nonzero widths, blocks and other compound-object explosion
 remain unfinished. Segment order, degenerate edges, property copying and batch
 history are explicit OpenCad policies; exact native parity is not claimed.
 
+## Join
+
+Choose **Join** in Modify, or enter `JOIN` (`J`). Select one source and press
+Enter, then select objects to join and press Enter again. Picks and windows add;
+Shift removes candidates while retaining a confirmed source. **All** selects
+visible objects. Escape or **Exit** cancels. A single preselected object starts
+source mode; multiple preselected objects join immediately.
+
+The first scope joins one compatible group: collinear LINEs, or ARCs sharing a
+center, radius and elevation. Gaps and overlaps are allowed. Lines span the
+selected endpoints in the source direction. Arcs grow counterclockwise from
+the source start. Incompatible objects remain untouched. Initial multiple
+selection chooses the lowest-index supported source; direct forms use their
+first argument:
+
+```text
+JOIN 3 1 5
+J 6 7
+JOIN 6
+JOIN 6 CLOSE
+```
+
+For a confirmed ARC source, **cLose** (`L`, including the canvas key) converts
+only that arc to a CIRCLE. A join needing a full-turn arc is rejected; implicit
+circle completion remains unresolved because the public references differ.
+
+The source's layer, style and same-type DXF record survive a join. Close creates
+a new record with the source properties. Each completed operation is one undo
+step. Compatible locked or invalid sources reject the operation before mutation.
+XY elevation must match exactly. Line comparisons use `1e-10` times the larger
+segment length (at least 1), plus a floating-point rounding allowance; center
+and radius comparisons use `1e-10` times the larger radius (at least 1).
+Small accepted residuals project onto the source geometry. These are OpenCad
+policies. Polyline/mixed-type joins, multiple compatible groups, 3D/UCS and
+complete native tolerance parity remain unfinished.
+
 ## Reordering toolset panels
 
 Click **Reorder panels** at the bottom left of the Drafting toolset. Drag a panel

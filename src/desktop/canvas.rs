@@ -145,6 +145,7 @@ impl OpenCadApp {
                     self.tool,
                     Tool::Select
                         | Tool::Explode
+                        | Tool::Join
                         | Tool::Pan
                         | Tool::Trim
                         | Tool::Extend
@@ -166,9 +167,9 @@ impl OpenCadApp {
                 });
                 if response.clicked_by(PointerButton::Primary) {
                     response.request_focus();
-                    if matches!(self.tool, Tool::Select | Tool::Explode) {
+                    if matches!(self.tool, Tool::Select | Tool::Explode | Tool::Join) {
                         let hit = pointer.and_then(|p| self.hit(p, rect));
-                        if self.tool == Tool::Explode {
+                        if matches!(self.tool, Tool::Explode | Tool::Join) {
                             if let Some(index) = hit {
                                 let mut selection = self.editor.selection().to_vec();
                                 if ui.input(|i| i.modifiers.shift) {
@@ -176,6 +177,7 @@ impl OpenCadApp {
                                 } else {
                                     selection.push(index);
                                 }
+                                self.retain_join_source(&mut selection);
                                 self.editor.select(selection);
                             }
                         } else if ui.input(|i| i.modifiers.shift) {
@@ -247,7 +249,7 @@ impl OpenCadApp {
                     self.message(error, true);
                 }
                 if response.drag_started_by(PointerButton::Primary)
-                    && matches!(self.tool, Tool::Select | Tool::Explode)
+                    && matches!(self.tool, Tool::Select | Tool::Explode | Tool::Join)
                 {
                     response.request_focus();
                     self.marquee = ui.input(|i| i.pointer.press_origin());
@@ -257,9 +259,9 @@ impl OpenCadApp {
                     && let Some(end) = ui.input(|i| i.pointer.latest_pos())
                 {
                     let window = Rect::from_two_pos(start, end);
-                    let exploding = self.tool == Tool::Explode;
-                    let removing = exploding && ui.input(|i| i.modifiers.shift);
-                    let mut selection = if exploding || ui.input(|i| i.modifiers.shift) {
+                    let additive = matches!(self.tool, Tool::Explode | Tool::Join);
+                    let removing = additive && ui.input(|i| i.modifiers.shift);
+                    let mut selection = if additive || ui.input(|i| i.modifiers.shift) {
                         self.editor.selection().to_vec()
                     } else {
                         Vec::new()
@@ -284,6 +286,7 @@ impl OpenCadApp {
                             }
                         }
                     }
+                    self.retain_join_source(&mut selection);
                     self.editor.select(selection);
                 }
                 if response.double_clicked() && self.tool == Tool::Select {

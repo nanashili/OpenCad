@@ -8,6 +8,7 @@ mod corner;
 mod dxf;
 mod editor;
 mod entity_style;
+mod joining;
 mod layer;
 mod lengthen;
 mod line;
@@ -89,6 +90,11 @@ pub enum GeometryError {
     UnsupportedLengthenAngle,
     InvalidLengthenValue,
     UnrepresentableLengthen,
+    UnsupportedJoinEntity,
+    UnsupportedJoinClose,
+    IncompatibleJoinEntities,
+    JoinRequiresFullTurn,
+    UnrepresentableJoin,
     DegenerateCurve,
     NoBoundaryIntersection,
     AmbiguousCurvePick,
@@ -163,6 +169,17 @@ impl fmt::Display for GeometryError {
             Self::UnrepresentableLengthen => {
                 write!(f, "the length change is below coordinate precision")
             }
+            Self::UnsupportedJoinEntity => write!(f, "join sources must be open XY lines or arcs"),
+            Self::UnsupportedJoinClose => write!(f, "Join cLose requires an arc"),
+            Self::IncompatibleJoinEntities => write!(
+                f,
+                "join requires collinear lines or arcs sharing a center, radius and elevation"
+            ),
+            Self::JoinRequiresFullTurn => write!(
+                f,
+                "this arc join requires a full turn; use JOIN cLose explicitly"
+            ),
+            Self::UnrepresentableJoin => write!(f, "the join is below coordinate precision"),
             Self::DegenerateCurve => write!(f, "the curve has no editable span"),
             Self::NoBoundaryIntersection => {
                 write!(f, "no usable boundary intersection for this portion")

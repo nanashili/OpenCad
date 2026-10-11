@@ -4,6 +4,7 @@ mod catalog;
 mod commands;
 mod corners;
 mod exploding;
+mod joining;
 mod lengthening;
 mod offsets;
 mod panels;
@@ -53,6 +54,7 @@ enum Tool {
     BreakAtPoint,
     Lengthen,
     Explode,
+    Join,
     Pan,
 }
 impl Tool {
@@ -78,6 +80,7 @@ impl Tool {
             Self::BreakAtPoint => "Break at Point",
             Self::Lengthen => "Lengthen",
             Self::Explode => "Explode",
+            Self::Join => "Join",
             Self::Pan => "Pan",
         }
     }
@@ -131,6 +134,7 @@ pub struct OpenCadApp {
     break_input: breaking::BreakInput,
     lengthen_input: lengthening::LengthenInput,
     corner_input: corners::CornerInput,
+    join_source: Option<usize>,
     corner_trim: bool,
     camera: canvas::Camera,
     fit_pending: bool,
@@ -216,6 +220,7 @@ impl OpenCadApp {
             break_input: breaking::BreakInput::default(),
             lengthen_input: lengthening::LengthenInput::default(),
             corner_input: corners::CornerInput::default(),
+            join_source: None,
             corner_trim: true,
             camera: canvas::Camera::default(),
             fit_pending: true,
@@ -290,6 +295,7 @@ impl OpenCadApp {
         self.break_input = breaking::BreakInput::default();
         self.lengthen_input = lengthening::LengthenInput::default();
         self.corner_input = corners::CornerInput::default();
+        self.join_source = None;
         if matches!(tool, Tool::Trim | Tool::Extend) {
             self.trim_input.boundaries = self.editor.selection().to_vec();
         }
@@ -328,6 +334,7 @@ impl OpenCadApp {
             (Tool::Explode, _) => {
                 "EXPLODE · Select objects; Enter explodes polylines. Shift removes; All selects visible objects; Escape cancels."
             }
+            (Tool::Join, _) => self.join_prompt(),
             (Tool::Pan, _) => "Drag to pan. Scroll to zoom; F fits the drawing.",
         }
     }
@@ -341,6 +348,7 @@ impl OpenCadApp {
         self.break_input = breaking::BreakInput::default();
         self.lengthen_input = lengthening::LengthenInput::default();
         self.corner_input = corners::CornerInput::default();
+        self.join_source = None;
         self.marquee = None;
         self.polar_guide = None;
     }
@@ -389,7 +397,7 @@ impl OpenCadApp {
             Tool::Offset => return self.offset_point(point),
             Tool::Break | Tool::BreakAtPoint => return self.break_point(point),
             Tool::Lengthen => return self.lengthen_point(point),
-            Tool::Explode => {
+            Tool::Explode | Tool::Join => {
                 return Err(
                     "Select objects on the canvas or enter entity numbers, then Enter.".into(),
                 );
@@ -741,7 +749,9 @@ impl OpenCadApp {
             (Key::P, Tool::Pan),
         ] {
             if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
-                if self.tool == Tool::Lengthen && matches!(key, Key::P | Key::T | Key::A) {
+                if self.tool == Tool::Join && key == Key::L {
+                    self.execute("cLose");
+                } else if self.tool == Tool::Lengthen && matches!(key, Key::P | Key::T | Key::A) {
                     self.execute(match key {
                         Key::P => "Percent",
                         Key::T => "Total",
@@ -839,6 +849,7 @@ impl OpenCadApp {
                     | Tool::BreakAtPoint
                     | Tool::Lengthen
                     | Tool::Explode
+                    | Tool::Join
             ) || (self.tool == Tool::Mirror && self.points.len() == 2)
             {
                 self.execute("");

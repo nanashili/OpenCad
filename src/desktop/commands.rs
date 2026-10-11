@@ -22,6 +22,7 @@ impl OpenCadApp {
             if let Some(result) = self
                 .corner_text(input)
                 .or_else(|| self.explode_text(input))
+                .or_else(|| self.join_text(input))
                 .or_else(|| self.lengthen_text(input))
                 .or_else(|| self.break_text(input))
                 .or_else(|| self.trim_text(input))
@@ -48,6 +49,9 @@ impl OpenCadApp {
     }
 
     fn command_result(&mut self, input: &str) -> Result<(), String> {
+        if let Some(result) = self.join_text(input) {
+            return result;
+        }
         if let Some(result) = self.explode_text(input) {
             return result;
         }
@@ -360,6 +364,7 @@ impl OpenCadApp {
             "BREAKATPOINT" => self.break_command(&tokens, true)?,
             "LENGTHEN" | "LEN" => self.lengthen_command(&tokens)?,
             "EXPLODE" | "X" => self.explode_command(&tokens)?,
+            "JOIN" | "J" => self.join_command(&tokens)?,
             "CHAMFER" | "CHA" => self.corner_command(&tokens, true)?,
             "EXTEND" | "EX" | "E" => self.trim_command(&tokens, true)?,
             "ROTATE" | "RO" | "SCALE" | "SC" => {
