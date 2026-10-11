@@ -20,7 +20,8 @@ impl OpenCadApp {
         let input = input.trim();
         if input.is_empty() {
             if let Some(result) = self
-                .offset_text(input)
+                .trim_text(input)
+                .or_else(|| self.offset_text(input))
                 .or_else(|| self.transform_text(input))
             {
                 if let Err(error) = result {
@@ -43,6 +44,9 @@ impl OpenCadApp {
     }
 
     fn command_result(&mut self, input: &str) -> Result<(), String> {
+        if let Some(result) = self.trim_text(input) {
+            return result;
+        }
         if input.contains(',') && !input.chars().next().is_some_and(char::is_alphabetic) {
             let relative = input.starts_with('@');
             let mut point = parse_point(
@@ -313,6 +317,8 @@ impl OpenCadApp {
                 );
             }
             "OFFSET" | "O" => self.offset_command(&tokens)?,
+            "TRIM" | "TR" | "T" => self.trim_command(&tokens, false)?,
+            "EXTEND" | "EX" | "E" => self.trim_command(&tokens, true)?,
             "ROTATE" | "RO" | "SCALE" | "SC" => {
                 let rotate = verb.eq_ignore_ascii_case("ROTATE") || verb.eq_ignore_ascii_case("RO");
                 if tokens.is_empty() {
@@ -600,6 +606,15 @@ pub(super) fn number(value: &str) -> Result<f64, String> {
         return Err("Numbers must be finite.".into());
     }
     Ok(number)
+}
+
+pub(super) fn entity_index(input: &str, count: usize) -> Result<usize, String> {
+    input
+        .parse::<usize>()
+        .ok()
+        .filter(|index| (1..=count).contains(index))
+        .map(|index| index - 1)
+        .ok_or_else(|| "Entity number is outside this drawing; use a whole number from 1.".into())
 }
 
 pub(super) fn parse_point(value: &str, elevation: f64) -> Result<Point3, String> {

@@ -13,6 +13,7 @@ mod offset;
 mod polyline;
 mod svg;
 mod transform;
+mod trim;
 
 #[cfg(feature = "desktop")]
 pub mod desktop;
@@ -29,6 +30,7 @@ pub use offset::{Offset, OffsetLayer, OffsetOptions};
 pub use polyline::{Polyline2, PolylineSegment};
 pub use svg::{SvgError, render_document_svg, render_entities_svg, render_svg};
 pub use transform::Transform;
+pub use trim::BoundaryMode;
 
 use std::error::Error;
 use std::fmt;
@@ -72,6 +74,11 @@ pub enum GeometryError {
     OffsetCollapse,
     UnrepresentableOffset,
     UnsupportedOffsetEntity,
+    UnsupportedTrimEntity,
+    UnsupportedExtendEntity,
+    DegenerateCurve,
+    NoBoundaryIntersection,
+    AmbiguousCurvePick,
     DegenerateLine,
     NotEnoughSegmentsToClose,
     NotEnoughVertices,
@@ -106,6 +113,18 @@ impl fmt::Display for GeometryError {
             Self::UnsupportedOffsetEntity => {
                 write!(f, "offset currently supports XY lines, circles and arcs")
             }
+            Self::UnsupportedTrimEntity => {
+                write!(f, "trim targets must be XY lines, circles or arcs")
+            }
+            Self::UnsupportedExtendEntity => write!(f, "extend targets must be XY lines or arcs"),
+            Self::DegenerateCurve => write!(f, "the curve has no editable span"),
+            Self::NoBoundaryIntersection => {
+                write!(f, "no usable boundary intersection for this portion")
+            }
+            Self::AmbiguousCurvePick => write!(
+                f,
+                "choose a point inside the portion or nearer one endpoint"
+            ),
             Self::DegenerateLine => write!(f, "a coincident line has no unique distance parameter"),
             Self::NotEnoughSegmentsToClose => write!(f, "closing requires at least two segments"),
             Self::NotEnoughVertices => write!(f, "a polyline requires at least two vertices"),

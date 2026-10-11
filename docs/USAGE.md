@@ -25,7 +25,8 @@ one selection and undo object. Bulges specify curved segments: zero is straight,
 controls the closing segment when closed.
 
 Tool keys: **V** select, **L** line, **C** circle, **A** arc, **R** rectangle,
-**M** move, **P** pan, **F** fit. **F3** toggles object snap, **F7** grid, **F8**
+**M** move, **O** offset, **T** trim, **E** extend, **P** pan, **F** fit.
+**F3** toggles object snap, **F7** grid, **F8**
 ortho, **F9** grid snap and **F10** polar tracking. Shift temporarily enables
 ortho while drawing. Middle/right drag pans; scroll zooms.
 
@@ -91,6 +92,40 @@ distance prompt chooses Through. These defaults are OpenCad policies; AutoCAD
 and arc angles, and reject collapsed radii, ambiguous sides and nonrepresentable
 results. Unequal-Z lines, polyline joins, other curve types, distance measurement
 with two picks, Multiple mode and OFFSETDIST are unfinished.
+
+## Trim and extend
+
+Choose **Trim** or **Extend** in Modify, or enter `TRIM` (`TR`, `T`) or
+`EXTEND` (`EX`, `E`). Select cutting/boundary edges on the canvas or enter their
+one-based entity numbers, then press Enter. A preselection becomes the initial
+boundary selection. Enter with no boundaries selected, or **All**, uses all
+visible curves as boundaries.
+
+Pick the portion to remove when trimming. Pick near the endpoint to move when
+extending. Hold Shift to perform the other operation for that pick. The preview
+highlights the retained or extended geometry; these picks use the raw cursor
+position so object snap and ortho do not change the selected portion. Exact picks
+can be entered as `entity-number x,y[,z]`.
+
+**Edge** accepts Extend/NoExtend for using boundary supporting lines/full circles
+or their finite extents. **Cutting edges** starts a new boundary selection.
+**Undo** (`U`) reverses only operations in the current command. Enter or **Exit**
+finishes, and Escape cancels a pending pick. Direct OpenCad forms are:
+
+```text
+TRIM 1 5,0 2,3
+EXTEND 1 10,0 ALL EDGEEXTEND
+```
+
+Targets are equal-Z world-XY LINE, CIRCLE and ARC for trimming, and LINE/ARC for
+extending. Boundaries can also be polyline segments, including bulges, at the
+same elevation. Retained fragments copy source style/layer; splitting and circle
+conversion undo in one step. Picks on a cut or equally near both endpoints are
+rejected. Tangencies count as intersections, coincident supports are ignored,
+and a circle needs two distinct cuts. These numerical choices and the initial
+Standard/NoExtend mode are OpenCad policies, not verified native defaults.
+Polyline targets, other entities, Quick mode, Fence/Crossing/Erase options,
+projection/UCS modes and TRIMEXTENDMODE/EDGEMODE variables remain unfinished.
 
 ## Reordering toolset panels
 

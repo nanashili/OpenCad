@@ -141,9 +141,10 @@ impl OpenCadApp {
                 self.cursor = pointer.and_then(|position| {
                     self.camera.world(position, rect, self.drawing_elevation())
                 });
-                if self.tool != Tool::Select
-                    && self.tool != Tool::Pan
-                    && let Some(point) = self.cursor
+                if !matches!(
+                    self.tool,
+                    Tool::Select | Tool::Pan | Tool::Trim | Tool::Extend
+                ) && let Some(point) = self.cursor
                 {
                     self.cursor = Some(self.snap(point, rect, ui.input(|i| i.modifiers.shift)));
                 }
@@ -164,6 +165,14 @@ impl OpenCadApp {
                             }
                         } else {
                             self.editor.select(hit.into_iter().collect());
+                        }
+                    } else if matches!(self.tool, Tool::Trim | Tool::Extend) {
+                        let hit = pointer.and_then(|position| self.hit(position, rect));
+                        if let Some(point) = self.cursor
+                            && let Err(error) =
+                                self.trim_click(hit, point, ui.input(|i| i.modifiers.shift))
+                        {
+                            self.message(error, true);
                         }
                     } else if self.offset_awaits_source() {
                         let hit = pointer.and_then(|position| self.hit(position, rect));
@@ -566,6 +575,18 @@ impl OpenCadApp {
         if self.tool == Tool::Offset {
             if let Some(entity) = self.offset_preview(cursor) {
                 self.draw_entity(painter, &entity, rect, stroke);
+            }
+            return;
+        }
+        if matches!(self.tool, Tool::Trim | Tool::Extend) {
+            if let Some(position) = self.camera.screen(cursor.x(), cursor.y(), rect)
+                && let Some(source) = self.hit(position, rect)
+                && let Some(parts) =
+                    self.trim_preview(source, cursor, painter.ctx().input(|i| i.modifiers.shift))
+            {
+                for part in parts {
+                    self.draw_entity(painter, &part, rect, stroke);
+                }
             }
             return;
         }

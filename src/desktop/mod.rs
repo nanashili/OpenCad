@@ -7,12 +7,13 @@ mod preferences;
 mod shell;
 mod toolsets;
 mod transforms;
+mod trimming;
 
 pub use shell::{MenuItem, MenuStatus, menu_action_status, native_menus, queue_menu_action};
 
 use crate::{
-    Arc3, Circle3, DxfDocument, Editor, Entity, EntityStyle, Line3, Linetype, Offset, OffsetLayer,
-    OffsetOptions, Point3, Polyline2, Transform,
+    Arc3, BoundaryMode, Circle3, DxfDocument, Editor, Entity, EntityStyle, Line3, Linetype, Offset,
+    OffsetLayer, OffsetOptions, Point3, Polyline2, Transform,
 };
 use eframe::egui::{self, Color32, Key, Modifiers};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -40,6 +41,8 @@ enum Tool {
     Scale,
     Mirror,
     Offset,
+    Trim,
+    Extend,
     Pan,
 }
 impl Tool {
@@ -57,6 +60,8 @@ impl Tool {
             Self::Scale => "Scale",
             Self::Mirror => "Mirror",
             Self::Offset => "Offset",
+            Self::Trim => "Trim",
+            Self::Extend => "Extend",
             Self::Pan => "Pan",
         }
     }
@@ -106,6 +111,7 @@ pub struct OpenCadApp {
     points: Vec<Point3>,
     transform_input: transforms::TransformInput,
     offset_input: offsets::OffsetInput,
+    trim_input: trimming::TrimInput,
     camera: canvas::Camera,
     fit_pending: bool,
     grid: bool,
@@ -186,6 +192,7 @@ impl OpenCadApp {
             points: Vec::new(),
             transform_input: transforms::TransformInput::default(),
             offset_input: offsets::OffsetInput::default(),
+            trim_input: trimming::TrimInput::default(),
             camera: canvas::Camera::default(),
             fit_pending: true,
             grid: false,
@@ -255,6 +262,10 @@ impl OpenCadApp {
         self.points.clear();
         self.transform_input = transforms::TransformInput::default();
         self.offset_input = offsets::OffsetInput::default();
+        self.trim_input = trimming::TrimInput::default();
+        if matches!(tool, Tool::Trim | Tool::Extend) {
+            self.trim_input.boundaries = self.editor.selection().to_vec();
+        }
         self.marquee = None;
         self.message(self.prompt(), false);
     }
@@ -283,6 +294,7 @@ impl OpenCadApp {
             (Tool::Move | Tool::Copy, _) => "Specify destination point.",
             (Tool::Rotate | Tool::Scale | Tool::Mirror, _) => self.transform_prompt(),
             (Tool::Offset, _) => self.offset_prompt(),
+            (Tool::Trim | Tool::Extend, _) => self.trim_prompt(),
             (Tool::Pan, _) => "Drag to pan. Scroll to zoom; F fits the drawing.",
         }
     }
@@ -292,6 +304,7 @@ impl OpenCadApp {
         self.points.clear();
         self.transform_input = transforms::TransformInput::default();
         self.offset_input = offsets::OffsetInput::default();
+        self.trim_input = trimming::TrimInput::default();
         self.marquee = None;
         self.polar_guide = None;
     }
@@ -338,6 +351,9 @@ impl OpenCadApp {
         match self.tool {
             Tool::Rotate | Tool::Scale | Tool::Mirror => return self.transform_point(point),
             Tool::Offset => return self.offset_point(point),
+            Tool::Trim | Tool::Extend => {
+                return Err("Pick a curve on the canvas or enter entity-number x,y[,z].".into());
+            }
             Tool::Polyline => {
                 if self
                     .points
@@ -677,10 +693,19 @@ impl OpenCadApp {
             (Key::R, Tool::Rectangle),
             (Key::M, Tool::Move),
             (Key::O, Tool::Offset),
+            (Key::T, Tool::Trim),
+            (Key::E, Tool::Extend),
             (Key::P, Tool::Pan),
         ] {
             if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
-                if matches!(self.tool, Tool::Rotate | Tool::Scale)
+                if matches!(self.tool, Tool::Trim | Tool::Extend) && matches!(key, Key::C | Key::E)
+                {
+                    self.execute(if key == Key::C {
+                        "Cutting edges"
+                    } else {
+                        "Edge"
+                    });
+                } else if matches!(self.tool, Tool::Rotate | Tool::Scale)
                     && !self.points.is_empty()
                     && matches!(key, Key::C | Key::R)
                 {
@@ -693,7 +718,7 @@ impl OpenCadApp {
             }
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::U)) {
-            if self.tool == Tool::Offset {
+            if matches!(self.tool, Tool::Offset | Tool::Trim | Tool::Extend) {
                 self.execute("Undo");
             } else {
                 self.undo_line_point();
@@ -726,7 +751,9 @@ impl OpenCadApp {
             }
         }
         if ctx.input(|i| i.key_pressed(Key::Enter)) {
-            if self.tool == Tool::Offset || (self.tool == Tool::Mirror && self.points.len() == 2) {
+            if matches!(self.tool, Tool::Offset | Tool::Trim | Tool::Extend)
+                || (self.tool == Tool::Mirror && self.points.len() == 2)
+            {
                 self.execute("");
             } else if self.points.is_empty() {
                 self.command_focus = true;

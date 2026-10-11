@@ -65,6 +65,16 @@ impl DrawingUi {
                 self.screen_size,
             )),
             focused: true,
+            modifiers: events
+                .iter()
+                .rev()
+                .find_map(|event| match event {
+                    Event::Key { modifiers, .. } | Event::PointerButton { modifiers, .. } => {
+                        Some(*modifiers)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_default(),
             events,
             ..Default::default()
         };
@@ -2188,6 +2198,220 @@ fn offset_pointer_picking_preview_through_keyboard_undo_and_cancel_work() {
     ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
     ui.command("SAVE");
     assert_eq!(fs::read_to_string(path).unwrap(), saved);
+}
+
+#[test]
+fn trim_extend_commands_boundaries_conversion_history_and_direct_forms_work() {
+    use opencad::desktop::{menu_action_status, queue_menu_action};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("trim-extend.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    assert!(menu_action_status(&ui.ctx, "ID_Trim").enabled);
+    assert!(menu_action_status(&ui.ctx, "ID_Extend").enabled);
+    ui.command("LAYER NEW DETAIL");
+    ui.command("LINE 0,0,7 10,0,7");
+    ui.command("ENTITY COLOR 3");
+    ui.command("LINE 3,-5,7 3,5,7");
+    ui.command("LINE 7,-5,7 7,5,7");
+    ui.command("CIRCLE 20,0,7 5");
+    ui.command("LINE 20,-10,7 20,10,7");
+    ui.command("CIRCLE 20,0,7 8");
+    ui.command("ARC 40,0,7 5 0 90");
+    ui.command("LINE 37,-10,7 37,10,7");
+    ui.command("LAYER SET 0");
+    ui.command("SELECT 2 3");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    queue_menu_action(&ui.ctx, "ID_Trim");
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Trim"));
+    ui.command_with_enter("");
+    ui.command("1 5,0");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 9);
+    for (index, start, end) in [(0, 0.0, 3.0), (8, 7.0, 10.0)] {
+        let Entity::Line(line) = document.entities()[index] else {
+            panic!("expected trimmed line")
+        };
+        assert!((line.start().x() - start).abs() < 1e-10);
+        assert!((line.end().x() - end).abs() < 1e-10);
+        assert_eq!(line.start().z(), 7.0);
+        assert_eq!(document.entity_layer(index), Some("DETAIL"));
+        assert_eq!(document.entity_style(index).unwrap().color_index(), 3);
+    }
+    ui.command("Undo");
+    ui.command("U");
+    assert!(ui.has_text("There are no trim/extend operations to undo in this command."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Cutting edges");
+    ui.command("0");
+    assert!(ui.has_text("Entity number is outside this drawing"));
+    ui.command("5");
+    ui.command_with_enter("");
+    ui.command("4 25,0");
+    // The explicit diameter moves from number 5 to 4 after circle conversion.
+    ui.command("5 28,0");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 8);
+    for (index, radius) in [(6, 5.0), (7, 8.0)] {
+        let Entity::Arc(arc) = document.entities()[index] else {
+            panic!("expected circle converted to arc")
+        };
+        assert_eq!(arc.center(), Point3::new(20.0, 0.0, 7.0).unwrap());
+        assert_eq!(arc.radius(), radius);
+        assert!((arc.start_angle() - std::f64::consts::FRAC_PI_2).abs() < 1e-10);
+        assert!((arc.sweep() - std::f64::consts::PI).abs() < 1e-10);
+    }
+    ui.command("Undo");
+    ui.command("Undo");
+    // Undo also restores the original explicit boundary number.
+    ui.command("4 25,0");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Exit");
+    ui.command("TRIM 1 5,0 2,3");
+    ui.command("UNDO");
+    ui.command("EXTEND 7 40,5 8");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let Entity::Arc(arc) = document.entities()[6] else {
+        panic!("expected extended arc")
+    };
+    assert!((arc.end_point().unwrap().x() - 37.0).abs() < 1e-10);
+    assert!((arc.end_point().unwrap().y() - 4.0).abs() < 1e-10);
+    ui.command("UNDO");
+    ui.command("LINE 15,5,7 15,10,7");
+    ui.command("EXTEND 1 10,0 9");
+    assert!(ui.has_text("no usable boundary intersection"));
+    ui.command("EXTEND 1 10,0 9 EDGEEXTEND");
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    let Entity::Line(line) = document.entities()[0] else {
+        panic!("expected extended line")
+    };
+    assert_eq!(line.end(), Point3::new(15.0, 0.0, 7.0).unwrap());
+    ui.command("TRIM 0 5,0 ALL");
+    ui.command("TRIM 1 3,0 ALL");
+    ui.command("TRIM 1 5,0 ALL UNKNOWN");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(path).unwrap(), saved);
+}
+
+#[test]
+fn trim_extend_pointer_preview_shift_edge_options_and_cancel_work() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pointer-trim-extend.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE -40,0,7 40,0,7");
+    ui.command("LINE -20,-30,7 -20,30,7");
+    ui.command("LINE 20,-30,7 20,30,7");
+    ui.command("SELECT");
+    ui.click("Trim");
+    let position = |ui: &DrawingUi, x: f64, y: f64| {
+        let bounds = ui
+            .nodes
+            .values()
+            .find(|node| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Drawing canvas,"))
+            })
+            .and_then(|node| node.bounds())
+            .unwrap();
+        egui::pos2(
+            ((bounds.x0 + bounds.x1) * 0.5 + 4.0 * x) as f32,
+            ((bounds.y0 + bounds.y1) * 0.5 - 4.0 * y) as f32,
+        )
+    };
+    let click = |ui: &mut DrawingUi, x: f64, y: f64, modifiers| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    click(&mut ui, -20.0, 20.0, egui::Modifiers::NONE);
+    click(&mut ui, 20.0, 20.0, egui::Modifiers::NONE);
+    ui.step(vec![key(egui::Key::Enter, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Enter, egui::Modifiers::NONE, false)]);
+    // Object snap would choose the boundary midpoint; trimming uses raw picks.
+    let pos = position(&ui, 19.0, 0.0);
+    ui.step(vec![Event::PointerMoved(pos)]);
+    ui.snapshot("trim-preview");
+    click(&mut ui, 19.0, 0.0, egui::Modifiers::NONE);
+    assert!(ui.has_text("Curve trimmed."));
+    ui.step(vec![key(egui::Key::U, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::U, egui::Modifiers::NONE, false)]);
+    assert!(ui.has_text("Trim/Extend undone."));
+    click(&mut ui, 30.0, 0.0, egui::Modifiers::NONE);
+    // Shift in TRIM attempts extension rather than removing another portion.
+    click(&mut ui, 19.0, 0.0, egui::Modifiers::SHIFT);
+    // No change: the endpoint already lies on this boundary.
+    assert!(ui.has_text("no usable boundary intersection"));
+    ui.command("Undo");
+    ui.command_with_enter("");
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("LINE 60,10,7 60,20,7");
+    ui.command("SELECT");
+    ui.custom_action("Trim", "Open command menu");
+    ui.click("Extend");
+    ui.command("4");
+    ui.command_with_enter("");
+    click(&mut ui, 39.0, 0.0, egui::Modifiers::NONE);
+    assert!(ui.has_text("no usable boundary intersection"));
+    ui.command("Edge");
+    ui.command("Invalid");
+    assert!(ui.has_text("Boundary Edge must be Extend or NoExtend"));
+    ui.command("Extend");
+    click(&mut ui, 39.0, 0.0, egui::Modifiers::NONE);
+    assert!(ui.has_text("Curve extended."));
+    ui.command("Cutting edges");
+    ui.command("2 3");
+    ui.command_with_enter("");
+    click(&mut ui, 0.0, 0.0, egui::Modifiers::SHIFT);
+    assert!(ui.has_text("Curve trimmed."));
+    ui.command("U");
+    ui.command("Undo");
+    ui.command("Cutting edges");
+    ui.command_with_enter(""); // An empty edge selection uses all visible curves.
+    ui.command("1 0,0");
+    ui.command("Undo");
+    ui.command("All");
+    ui.command("1 30,0");
+    ui.command("Undo");
+    ui.command("Edge");
+    ui.command("NoExtend");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&original).unwrap();
+    assert_eq!(document.entities().len(), 4);
+    let Entity::Line(line) = document.entities()[0] else {
+        panic!("expected restored source line")
+    };
+    assert_eq!(line.start(), Point3::new(-40.0, 0.0, 7.0).unwrap());
+    assert_eq!(line.end(), Point3::new(40.0, 0.0, 7.0).unwrap());
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(path).unwrap(), original);
 }
 
 #[test]

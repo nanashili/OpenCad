@@ -1,6 +1,6 @@
 use crate::{
-    DxfDocument, Entity, EntityStyle, EntityStyleError, GeometryError, Layer, LayerError, Linetype,
-    LinetypeError, Offset, OffsetLayer, OffsetOptions, Transform,
+    BoundaryMode, DxfDocument, Entity, EntityStyle, EntityStyleError, GeometryError, Layer,
+    LayerError, Linetype, LinetypeError, Offset, OffsetLayer, OffsetOptions, Transform,
 };
 use std::{error::Error, fmt};
 
@@ -428,6 +428,94 @@ impl Editor {
             .push_with_style(entity, &target_layer, style)
             .expect("validated target layer");
         self.select(vec![created]);
+        Ok(true)
+    }
+
+    /// Trim or split one source in a single transaction, retaining its layer/style.
+    /// Same-type first fragments retain their source record; converted circles
+    /// and additional fragments become new records.
+    pub fn trim_entity(
+        &mut self,
+        index: usize,
+        boundaries: &[usize],
+        pick: crate::Point3,
+        mode: BoundaryMode,
+    ) -> Result<bool, EditError> {
+        let Some(source) = self.entities().get(index) else {
+            return Ok(false);
+        };
+        let edges = self.cutting_edges(index, boundaries);
+        let parts = source.trim_xy(&edges, pick, mode)?;
+        self.replace_curve_parts(index, parts)
+    }
+
+    pub fn extend_entity(
+        &mut self,
+        index: usize,
+        boundaries: &[usize],
+        pick: crate::Point3,
+        mode: BoundaryMode,
+    ) -> Result<bool, EditError> {
+        let Some(source) = self.entities().get(index) else {
+            return Ok(false);
+        };
+        let edges = self.cutting_edges(index, boundaries);
+        let entity = source.extend_xy(&edges, pick, mode)?;
+        self.replace_curve_parts(index, vec![entity])
+    }
+
+    fn cutting_edges(&self, source: usize, boundaries: &[usize]) -> Vec<Entity> {
+        boundaries
+            .iter()
+            .copied()
+            .filter(|index| *index != source && self.is_entity_visible(*index))
+            .filter_map(|index| self.entities().get(index).cloned())
+            .collect()
+    }
+
+    fn replace_curve_parts(
+        &mut self,
+        index: usize,
+        mut parts: Vec<Entity>,
+    ) -> Result<bool, EditError> {
+        let source = &self.entities()[index];
+        if parts.as_slice() == std::slice::from_ref(source) {
+            return Ok(false);
+        }
+        let layer = self
+            .entity_layer(index)
+            .expect("existing source layer")
+            .to_owned();
+        self.editable_layer(&layer)?;
+        let style = self
+            .entity_style(index)
+            .expect("existing source style")
+            .clone();
+        let same_type = parts
+            .first()
+            .is_some_and(|part| part.name() == source.name());
+        self.checkpoint();
+        let mut selected = Vec::new();
+        if same_type {
+            self.current
+                .document
+                .replace_entity(index, parts.remove(0))
+                .expect("validated source type");
+            selected.push(index);
+        } else {
+            self.current
+                .document
+                .remove(index)
+                .expect("validated source index");
+        }
+        for part in parts {
+            selected.push(self.entities().len());
+            self.current
+                .document
+                .push_with_style(part, &layer, style.clone())
+                .expect("validated source layer");
+        }
+        self.select(selected);
         Ok(true)
     }
 

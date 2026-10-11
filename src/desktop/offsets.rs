@@ -1,4 +1,4 @@
-use super::commands::{number, parse_point};
+use super::commands::{entity_index, number, parse_point};
 use super::*;
 
 #[derive(Clone, Copy, Default)]
@@ -250,13 +250,4 @@ impl OpenCadApp {
         self.message("Offset created.", false);
         Ok(())
     }
-}
-
-fn entity_index(input: &str, count: usize) -> Result<usize, String> {
-    input
-        .parse::<usize>()
-        .ok()
-        .filter(|index| (1..=count).contains(index))
-        .map(|index| index - 1)
-        .ok_or_else(|| "Entity number is outside this drawing; use a whole number from 1.".into())
 }
