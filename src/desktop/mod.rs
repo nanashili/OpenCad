@@ -5,11 +5,13 @@ mod panels;
 mod preferences;
 mod shell;
 mod toolsets;
+mod transforms;
 
 pub use shell::{MenuItem, MenuStatus, menu_action_status, native_menus, queue_menu_action};
 
 use crate::{
     Arc3, Circle3, DxfDocument, Editor, Entity, EntityStyle, Line3, Linetype, Point3, Polyline2,
+    Transform,
 };
 use eframe::egui::{self, Color32, Key, Modifiers};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -33,6 +35,9 @@ enum Tool {
     Rectangle,
     Move,
     Copy,
+    Rotate,
+    Scale,
+    Mirror,
     Pan,
 }
 impl Tool {
@@ -46,6 +51,9 @@ impl Tool {
             Self::Rectangle => "Rectangle",
             Self::Move => "Move",
             Self::Copy => "Copy",
+            Self::Rotate => "Rotate",
+            Self::Scale => "Scale",
+            Self::Mirror => "Mirror",
             Self::Pan => "Pan",
         }
     }
@@ -93,6 +101,7 @@ pub struct OpenCadApp {
     name: String,
     tool: Tool,
     points: Vec<Point3>,
+    transform_input: transforms::TransformInput,
     camera: canvas::Camera,
     fit_pending: bool,
     grid: bool,
@@ -171,6 +180,7 @@ impl OpenCadApp {
             name: "Drawing1".into(),
             tool: Tool::Select,
             points: Vec::new(),
+            transform_input: transforms::TransformInput::default(),
             camera: canvas::Camera::default(),
             fit_pending: true,
             grid: false,
@@ -228,12 +238,17 @@ impl OpenCadApp {
     }
 
     fn set_tool(&mut self, tool: Tool) {
-        if matches!(tool, Tool::Move | Tool::Copy) && self.editor.selection().is_empty() {
-            self.message("Select entities before moving or copying.", true);
+        if matches!(
+            tool,
+            Tool::Move | Tool::Copy | Tool::Rotate | Tool::Scale | Tool::Mirror
+        ) && self.editor.selection().is_empty()
+        {
+            self.message("Select entities before transforming them.", true);
             return;
         }
         self.tool = tool;
         self.points.clear();
+        self.transform_input = transforms::TransformInput::default();
         self.marquee = None;
         self.message(self.prompt(), false);
     }
@@ -260,6 +275,7 @@ impl OpenCadApp {
                 "Specify base point, then destination; or enter MOVE/COPY dx dy [dz]."
             }
             (Tool::Move | Tool::Copy, _) => "Specify destination point.",
+            (Tool::Rotate | Tool::Scale | Tool::Mirror, _) => self.transform_prompt(),
             (Tool::Pan, _) => "Drag to pan. Scroll to zoom; F fits the drawing.",
         }
     }
@@ -267,6 +283,7 @@ impl OpenCadApp {
     fn finish(&mut self) {
         self.tool = Tool::Select;
         self.points.clear();
+        self.transform_input = transforms::TransformInput::default();
         self.marquee = None;
         self.polar_guide = None;
     }
@@ -288,7 +305,10 @@ impl OpenCadApp {
     }
 
     fn drawing_elevation(&self) -> f64 {
-        if self.tool == Tool::Polyline {
+        if matches!(
+            self.tool,
+            Tool::Polyline | Tool::Rotate | Tool::Scale | Tool::Mirror
+        ) {
             self.points
                 .first()
                 .map_or(self.elevation, |point| point.z())
@@ -308,6 +328,7 @@ impl OpenCadApp {
 
     fn point(&mut self, point: Point3) -> Result<(), String> {
         match self.tool {
+            Tool::Rotate | Tool::Scale | Tool::Mirror => return self.transform_point(point),
             Tool::Polyline => {
                 if self
                     .points
@@ -632,6 +653,13 @@ impl OpenCadApp {
         if ctx.text_edit_focused() {
             return;
         }
+        if self.tool == Tool::Mirror && self.points.len() == 2 {
+            for (key, answer) in [(Key::Y, "Yes"), (Key::N, "No")] {
+                if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
+                    self.execute(answer);
+                }
+            }
+        }
         for (key, tool) in [
             (Key::V, Tool::Select),
             (Key::L, Tool::Line),
@@ -642,7 +670,12 @@ impl OpenCadApp {
             (Key::P, Tool::Pan),
         ] {
             if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
-                if key == Key::C && matches!(self.tool, Tool::Line | Tool::Polyline) {
+                if matches!(self.tool, Tool::Rotate | Tool::Scale)
+                    && !self.points.is_empty()
+                    && matches!(key, Key::C | Key::R)
+                {
+                    self.execute(if key == Key::C { "Copy" } else { "Reference" });
+                } else if key == Key::C && matches!(self.tool, Tool::Line | Tool::Polyline) {
                     self.close_line();
                 } else {
                     self.set_tool(tool);
@@ -679,7 +712,9 @@ impl OpenCadApp {
             }
         }
         if ctx.input(|i| i.key_pressed(Key::Enter)) {
-            if self.points.is_empty() {
+            if self.tool == Tool::Mirror && self.points.len() == 2 {
+                self.execute("");
+            } else if self.points.is_empty() {
                 self.command_focus = true;
             } else if self.tool == Tool::Polyline {
                 if let Err(error) = self.finish_polyline(false) {

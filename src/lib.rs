@@ -11,6 +11,7 @@ mod line;
 mod linetype;
 mod polyline;
 mod svg;
+mod transform;
 
 #[cfg(feature = "desktop")]
 pub mod desktop;
@@ -25,6 +26,7 @@ pub use line::{Bounds3, Line3, Point3};
 pub use linetype::{Linetype, LinetypeError};
 pub use polyline::{Polyline2, PolylineSegment};
 pub use svg::{SvgError, render_document_svg, render_entities_svg, render_svg};
+pub use transform::Transform;
 
 use std::error::Error;
 use std::fmt;
@@ -62,6 +64,7 @@ pub enum GeometryError {
     NegativeRadius,
     NonFiniteAngle,
     NonFiniteResult,
+    NonPositiveScale,
     DegenerateLine,
     NotEnoughSegmentsToClose,
     NotEnoughVertices,
@@ -82,6 +85,7 @@ impl fmt::Display for GeometryError {
             Self::NegativeRadius => write!(f, "the radius must be nonnegative"),
             Self::NonFiniteAngle => write!(f, "angles must be finite"),
             Self::NonFiniteResult => write!(f, "the geometry result exceeds the finite range"),
+            Self::NonPositiveScale => write!(f, "the scale factor must be positive"),
             Self::DegenerateLine => write!(f, "a coincident line has no unique distance parameter"),
             Self::NotEnoughSegmentsToClose => write!(f, "closing requires at least two segments"),
             Self::NotEnoughVertices => write!(f, "a polyline requires at least two vertices"),

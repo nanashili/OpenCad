@@ -1,6 +1,6 @@
 use crate::{
     DxfDocument, Entity, EntityStyle, EntityStyleError, GeometryError, Layer, LayerError, Linetype,
-    LinetypeError,
+    LinetypeError, Transform,
 };
 use std::{error::Error, fmt};
 
@@ -320,14 +320,31 @@ impl Editor {
         dz: f64,
         copy: bool,
     ) -> Result<bool, EditError> {
+        self.map_selection(copy, |entity| entity.translated(dx, dy, dz))
+    }
+
+    /// Transform a selection as one undo step, preserving source records and styles.
+    pub fn transform_selection(
+        &mut self,
+        transform: Transform,
+        copy: bool,
+    ) -> Result<bool, EditError> {
+        self.map_selection(copy, |entity| entity.transformed(transform))
+    }
+
+    fn map_selection(
+        &mut self,
+        copy: bool,
+        operation: impl Fn(&Entity) -> Result<Entity, GeometryError>,
+    ) -> Result<bool, EditError> {
         if self.selection().is_empty() {
             return Ok(false);
         }
         self.editable_selection()?;
-        let translated = self
+        let transformed = self
             .selection()
             .iter()
-            .map(|index| self.entities()[*index].translated(dx, dy, dz))
+            .map(|index| operation(&self.entities()[*index]))
             .collect::<Result<Vec<_>, _>>()?;
         if copy {
             let styles: Vec<_> = self
@@ -344,7 +361,7 @@ impl Editor {
                 .collect();
             self.checkpoint();
             let first = self.entities().len();
-            for (entity, (layer, style)) in translated.into_iter().zip(styles) {
+            for (entity, (layer, style)) in transformed.into_iter().zip(styles) {
                 self.current
                     .document
                     .push_with_style(entity, &layer, style)
@@ -353,7 +370,7 @@ impl Editor {
             self.select((first..self.entities().len()).collect());
             return Ok(true);
         }
-        if translated
+        if transformed
             .iter()
             .zip(self.selection())
             .all(|(entity, index)| *entity == self.entities()[*index])
@@ -361,11 +378,11 @@ impl Editor {
             return Ok(false);
         }
         self.checkpoint();
-        for (index, entity) in self.current.selection.iter().copied().zip(translated) {
+        for (index, entity) in self.current.selection.iter().copied().zip(transformed) {
             self.current
                 .document
                 .replace_entity(index, entity)
-                .expect("translation preserves type");
+                .expect("transform preserves type");
         }
         Ok(true)
     }

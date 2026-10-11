@@ -612,6 +612,26 @@ impl OpenCadApp {
                     }
                 }
             }
+            Tool::Rotate | Tool::Scale | Tool::Mirror => {
+                let end = if self.tool == Tool::Mirror {
+                    self.points.get(1).copied().unwrap_or(cursor)
+                } else {
+                    cursor
+                };
+                let start = if self.tool == Tool::Mirror {
+                    self.points[0]
+                } else {
+                    base
+                };
+                self.draw_entity(painter, &Entity::Line(Line3::new(start, end)), rect, stroke);
+                if let Some(transform) = self.transform_preview(cursor) {
+                    for index in self.editor.selection() {
+                        if let Ok(entity) = self.editor.entities()[*index].transformed(transform) {
+                            self.draw_entity(painter, &entity, rect, stroke);
+                        }
+                    }
+                }
+            }
             Tool::Move | Tool::Copy => {
                 for index in self.editor.selection() {
                     if let Ok(entity) = self.editor.entities()[*index].translated(

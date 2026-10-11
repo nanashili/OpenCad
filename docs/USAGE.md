@@ -34,6 +34,36 @@ Command-W closes through the dirty-file prompt. Command-1 toggles Properties,
 Command-3 the command area, Command-5 toolsets and F2 history. Text fields retain
 their own editing shortcuts. Returning to Start keeps the active drawing.
 
+## Rotate, scale and mirror
+
+Select entities first, then choose **Rotate**, **Scale** or **Mirror** in Modify,
+or enter `ROTATE` (`RO`), `SCALE` (`SC`) or `MIRROR` (`MI`). Base and mirror-line
+points accept canvas clicks or `x,y[,z]` coordinates.
+
+Rotate accepts an angle in degrees or a direction point from the base. Scale
+accepts a positive numeric factor. After the base, **Copy** (`C`) retains the
+source and **Reference** (`R`) accepts an old angle/length followed by a new
+angle/length. Each reference can be measured with points. A new direction or
+length point is measured from the base. For scaling with the mouse, use Reference.
+Mirror asks **Erase source objects?**; **Yes** replaces them and **No** creates
+copies. Enter defaults to No in OpenCad. Escape cancels without changing geometry.
+
+Direct forms are also available:
+
+```text
+ROTATE 0,0 90 COPY
+SCALE 0,0,3 2
+MIRROR 0,0 0,10 YES
+```
+
+These operations support LINE, CIRCLE, ARC and 2D POLYLINE, including bulges.
+Each selection transform is one undo step; copies retain source layers and styles.
+OpenCad currently uses degrees counterclockwise from world +X, rotates about
+world Z, and mirrors through a vertical plane containing the XY mirror line.
+Rotation and mirror retain Z; uniform scaling scales XYZ about the base. Positive
+scale factors and Mirror's No default are OpenCad policies. Drawing-specific UCS,
+angular-unit settings, text, annotative objects and other entity types are unfinished.
+
 ## Reordering toolset panels
 
 Click **Reorder panels** at the bottom left of the Drafting toolset. Drag a panel

@@ -198,6 +198,9 @@ fn command_for_action(action: &str) -> Option<&'static str> {
         "ID_Rectang" => "RECTANG",
         "ID_Move" => "MOVE",
         "ID_Copy" => "COPY",
+        "ID_Rotate" => "ROTATE",
+        "ID_Scale" => "SCALE",
+        "ID_Mirror" => "MIRROR",
         "ID_Pan" | "ID_PanPick" => "PAN",
         "ID_ZoomExten" | "ID_ZoomAll" => "ZOOM EXTENTS",
         "ID_ZoomIn" => "ZOOM 2X",
@@ -247,7 +250,8 @@ pub fn menu_action_status(ctx: &egui::Context, action: &str) -> MenuStatus {
             "ID_U" => state.drawing && state.undo && !state.editing_text,
             "ID_Redo" => state.drawing && state.redo && !state.editing_text,
             "ID_SelAll" => state.drawing && !state.editing_text,
-            "ID_Erase" | "MM_1561" | "ID_Move" | "ID_Copy" => state.drawing && state.selection,
+            "ID_Erase" | "MM_1561" | "ID_Move" | "ID_Copy" | "ID_Rotate" | "ID_Scale"
+            | "ID_Mirror" => state.drawing && state.selection,
             _ => state.drawing,
         };
     MenuStatus { enabled, checked }
@@ -409,6 +413,9 @@ impl OpenCadApp {
             "ID_Rectang" => self.tool == Tool::Rectangle,
             "ID_Move" => self.tool == Tool::Move,
             "ID_Copy" => self.tool == Tool::Copy,
+            "ID_Rotate" => self.tool == Tool::Rotate,
+            "ID_Scale" => self.tool == Tool::Scale,
+            "ID_Mirror" => self.tool == Tool::Mirror,
             "ID_Pan" => self.tool == Tool::Pan,
             "UI_Palette_layers" => self.workspace.layers,
             "UI_Toolset_drafting" => true,

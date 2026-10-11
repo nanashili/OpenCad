@@ -1854,6 +1854,176 @@ fn accessible_drawing_commands_save_and_reopen_real_geometry() {
 }
 
 #[test]
+fn transform_commands_reference_copies_confirmation_and_history_save_geometry() {
+    use opencad::desktop::{menu_action_status, queue_menu_action};
+    fn near_point(actual: Point3, expected: [f64; 3]) {
+        for (actual, expected) in [actual.x(), actual.y(), actual.z()]
+            .into_iter()
+            .zip(expected)
+        {
+            assert!((actual - expected).abs() < 1e-9, "{actual} != {expected}");
+        }
+    }
+    let scratch = Scratch::new();
+    let path = scratch.0.join("transformed.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    for action in ["ID_Rotate", "ID_Scale", "ID_Mirror"] {
+        assert!(!menu_action_status(&ui.ctx, action).enabled);
+    }
+    ui.command("LINE 1,2,3 4,2,5");
+    ui.command("CIRCLE 10,20,7 2");
+    ui.command("ARC 10,20,7 2 0 90");
+    ui.command("PLINE 0,0,7 10,0,7 10,10,7 CLOSE");
+    ui.command("SELECT 1");
+    for action in ["ID_Rotate", "ID_Scale", "ID_Mirror"] {
+        assert!(menu_action_status(&ui.ctx, action).enabled);
+    }
+    queue_menu_action(&ui.ctx, "ID_Rotate");
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Rotate"));
+    ui.command("1,2,3");
+    ui.command("Copy");
+    ui.command("Reference");
+    ui.command("0,0");
+    ui.command("1,0");
+    ui.command("90");
+    assert!(ui.has_text("Transformed copy created."));
+    queue_menu_action(&ui.ctx, "ID_Scale");
+    ui.step(Vec::new());
+    ui.command("1,2,3");
+    ui.command("R");
+    ui.command("0");
+    assert!(ui.has_text("The reference length must be positive."));
+    ui.command("3");
+    ui.command("6");
+    assert!(ui.has_text("Selection transformed."));
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let before_mirror = fs::read_to_string(&path).unwrap();
+    queue_menu_action(&ui.ctx, "ID_Mirror");
+    ui.step(Vec::new());
+    ui.command("0,0");
+    ui.command("0,0,10");
+    assert!(ui.has_text("a coincident line"));
+    ui.command("0,10");
+    assert!(ui.has_text("Erase source objects?"));
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), before_mirror);
+    ui.command("MIRROR");
+    ui.command("0,0");
+    ui.command("0,10");
+    ui.command_with_enter(""); // OpenCad's explicit default retains the source.
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("SAVE");
+    assert_eq!(
+        DxfDocument::parse(&fs::read_to_string(&path).unwrap())
+            .unwrap()
+            .entities()
+            .len(),
+        6,
+        "default mirror must create a copy before undo/redo"
+    );
+    ui.command("UNDO");
+    ui.command("REDO");
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 6);
+    let Entity::Line(original) = document.entities()[0] else {
+        panic!("expected line")
+    };
+    near_point(original.start(), [1.0, 2.0, 3.0]);
+    near_point(original.end(), [4.0, 2.0, 5.0]);
+    let Entity::Line(scaled) = document.entities()[4] else {
+        panic!("expected scaled copy")
+    };
+    near_point(scaled.start(), [1.0, 2.0, 3.0]);
+    near_point(scaled.end(), [1.0, 8.0, 7.0]);
+    let Entity::Line(mirrored) = document.entities()[5] else {
+        panic!("expected reflected copy")
+    };
+    near_point(mirrored.start(), [-1.0, 2.0, 3.0]);
+    near_point(mirrored.end(), [-1.0, 8.0, 7.0]);
+    ui.command("MI 0,0 0,10 YES");
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command("SELECT 1");
+    ui.command("SCALE 0,0 -1");
+    assert!(ui.has_text("the scale factor must be positive"));
+    ui.command("ROTATE 0,0 NaN");
+    assert!(ui.has_text("Numbers must be finite."));
+    ui.command("ROTATE 0,0 360");
+    assert!(ui.has_text("Selection unchanged."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    ui.command("RO 1,2,3 -90 COPY");
+    ui.command("SC 1,2,3 0.5");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 7);
+    let Entity::Line(copy) = document.entities()[6] else {
+        panic!("expected direct transform copy")
+    };
+    near_point(copy.start(), [1.0, 2.0, 3.0]);
+    near_point(copy.end(), [1.0, 0.5, 4.0]);
+}
+
+#[test]
+fn transform_pointer_tools_reference_lengths_and_keyboard_options_work() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pointer-transforms.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("OSNAP OFF");
+    ui.command("LINE 0,0,7 10,0,7");
+    ui.command("SELECT ALL");
+    ui.click("Rotate");
+    ui.canvas_click(0.5, 0.5); // Empty-drawing camera keeps the origin at center.
+    ui.step(vec![key(egui::Key::C, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::C, egui::Modifiers::NONE, false)]);
+    assert!(ui.has_text("Copy enabled."));
+    ui.canvas_click(0.5, 0.25);
+    ui.click("Scale");
+    ui.canvas_click(0.5, 0.5);
+    ui.canvas_click(0.6, 0.5);
+    assert!(ui.has_text("Enter a positive scale factor, or Reference"));
+    ui.step(vec![key(egui::Key::R, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::R, egui::Modifiers::NONE, false)]);
+    ui.canvas_click(0.5, 0.5);
+    ui.canvas_click(0.6, 0.5);
+    ui.canvas_click(0.7, 0.5);
+    ui.click("Mirror");
+    ui.canvas_click(0.5, 0.4);
+    ui.canvas_click(0.5, 0.6);
+    ui.snapshot("mirror-preview");
+    ui.step(vec![key(egui::Key::Y, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Y, egui::Modifiers::NONE, false)]);
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        document.entities().len(),
+        2,
+        "Copy survives Scale and Mirror's erase-source choice"
+    );
+    let Entity::Line(original) = document.entities()[0] else {
+        panic!("expected line")
+    };
+    assert_eq!(original.end(), Point3::new(10.0, 0.0, 7.0).unwrap());
+    let Entity::Line(copy) = document.entities()[1] else {
+        panic!("expected transformed line")
+    };
+    assert!(copy.start().x().abs() < 1e-6);
+    assert!(copy.end().x().abs() < 1e-6);
+    assert!(copy.start().y().abs() < 1e-6);
+    assert!((copy.end().y() - 20.0).abs() < 1e-3);
+    assert_eq!(copy.start().z(), 14.0);
+    assert_eq!(copy.end().z(), 14.0);
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");

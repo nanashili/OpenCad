@@ -19,7 +19,11 @@ impl OpenCadApp {
     pub(super) fn execute(&mut self, input: &str) {
         let input = input.trim();
         if input.is_empty() {
-            if self.tool == Tool::Polyline && !self.points.is_empty() {
+            if let Some(result) = self.transform_text(input) {
+                if let Err(error) = result {
+                    self.message(error, true);
+                }
+            } else if self.tool == Tool::Polyline && !self.points.is_empty() {
                 if let Err(error) = self.finish_polyline(false) {
                     self.message(error, true);
                 }
@@ -67,6 +71,9 @@ impl OpenCadApp {
             self.finish();
             self.message("Circle created.", false);
             return Ok(());
+        }
+        if let Some(result) = self.transform_text(input) {
+            return result;
         }
         let (verb, rest) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
         let rest = rest.trim();
@@ -298,6 +305,51 @@ impl OpenCadApp {
                     format!("{} entities selected.", self.editor.selection().len()),
                     false,
                 );
+            }
+            "ROTATE" | "RO" | "SCALE" | "SC" => {
+                let rotate = verb.eq_ignore_ascii_case("ROTATE") || verb.eq_ignore_ascii_case("RO");
+                if tokens.is_empty() {
+                    self.set_tool(if rotate { Tool::Rotate } else { Tool::Scale });
+                } else {
+                    if !(2..=3).contains(&tokens.len())
+                        || (tokens.len() == 3 && !tokens[2].eq_ignore_ascii_case("COPY"))
+                    {
+                        return Err("ROTATE/SCALE syntax: ROTATE base-x,y[,z] degrees [COPY]; SCALE base-x,y[,z] positive-factor [COPY]".into());
+                    }
+                    let base = parse_point(tokens[0], self.elevation)?;
+                    let value = number(tokens[1])?;
+                    let transform = if rotate {
+                        Transform::rotate_xy(base, value.rem_euclid(360.0).to_radians())
+                    } else {
+                        Transform::scale(base, value)
+                    }
+                    .map_err(|error| error.to_string())?;
+                    self.apply_transform(transform, tokens.len() == 3)?;
+                }
+            }
+            "MIRROR" | "MI" => {
+                if tokens.is_empty() {
+                    self.set_tool(Tool::Mirror);
+                } else {
+                    if !(2..=3).contains(&tokens.len()) {
+                        return Err("MIRROR syntax: MIRROR first-x,y second-x,y [YES|NO] (erase source; default NO)".into());
+                    }
+                    let erase = match tokens
+                        .get(2)
+                        .map(|value| value.to_ascii_uppercase())
+                        .as_deref()
+                    {
+                        None | Some("NO" | "N") => false,
+                        Some("YES" | "Y") => true,
+                        _ => return Err("MIRROR erase source option must be Yes or No.".into()),
+                    };
+                    let transform = Transform::mirror_xy(
+                        parse_point(tokens[0], self.elevation)?,
+                        parse_point(tokens[1], self.elevation)?,
+                    )
+                    .map_err(|error| error.to_string())?;
+                    self.apply_transform(transform, !erase)?;
+                }
             }
             "MOVE" | "M" | "COPY" => {
                 let copy = verb.eq_ignore_ascii_case("COPY");
