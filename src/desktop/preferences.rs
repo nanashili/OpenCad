@@ -25,6 +25,7 @@ struct Preferences {
     recent_list: bool,
     corner_trim: Option<bool>,
     pedit_accept: bool,
+    pline_reverse_widths: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -204,6 +205,7 @@ impl OpenCadApp {
             self.corner_trim = trim;
         }
         self.pedit_accept = preferences.pedit_accept;
+        self.pline_reverse_widths = preferences.pline_reverse_widths;
         for path in preferences
             .recent_files
             .into_iter()
@@ -282,6 +284,7 @@ impl OpenCadApp {
             recent_list: self.recent_list,
             corner_trim: Some(self.corner_trim),
             pedit_accept: self.pedit_accept,
+            pline_reverse_widths: self.pline_reverse_widths,
         };
         eframe::set_value(storage, STORAGE_KEY, &preferences);
     }

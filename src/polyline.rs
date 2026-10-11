@@ -7,7 +7,38 @@ use std::f64::consts::{PI, TAU};
 pub struct Polyline2 {
     vertices: Vec<Point3>,
     bulges: Vec<f64>,
+    widths: Vec<PolylineWidth>,
     closed: bool,
+}
+
+/// Effective starting and ending widths of one outgoing segment.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct PolylineWidth {
+    start: f64,
+    end: f64,
+}
+
+impl PolylineWidth {
+    pub fn new(start: f64, end: f64) -> Result<Self, GeometryError> {
+        if !start.is_finite() || !end.is_finite() || start < 0.0 || end < 0.0 {
+            return Err(GeometryError::InvalidPolylineWidth);
+        }
+        Ok(Self { start, end })
+    }
+
+    pub fn start(self) -> f64 {
+        self.start
+    }
+    pub fn end(self) -> f64 {
+        self.end
+    }
+
+    fn reversed(self) -> Self {
+        Self {
+            start: self.end,
+            end: self.start,
+        }
+    }
 }
 
 /// A segment follows vertex order; Arc3 itself always stores a CCW locus.
@@ -53,9 +84,11 @@ impl Polyline2 {
             return Err(GeometryError::NonPlanarPolyline);
         }
         let bulges = vec![0.0; vertices.len()];
+        let widths = vec![PolylineWidth::default(); vertices.len()];
         Ok(Self {
             vertices,
             bulges,
+            widths,
             closed,
         })
     }
@@ -78,6 +111,35 @@ impl Polyline2 {
 
     pub fn bulges(&self) -> &[f64] {
         &self.bulges
+    }
+
+    /// Like bulges, the last open value is dormant and is retained.
+    /// DXF import resolves omitted values against the parent defaults.
+    pub fn widths(&self) -> &[PolylineWidth] {
+        &self.widths
+    }
+
+    pub fn set_widths(&mut self, widths: Vec<PolylineWidth>) -> Result<(), GeometryError> {
+        if widths.len() != self.vertices.len() {
+            return Err(GeometryError::InvalidWidthCount);
+        }
+        self.widths = widths;
+        Ok(())
+    }
+
+    pub fn set_width(&mut self, index: usize, start: f64, end: f64) -> Result<(), GeometryError> {
+        let width = PolylineWidth::new(start, end)?;
+        *self
+            .widths
+            .get_mut(index)
+            .ok_or(GeometryError::InvalidVertexIndex)? = width;
+        Ok(())
+    }
+
+    pub fn set_uniform_width(&mut self, width: f64) -> Result<(), GeometryError> {
+        let width = PolylineWidth::new(width, width)?;
+        self.widths.fill(width);
+        Ok(())
     }
 
     pub fn set_bulges(&mut self, bulges: Vec<f64>) -> Result<(), GeometryError> {
@@ -119,14 +181,27 @@ impl Polyline2 {
         let mut replacement = Self::new(vertices, self.closed)?;
         let count = replacement.bulges.len().min(self.bulges.len());
         replacement.bulges[..count].copy_from_slice(&self.bulges[..count]);
+        replacement.widths[..count].copy_from_slice(&self.widths[..count]);
         *self = replacement;
         Ok(())
     }
 
     pub fn reverse(&mut self) {
+        self.reverse_with_widths(true);
+    }
+
+    /// Reverse vertex order. When requested, also reverse width order and ends
+    /// to preserve the geometric taper. Otherwise width pairs keep their indices.
+    pub fn reverse_with_widths(&mut self, reverse_widths: bool) {
         self.vertices.reverse();
         let last = self.bulges.len() - 1;
         self.bulges[..last].reverse();
+        if reverse_widths {
+            self.widths[..last].reverse();
+            for width in &mut self.widths {
+                *width = width.reversed();
+            }
+        }
         for bulge in &mut self.bulges {
             if *bulge != 0.0 {
                 *bulge = -*bulge;
@@ -155,11 +230,12 @@ impl Polyline2 {
         self.length()?;
         self.extrema()?;
         let fragment = |indices: Vec<usize>| -> Result<Self, GeometryError> {
-            let part = Self::with_bulges(
+            let mut part = Self::with_bulges(
                 indices.iter().map(|&index| self.vertices[index]).collect(),
                 indices.iter().map(|&index| self.bulges[index]).collect(),
                 false,
             )?;
+            part.set_widths(indices.iter().map(|&index| self.widths[index]).collect())?;
             part.length()?;
             part.extrema()?;
             Ok(part)
@@ -197,6 +273,79 @@ impl Polyline2 {
                 self.bulges[index],
             )
         })
+    }
+
+    pub fn has_active_width(&self) -> bool {
+        self.widths
+            .iter()
+            .take(self.vertices.len() - usize::from(!self.closed))
+            .any(|width| width.start != 0.0 || width.end != 0.0)
+    }
+
+    /// Original display policy: linear taper along distance, flat segment caps,
+    /// and arc strips sampled at no more than PI/64 radians per interval.
+    /// Inner arc offsets stop at the center when half-width exceeds the radius.
+    pub fn width_quads_xy(&self) -> Result<Vec<[Point3; 4]>, GeometryError> {
+        let mut quads = Vec::new();
+        for (index, segment) in self.segments().enumerate() {
+            let width = self.widths[index];
+            if width.start == 0.0 && width.end == 0.0 {
+                continue;
+            }
+            let segment = segment?;
+            let (steps, normal) = match segment {
+                PolylineSegment::Line(line) => {
+                    let length = line.length()?;
+                    if length == 0.0 {
+                        continue;
+                    }
+                    (
+                        1,
+                        Some((
+                            -(line.end().y() - line.start().y()) / length,
+                            (line.end().x() - line.start().x()) / length,
+                        )),
+                    )
+                }
+                PolylineSegment::Arc { arc, .. } => (
+                    (arc.sweep() / (PI / 64.0)).ceil().clamp(1.0, 256.0) as usize,
+                    None,
+                ),
+            };
+            let edge = |fraction: f64| -> Result<[Point3; 2], GeometryError> {
+                let point = segment.point_at_fraction(fraction)?;
+                let half = (width.start / 2.0) * (1.0 - fraction) + (width.end / 2.0) * fraction;
+                let (nx, ny, left, right) = if let Some((nx, ny)) = normal {
+                    (nx, ny, half, half)
+                } else if let PolylineSegment::Arc { arc, .. } = segment {
+                    let angle = arc.start_angle()
+                        + arc.sweep()
+                            * match segment {
+                                PolylineSegment::Arc {
+                                    clockwise: true, ..
+                                } => 1.0 - fraction,
+                                _ => fraction,
+                            };
+                    // Radial outer/inner edges are independent of traversal direction.
+                    (angle.cos(), angle.sin(), half, half.min(arc.radius()))
+                } else {
+                    unreachable!("arc normal")
+                };
+                Ok([
+                    Point3::new(point.x() + nx * left, point.y() + ny * left, point.z())
+                        .map_err(|_| GeometryError::NonFiniteResult)?,
+                    Point3::new(point.x() - nx * right, point.y() - ny * right, point.z())
+                        .map_err(|_| GeometryError::NonFiniteResult)?,
+                ])
+            };
+            let mut previous = edge(0.0)?;
+            for step in 1..=steps {
+                let next = edge(step as f64 / steps as f64)?;
+                quads.push([previous[0], next[0], next[1], previous[1]]);
+                previous = next;
+            }
+        }
+        Ok(quads)
     }
 
     /// Decompose the centerline into independent LINE/ARC entities in segment order.
@@ -272,13 +421,35 @@ impl Polyline2 {
                     .collect(),
             )
         };
-        let result = Self::with_bulges(vertices, bulges, false)?;
+        let widths = if append {
+            self.widths[..self.widths.len() - 1]
+                .iter()
+                .chain(&candidate.widths)
+                .copied()
+                .collect()
+        } else {
+            candidate.widths[..candidate.widths.len() - 1]
+                .iter()
+                .chain(&self.widths)
+                .copied()
+                .collect()
+        };
+        let mut result = Self::with_bulges(vertices, bulges, false)?;
+        result.set_widths(widths)?;
         result.length()?;
         result.extrema()?;
         Ok(Some(result))
     }
 
     pub(crate) fn extrema(&self) -> Result<Vec<Point3>, GeometryError> {
+        let mut points = self.centerline_extrema()?;
+        if self.has_active_width() {
+            points.extend(self.width_quads_xy()?.into_iter().flatten());
+        }
+        Ok(points)
+    }
+
+    pub(crate) fn centerline_extrema(&self) -> Result<Vec<Point3>, GeometryError> {
         let mut points = self.vertices.clone();
         for segment in self.segments() {
             if let PolylineSegment::Arc { arc, .. } = segment? {

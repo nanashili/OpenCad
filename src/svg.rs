@@ -227,6 +227,50 @@ fn render_styled_entities_svg(
                     .expect("String write");
                 }
                 Entity::Polyline(polyline) => {
+                    if polyline.has_active_width() {
+                        for quad in polyline
+                            .width_quads_xy()
+                            .map_err(|_| SvgError::BoundsTooLarge)?
+                        {
+                            let mut points = String::new();
+                            for point in quad {
+                                write!(
+                                    points,
+                                    "{},{} ",
+                                    point.x() - min_x + PADDING,
+                                    max_y - point.y() + PADDING
+                                )
+                                .expect("String write");
+                            }
+                            writeln!(
+                                svg,
+                                "    <polygon points=\"{}\" fill=\"{color}\" stroke=\"none\" />",
+                                points.trim_end()
+                            )
+                            .expect("String write");
+                        }
+                        for (segment, width) in polyline.segments().zip(polyline.widths()) {
+                            if width.start() != 0.0 || width.end() != 0.0 {
+                                continue;
+                            }
+                            let segment = segment.map_err(|_| SvgError::BoundsTooLarge)?;
+                            let start = segment
+                                .point_at_fraction(0.0)
+                                .map_err(|_| SvgError::BoundsTooLarge)?;
+                            let end = segment
+                                .point_at_fraction(1.0)
+                                .map_err(|_| SvgError::BoundsTooLarge)?;
+                            let x1 = start.x() - min_x + PADDING;
+                            let y1 = max_y - start.y() + PADDING;
+                            let x2 = end.x() - min_x + PADDING;
+                            let y2 = max_y - end.y() + PADDING;
+                            match segment {
+                                crate::PolylineSegment::Line(_) => writeln!(svg, "    <line x1=\"{x1}\" y1=\"{y1}\" x2=\"{x2}\" y2=\"{y2}\"{style} />"),
+                                crate::PolylineSegment::Arc { arc, clockwise } => writeln!(svg, "    <path d=\"M {x1} {y1} A {} {} 0 {} {} {x2} {y2}\"{style} />", arc.radius(), arc.radius(), u8::from(arc.sweep() > std::f64::consts::PI), u8::from(clockwise)),
+                            }.expect("String write");
+                        }
+                        continue;
+                    }
                     let count = polyline.vertices().len() - usize::from(!polyline.is_closed());
                     if polyline.bulges()[..count].iter().any(|bulge| *bulge != 0.0) {
                         let first = polyline.vertices()[0];

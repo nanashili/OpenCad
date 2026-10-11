@@ -230,7 +230,7 @@ fn malformed_or_unsupported_polyline_sequences_fail_without_projection() {
         SOURCE.replacen("30\n3e0\n", "30\n3e0\n70\n128\n", 1),
         SOURCE.replacen("30\n3e0\n", "30\n3e0\n210\n0\n220\n1\n230\n0\n", 1),
         SOURCE.replacen("10\n4.0\n", "42\nNaN\n10\n4.0\n", 1),
-        SOURCE.replacen("10\n4.0\n", "40\n2\n10\n4.0\n", 1),
+        SOURCE.replacen("10\n4.0\n", "40\n-2\n10\n4.0\n", 1),
         SOURCE.replacen("10\n4.0\n", "30\n2\n10\n4.0\n", 1),
         SOURCE.replacen("10\n4.0\n", "10\nNaN\n", 1),
         SOURCE.replacen("0\nPOLYLINE\n", "0\nLWPOLYLINE\n", 1),

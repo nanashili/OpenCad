@@ -33,7 +33,7 @@ pub use lengthen::Lengthen;
 pub use line::{Bounds3, Line3, Point3};
 pub use linetype::{Linetype, LinetypeError};
 pub use offset::{Offset, OffsetLayer, OffsetOptions};
-pub use polyline::{Polyline2, PolylineSegment};
+pub use polyline::{Polyline2, PolylineSegment, PolylineWidth};
 pub use svg::{SvgError, render_document_svg, render_entities_svg, render_svg};
 pub use transform::Transform;
 pub use trim::BoundaryMode;
@@ -114,6 +114,8 @@ pub enum GeometryError {
     NonPlanarPolyline,
     NonFiniteBulge,
     InvalidBulgeCount,
+    InvalidWidthCount,
+    InvalidPolylineWidth,
     InvalidVertexIndex,
     UnrepresentableBulge,
 }
@@ -229,6 +231,10 @@ impl fmt::Display for GeometryError {
             Self::NonPlanarPolyline => write!(f, "polyline vertices must share one Z elevation"),
             Self::NonFiniteBulge => write!(f, "bulges must be finite"),
             Self::InvalidBulgeCount => write!(f, "each polyline vertex needs one bulge value"),
+            Self::InvalidWidthCount => write!(f, "each polyline vertex needs one width pair"),
+            Self::InvalidPolylineWidth => {
+                write!(f, "polyline widths must be finite and nonnegative")
+            }
             Self::InvalidVertexIndex => write!(f, "the polyline vertex index is out of range"),
             Self::UnrepresentableBulge => {
                 write!(f, "the bulged segment exceeds representable geometry")

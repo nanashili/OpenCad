@@ -4,7 +4,7 @@
 
 use crate::{
     Arc3, Circle3, CornerParameter, Entity, EntityStyle, EntityStyleError, GeometryError, Layer,
-    LayerError, Line3, Linetype, LinetypeError, Point3, Polyline2,
+    LayerError, Line3, Linetype, LinetypeError, Point3, Polyline2, PolylineWidth,
 };
 use std::collections::HashSet;
 use std::error::Error;
@@ -787,6 +787,13 @@ impl DxfDocument {
             if let (Entity::Polyline(polyline), Entity::Polyline(old), Some(source)) =
                 (entity, &record.original, &record.polyline)
             {
+                let default_width = |code| {
+                    record
+                        .fields
+                        .iter()
+                        .find(|(field_code, _)| *field_code == code)
+                        .map_or(0.0, |(_, field)| field.value)
+                };
                 if polyline.is_closed() != old.is_closed()
                     && !record.fields.iter().any(|(code, _)| *code == 70)
                 {
@@ -816,6 +823,8 @@ impl DxfDocument {
                             30 if polyline.elevation() != old.elevation() => polyline.elevation(),
                             30 => field.value,
                             42 => polyline.bulges()[index],
+                            40 => polyline.widths()[index].start(),
+                            41 => polyline.widths()[index].end(),
                             _ => unreachable!("vertex coordinate"),
                         };
                         if value.to_bits() != field.value.to_bits() {
@@ -831,6 +840,19 @@ impl DxfDocument {
                             format!("42\n{}\n", polyline.bulges()[index]),
                         ));
                     }
+                    for (code, value) in [
+                        (40, polyline.widths()[index].start()),
+                        (41, polyline.widths()[index].end()),
+                    ] {
+                        if value != default_width(code)
+                            && !vertex
+                                .fields
+                                .iter()
+                                .any(|(field_code, _)| *field_code == code)
+                        {
+                            changes.push((vertex.end, vertex.end, format!("{code}\n{value}\n")));
+                        }
+                    }
                 }
                 let mut vertices = String::new();
                 for (index, point) in polyline
@@ -843,6 +865,8 @@ impl DxfDocument {
                         &mut vertices,
                         *point,
                         polyline.bulges()[index],
+                        polyline.widths()[index],
+                        [default_width(40), default_width(41)],
                         layer,
                         style,
                     );
@@ -860,6 +884,11 @@ impl DxfDocument {
                 );
             }
             for (code, field) in &record.fields {
+                // Parent defaults remain source-backed. Effective widths are
+                // patched on vertices, including explicit zero overrides.
+                if matches!(entity, Entity::Polyline(_)) && matches!(code, 40 | 41) {
+                    continue;
+                }
                 let value = entity.coordinate(*code);
                 if value.to_bits() != record.original.coordinate(*code).to_bits() {
                     changes.push((field.start, field.end, value.to_string()));
@@ -1900,7 +1929,15 @@ fn read_polyline(
         .into_iter()
         .map(|code| Ok((code, required_coordinate(&header, code, marker.line)?)))
         .collect::<Result<Vec<_>, DxfError>>()?;
-    require_zero(&header, &[10, 20, 39, 40, 41])?;
+    require_zero(&header, &[10, 20, 39])?;
+    let mut defaults = [0.0; 2];
+    for (index, code) in [40, 41].into_iter().enumerate() {
+        if let Some(field) = unique_field(&header, code)? {
+            let value = read_width(field)?;
+            defaults[index] = value.value;
+            fields.push((code, value));
+        }
+    }
     let elevation = fields[2].1.value;
     let flags = unique_field(&header, 70)?.map(coordinate).transpose()?;
     if let Some(flags) = flags {
@@ -1929,6 +1966,7 @@ fn read_polyline(
     let fields_end = groups.peek()?.map_or(groups.offset, |group| group.start);
     let mut vertices = Vec::new();
     let mut bulges = Vec::new();
+    let mut widths = Vec::new();
     let mut records = Vec::new();
     let seqend;
     loop {
@@ -1949,7 +1987,7 @@ fn read_polyline(
         let properties = read_entity_properties(&source_fields, child.line, handles)?;
         let mut fields = Vec::new();
         if child.value == "VERTEX" {
-            require_zero(&source_fields, &[40, 41, 70])?;
+            require_zero(&source_fields, &[70])?;
             for code in [10, 20] {
                 fields.push((code, required_coordinate(&source_fields, code, child.line)?));
             }
@@ -1967,6 +2005,15 @@ fn read_polyline(
                 Point3::new(fields[0].1.value, fields[1].1.value, elevation)
                     .expect("finite parsed point"),
             );
+            let mut width = defaults;
+            for (index, code) in [40, 41].into_iter().enumerate() {
+                if let Some(field) = unique_field(&source_fields, code)? {
+                    let value = read_width(field)?;
+                    width[index] = value.value;
+                    fields.push((code, value));
+                }
+            }
+            widths.push(PolylineWidth::new(width[0], width[1]).expect("validated widths"));
         }
         let end = groups.peek()?.map_or(groups.offset, |group| group.start);
         let record = ChildRecord {
@@ -1981,7 +2028,7 @@ fn read_polyline(
         }
         records.push(record);
     }
-    let polyline = Polyline2::with_bulges(
+    let mut polyline = Polyline2::with_bulges(
         vertices,
         bulges,
         flags.is_some_and(|field| field.value == 1.0),
@@ -1990,6 +2037,9 @@ fn read_polyline(
         line: marker.line,
         kind: DxfErrorKind::Expected("at least two POLYLINE vertices"),
     })?;
+    polyline
+        .set_widths(widths)
+        .expect("one width pair per vertex");
     let entity = Entity::Polyline(polyline);
     let end = seqend.end;
     Ok((
@@ -2023,6 +2073,17 @@ fn read_number(group: Group<'_>) -> Result<f64, DxfError> {
         })
 }
 
+fn read_width(group: Group<'_>) -> Result<Coordinate, DxfError> {
+    let field = coordinate(group)?;
+    if field.value < 0.0 {
+        return Err(DxfError {
+            line: group.line,
+            kind: DxfErrorKind::InvalidCoordinate(group.code),
+        });
+    }
+    Ok(field)
+}
+
 fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &EntityStyle) {
     write!(output, "0\n{}\n8\n{layer}\n", entity.name()).expect("String write");
     write_style(output, style);
@@ -2039,7 +2100,15 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
             )
             .expect("String write");
             for (index, point) in polyline.vertices().iter().enumerate() {
-                write_vertex(output, *point, polyline.bulges()[index], layer, style);
+                write_vertex(
+                    output,
+                    *point,
+                    polyline.bulges()[index],
+                    polyline.widths()[index],
+                    [0.0; 2],
+                    layer,
+                    style,
+                );
             }
             writeln!(output, "0\nSEQEND\n8\n{layer}").expect("String write");
             write_style(output, style);
@@ -2051,7 +2120,15 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
     }
 }
 
-fn write_vertex(output: &mut String, point: Point3, bulge: f64, layer: &str, style: &EntityStyle) {
+fn write_vertex(
+    output: &mut String,
+    point: Point3,
+    bulge: f64,
+    width: PolylineWidth,
+    defaults: [f64; 2],
+    layer: &str,
+    style: &EntityStyle,
+) {
     writeln!(output, "0\nVERTEX\n8\n{layer}").expect("String write");
     write_style(output, style);
     writeln!(
@@ -2064,6 +2141,14 @@ fn write_vertex(output: &mut String, point: Point3, bulge: f64, layer: &str, sty
     .expect("String write");
     if bulge != 0.0 {
         writeln!(output, "42\n{bulge}").expect("String write");
+    }
+    for (code, value, default) in [
+        (40, width.start(), defaults[0]),
+        (41, width.end(), defaults[1]),
+    ] {
+        if value != default {
+            writeln!(output, "{code}\n{value}").expect("String write");
+        }
     }
 }
 

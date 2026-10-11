@@ -267,7 +267,7 @@ undo restores the entire batch. A locked or invalid polyline rejects the batch
 before any geometry changes; simple LINE, ARC and CIRCLE sources are skipped.
 
 The current DXF reader supports legacy R12 2D POLYLINE sequences with zero
-widths. LWPOLYLINE, nonzero widths, blocks and other compound-object explosion
+widths. LWPOLYLINE, blocks and other compound-object explosion
 remain unfinished. Segment order, degenerate edges, property copying and batch
 history are explicit OpenCad policies; exact native parity is not claimed.
 
@@ -400,8 +400,50 @@ remains unverified. Retained edges keep their original bulges and elevation;
 final outgoing bulges remain stored but dormant. The first fragment keeps the
 source record and layer/style; additional fragments inherit layer/style. Go
 marks the first vertex of the first fragment. A completed Break is one Undo
-step, including all fragments; Escape retains completed edits. Width/fitting
-data and unknown per-vertex metadata identity are not handled by this workflow.
+step, including all fragments; Escape retains completed edits. Retained outgoing
+widths survive; fitting data and unknown per-vertex metadata identity are not handled.
+
+**Width** (W) in the main PEDIT options sets a uniform width for the whole
+polyline, including its dormant final segment. Enter one finite nonnegative
+number, or use `Width 4` / `PEDIT 1 Width 4`. In **Edit vertex**, Width edits the
+marked vertex's outgoing segment: enter its starting width, then ending width,
+or use `Width 2 6`. Both values commit together as one Undo step. Enter or Exit
+cancels staged values; Escape ends PEDIT while retaining completed edits. Save
+retains pending input without writing a partial width edit. At the last vertex
+of an open polyline, widths are stored for use if the polyline is later closed.
+
+**Regen** in Edit vertex refreshes the display without adding an Undo step.
+OpenCad displays completed width edits immediately. Widths survive Move,
+translation, rotation, reflection and Break; uniform Scale also scales widths.
+Join preserves widths on retained segments, including reversed candidates.
+Insert splits the outgoing taper equally between the two resulting segments;
+appending an open polyline transfers dormant widths to the new last vertex and
+creates a zero-width edge. Straighten uses the start width at its first vertex
+and end width of the last removed segment. These mappings are OpenCad policies.
+
+`PLINEREVERSEWIDTHS 0` (default) keeps width pairs at their stored indices when
+PEDIT Reverse or Reverse vertices reverses coordinates. `PLINEREVERSEWIDTHS 1`
+also reverses segment width order and swaps each pair's start/end values,
+preserving the taper's geometric direction. The setting persists between app
+runs. Exact native per-vertex remapping and dormant-value behavior remain
+unverified; these detailed mappings are OpenCad policies.
+
+Canvas and SVG export share filled, linearly tapered strips. Straight segments
+use flat caps; arcs are sampled at intervals of at most pi/64 radians, with
+inner offsets clamped at the arc center for very large widths. Zero-width
+segments use a cosmetic centerline. Simple dashed linetypes retain tapered
+widths within dashes; dot marks remain cosmetic dots. Segment joins are
+independent flat caps, so native bevel/cap parity remains unfinished. Filled
+areas can be selected, and drawing extents include width. Snapping retains the
+centerline geometry. Widths are finite and nonnegative in OpenCad; native prompt
+limits have not been established.
+
+Legacy DXF group 40/41 defaults are resolved per vertex during import. Omitted
+values inherit the containing POLYLINE's defaults; explicit zero overrides
+them. Source-backed writes retain default fields, untouched numeric spelling
+and records, inserting vertex overrides when needed. New records use zero
+defaults and explicit nonzero vertex widths. EXPLODE returns LINE/ARC
+centerlines and discards widths; Undo restores the original polyline.
 
 ```text
 PE 2
@@ -444,8 +486,7 @@ its start remains open until Close is chosen. Invalid geometry in an otherwise
 eligible candidate, or a protected source/consumed layer, rejects the whole
 join before mutation. Hidden candidates are ignored by All and window selection.
 
-Multiple selection, fuzz-distance/Jointype joining, width,
-Tangent and Regen within PEDIT, curve fitting,
+Multiple selection, fuzz-distance/Jointype joining, Tangent within PEDIT, curve fitting,
 DELOBJ retention choices, PLINETYPE/PLINECONVERTMODE conversion settings and
 general UCS editing remain unfinished. Existing property controls still edit
 polyline vertices and bulges independently of PEDIT.
@@ -511,7 +552,7 @@ The document model preserves validated source text and patches edited fields and
 records. Validated header, table and block metadata can survive copy/edit
 roundtrips without being editable or rendered. Unsupported entity types in the
 ENTITIES section are rejected. Successful exchange of these fixtures does not establish general
-AutoCAD compatibility. DWG, arbitrary entity planes, 3D polylines, widths, complex
+AutoCAD compatibility. DWG, arbitrary entity planes, 3D polylines, complex
 linetypes, dimensions, solids and broad block workflows are not supported.
 
 ## CLI and library

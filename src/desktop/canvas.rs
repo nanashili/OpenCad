@@ -726,8 +726,31 @@ impl OpenCadApp {
                 }
             }
             Entity::Polyline(polyline) => {
-                for segment in polyline.segments().flatten() {
-                    self.draw_entity(painter, &segment.geometry(), rect, stroke);
+                if let Ok(quads) = polyline.width_quads_xy() {
+                    let mut mesh = egui::Mesh::default();
+                    for quad in quads {
+                        let points: Option<Vec<_>> = quad
+                            .iter()
+                            .map(|point| self.camera.screen(point.x(), point.y(), rect))
+                            .collect();
+                        if let Some(points) = points {
+                            let base = mesh.vertices.len() as u32;
+                            for point in points {
+                                mesh.colored_vertex(point, stroke.color);
+                            }
+                            mesh.add_triangle(base, base + 1, base + 2);
+                            mesh.add_triangle(base, base + 2, base + 3);
+                        }
+                    }
+                    painter.add(egui::Shape::mesh(mesh));
+                }
+                for (segment, width) in polyline.segments().zip(polyline.widths()) {
+                    if width.start() == 0.0
+                        && width.end() == 0.0
+                        && let Ok(segment) = segment
+                    {
+                        self.draw_entity(painter, &segment.geometry(), rect, stroke);
+                    }
                 }
             }
         }
@@ -1038,13 +1061,32 @@ impl OpenCadApp {
             }
             let d = match entity {
                 Entity::Line(line) => line_distance(*line).unwrap_or(f32::INFINITY),
-                Entity::Polyline(polyline) => polyline
-                    .segments()
-                    .filter_map(|segment| match segment.ok()? {
-                        crate::PolylineSegment::Line(line) => line_distance(line),
-                        crate::PolylineSegment::Arc { arc, .. } => arc_distance(arc),
-                    })
-                    .fold(f32::INFINITY, f32::min),
+                Entity::Polyline(polyline) => {
+                    let mut nearest = polyline
+                        .segments()
+                        .filter_map(|segment| match segment.ok()? {
+                            crate::PolylineSegment::Line(line) => line_distance(line),
+                            crate::PolylineSegment::Arc { arc, .. } => arc_distance(arc),
+                        })
+                        .fold(f32::INFINITY, f32::min);
+                    if let Ok(quads) = polyline.width_quads_xy() {
+                        for quad in quads {
+                            let points: Option<Vec<_>> = quad
+                                .iter()
+                                .map(|point| self.camera.screen(point.x(), point.y(), rect))
+                                .collect();
+                            if let Some(points) = points {
+                                for indices in [[0, 1, 2], [0, 2, 3]] {
+                                    let [a, b, c] = indices.map(|index| points[index]);
+                                    if point_in_triangle(position, a, b, c) {
+                                        nearest = 0.0;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    nearest
+                }
                 Entity::Circle(circle) => {
                     let Some(center) =
                         self.camera
@@ -1108,6 +1150,24 @@ fn polar_point(base: Point3, point: Point3, increment: f64, scale: f64) -> Optio
     .map(|snapped| (snapped, tracked))
 }
 
+fn point_in_triangle(point: Pos2, a: Pos2, b: Pos2, c: Pos2) -> bool {
+    let cross = |u: egui::Vec2, v: egui::Vec2| u.x * v.y - u.y * v.x;
+    let area = cross(b - a, c - a);
+    if area == 0.0 || !area.is_finite() {
+        return false;
+    }
+    let sides = [
+        cross(b - a, point - a),
+        cross(c - b, point - b),
+        cross(a - c, point - c),
+    ];
+    if area > 0.0 {
+        sides.iter().all(|side| *side >= 0.0)
+    } else {
+        sides.iter().all(|side| *side <= 0.0)
+    }
+}
+
 fn entity_points(entity: &Entity) -> Vec<Point3> {
     match entity {
         Entity::Line(line) => vec![line.start(), line.end()],
@@ -1135,7 +1195,7 @@ fn entity_points(entity: &Entity) -> Vec<Point3> {
             points
         }
         Entity::Polyline(polyline) => polyline
-            .extrema()
+            .centerline_extrema()
             .unwrap_or_else(|_| polyline.vertices().to_vec()),
     }
 }

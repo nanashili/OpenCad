@@ -156,7 +156,12 @@ impl OpenCadApp {
                                 let outgoing = *bulges.last().expect("two vertices");
                                 *bulges.last_mut().expect("two vertices") = 0.0;
                                 bulges.push(outgoing);
+                                let mut widths = polyline.widths().to_vec();
+                                let outgoing_width = *widths.last().expect("two vertices");
+                                *widths.last_mut().expect("two vertices") = crate::PolylineWidth::default();
+                                widths.push(outgoing_width);
                                 *polyline = Polyline2::with_bulges(vertices, bulges, polyline.is_closed())?;
+                                polyline.set_widths(widths)?;
                                 Ok(())
                             });
                         }
@@ -164,7 +169,8 @@ impl OpenCadApp {
                             self.modify_polyline(index, &entity, |polyline| polyline.set_vertices(polyline.vertices()[..polyline.vertices().len()-1].to_vec()));
                         }
                         if ui.button("Reverse vertices").clicked() {
-                            self.modify_polyline(index, &entity, |polyline| { polyline.reverse(); Ok(()) });
+                            let reverse_widths = self.pline_reverse_widths;
+                            self.modify_polyline(index, &entity, |polyline| { polyline.reverse_with_widths(reverse_widths); Ok(()) });
                         }
                     }
                 }
@@ -638,7 +644,10 @@ impl OpenCadApp {
                 .chunks_exact(3)
                 .map(|vertex| vertex[2])
                 .collect();
-            let replacement = Polyline2::with_bulges(vertices, bulges, polyline.is_closed())
+            let mut replacement = Polyline2::with_bulges(vertices, bulges, polyline.is_closed())
+                .map_err(|error| error.to_string())?;
+            replacement
+                .set_widths(polyline.widths().to_vec())
                 .map_err(|error| error.to_string())?;
             replacement.length().map_err(|error| error.to_string())?;
             replacement.extrema().map_err(|error| error.to_string())?;

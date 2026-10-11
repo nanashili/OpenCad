@@ -207,8 +207,59 @@ impl Linetype {
         if let Entity::Polyline(polyline) = entity {
             // The supported legacy flag restarts fitting at each segment.
             let mut parts = Vec::new();
-            for segment in polyline.segments() {
+            for (index, segment) in polyline.segments().enumerate() {
                 let segment = segment.map_err(|_| LinetypeError::GeometryTooLarge)?;
+                let width = polyline.widths()[index];
+                if width.start() != 0.0 || width.end() != 0.0 {
+                    let length = segment
+                        .length()
+                        .map_err(|_| LinetypeError::GeometryTooLarge)?;
+                    if length == 0.0 {
+                        continue;
+                    }
+                    let interpolate =
+                        |fraction| width.start() * (1.0 - fraction) + width.end() * fraction;
+                    for mark in self.marks(length, scale, false)? {
+                        parts.push(match mark {
+                            Mark::Dot(at) => PatternPart::Dot(
+                                segment
+                                    .point_at_fraction(at / length)
+                                    .map_err(|_| LinetypeError::GeometryTooLarge)?,
+                            ),
+                            Mark::Dash(from, to) => {
+                                let start = from / length;
+                                let end = to / length;
+                                let bulge = match segment {
+                                    crate::PolylineSegment::Line(_) => 0.0,
+                                    crate::PolylineSegment::Arc { arc, clockwise } => {
+                                        let bulge = (arc.sweep() * (end - start) / 4.0).tan();
+                                        if clockwise { -bulge } else { bulge }
+                                    }
+                                };
+                                let mut dash = crate::Polyline2::with_bulges(
+                                    vec![
+                                        segment
+                                            .point_at_fraction(start)
+                                            .map_err(|_| LinetypeError::GeometryTooLarge)?,
+                                        segment
+                                            .point_at_fraction(end)
+                                            .map_err(|_| LinetypeError::GeometryTooLarge)?,
+                                    ],
+                                    vec![bulge, 0.0],
+                                    false,
+                                )
+                                .map_err(|_| LinetypeError::GeometryTooLarge)?;
+                                dash.set_width(0, interpolate(start), interpolate(end))
+                                    .map_err(|_| LinetypeError::GeometryTooLarge)?;
+                                PatternPart::Geometry(Entity::Polyline(dash))
+                            }
+                        });
+                    }
+                    if parts.len() > 4096 {
+                        return Err(LinetypeError::TooDense);
+                    }
+                    continue;
+                }
                 let reversed = matches!(
                     segment,
                     crate::PolylineSegment::Arc {

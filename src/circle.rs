@@ -71,16 +71,18 @@ impl Entity {
                 arc.set_center(point(arc.center())?);
                 Self::Arc(arc)
             }
-            Self::Polyline(polyline) => Self::Polyline(Polyline2::with_bulges(
-                polyline
-                    .vertices()
-                    .iter()
-                    .copied()
-                    .map(point)
-                    .collect::<Result<_, _>>()?,
-                polyline.bulges().to_vec(),
-                polyline.is_closed(),
-            )?),
+            Self::Polyline(polyline) => {
+                let mut result = polyline.clone();
+                result.set_vertices(
+                    polyline
+                        .vertices()
+                        .iter()
+                        .copied()
+                        .map(point)
+                        .collect::<Result<_, _>>()?,
+                )?;
+                Self::Polyline(result)
+            }
         })
     }
 

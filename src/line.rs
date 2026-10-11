@@ -97,7 +97,9 @@ impl Line3 {
             return Ok(self.end);
         }
         let interpolate = |start: f64, end: f64| {
-            if (0.0..=1.0).contains(&fraction) {
+            if start == end {
+                start
+            } else if (0.0..=1.0).contains(&fraction) {
                 // Weighted interpolation avoids overflowing end - start.
                 (1.0 - fraction) * start + fraction * end
             } else {

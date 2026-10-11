@@ -3901,7 +3901,7 @@ fn pedit_commands_convert_curves_preserve_properties_and_bound_session_undo() {
     restored.command("PEDITACCEPT");
     assert!(restored.has_text("PEDITACCEPT = 1"));
     restored.command("PE 1"); // Original line is still first after arc conversion.
-    assert!(restored.has_text("PEDIT · Close / Reverse / Undo"));
+    assert!(restored.has_text("PEDIT · Close / Reverse / Width / Undo"));
     restored.command("SAVE");
     assert!(matches!(read().entities()[4], Entity::Polyline(_)));
     restored.command("Undo");
@@ -3966,7 +3966,7 @@ fn pedit_canvas_picks_and_keyboard_options_edit_curved_polylines_and_cancel_conv
     ui.command("PE");
     click(&mut ui, 17.071_068, 27.071_068);
     press(&mut ui, egui::Key::Y);
-    assert!(ui.has_text("PEDIT · Close / Reverse / Undo"));
+    assert!(ui.has_text("PEDIT · Close / Reverse / Width / Undo"));
     press(&mut ui, egui::Key::R);
     ui.command("SAVE");
     let Entity::Polyline(arc) = read().entities()[2].clone() else {
@@ -5141,6 +5141,201 @@ fn pedit_straighten_canvas_previews_marks_ranges_and_cancels_with_keys() {
     assert!(ui.has_text("PEDIT vertex 2 of 5: -20,20,7"));
     press(&mut ui, egui::Key::S);
     press(&mut ui, egui::Key::N);
+    press(&mut ui, egui::Key::Escape);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+// Width data crosses commands, staged prompts, history, source-backed DXF,
+// transforms and vertex reconstruction. Geometry-only tests cannot exercise
+// prompt routing, cancellation, Save during staged input or keyboard focus.
+#[test]
+fn pedit_width_commands_stage_values_preserve_history_and_reject_protected_edits() {
+    use opencad::{Polyline2, PolylineWidth};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pedit-width.dxf");
+    let p = |x, y| Point3::new(x, y, 7.0).unwrap();
+    let w = |start, end| PolylineWidth::new(start, end).unwrap();
+    let mut polyline = Polyline2::with_bulges(
+        vec![p(-30.0, 0.0), p(-10.0, 0.0), p(10.0, 0.0), p(30.0, 0.0)],
+        vec![0.0, -1.0, 0.0, 9.0],
+        false,
+    )
+    .unwrap();
+    let widths = vec![w(2.0, 6.0), w(4.0, 8.0), w(6.0, 10.0), w(9.0, 11.0)];
+    polyline.set_widths(widths.clone()).unwrap();
+    let mut document = DxfDocument::default();
+    document.push(Entity::Polyline(polyline.clone()));
+    let original =
+        document
+            .to_dxf()
+            .replacen("POLYLINE\n", "POLYLINE\n5\nE1\n999\nwidth-source\n", 1);
+    fs::write(&path, &original).unwrap();
+    let read = || {
+        let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+        let Entity::Polyline(polyline) = &document.entities()[0] else {
+            panic!("polyline")
+        };
+        polyline.clone()
+    };
+    let mut ui = DrawingUi::new();
+    ui.command(&format!("OPEN {}", path.display()));
+    ui.command("PE 1 Width");
+    assert!(ui.has_text("PEDIT Width · Enter a finite nonnegative uniform width"));
+    for invalid in ["-1", "NaN", "inf", "Next"] {
+        ui.command(invalid);
+    }
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("2");
+    ui.command("SAVE");
+    assert!(read().widths().iter().all(|width| *width == w(2.0, 2.0)));
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("E");
+    ui.command("W");
+    ui.command("1");
+    assert!(ui.has_text("PEDIT Vertex Width · Enter the outgoing segment's ending width"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("-3");
+    ui.command("3");
+    ui.command("SAVE");
+    let first = fs::read_to_string(&path).unwrap();
+    assert_eq!(
+        read().widths(),
+        &[w(1.0, 3.0), widths[1], widths[2], widths[3]]
+    );
+    ui.command("Regen");
+    assert!(ui.has_text("Polyline regenerated"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), first);
+    ui.command("W");
+    ui.command("7");
+    ui.command_with_enter(""); // cancels both staged values
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), first);
+    ui.command("Exit"); // returns to main PEDIT
+    ui.command("Undo"); // Regen and cancelled width created no extra history
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("E");
+    ui.command("Width 1 3");
+    ui.command("Next");
+    ui.command("Width 5 7");
+    ui.command("SAVE");
+    assert_eq!(
+        read().widths(),
+        &[w(1.0, 3.0), w(5.0, 7.0), widths[2], widths[3]]
+    );
+    ui.snapshot("pedit-variable-widths");
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Exit");
+    ui.command("PE 1 Width 4");
+    ui.command("SAVE");
+    assert!(read().widths().iter().all(|width| *width == w(4.0, 4.0)));
+    ui.command("Undo");
+    ui.command("Exit");
+    ui.command("PLINEREVERSEWIDTHS");
+    assert!(ui.has_text("PLINEREVERSEWIDTHS = 0"));
+    ui.command("PLINEREVERSEWIDTHS 2");
+    assert!(ui.has_text("PLINEREVERSEWIDTHS must be 0 or 1"));
+    ui.command("PE 1 Reverse");
+    ui.command("SAVE");
+    assert_eq!(read().widths(), widths);
+    ui.command("Undo");
+    ui.command("Exit");
+    ui.command("PLINEREVERSEWIDTHS 1");
+    ui.command("PE 1 Reverse");
+    ui.command("SAVE");
+    assert_eq!(
+        read().widths(),
+        &[w(10.0, 6.0), w(8.0, 4.0), w(6.0, 2.0), w(11.0, 9.0)]
+    );
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Exit");
+
+    // Insert halves the taper; Straighten retains the outer endpoint widths.
+    ui.command("PE 1 E");
+    ui.command("Insert -20,5");
+    ui.command("SAVE");
+    assert_eq!(
+        read().widths(),
+        &[w(2.0, 4.0), w(4.0, 6.0), widths[1], widths[2], widths[3]]
+    );
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("E");
+    ui.command("Straighten");
+    ui.command("Next");
+    ui.command("Next");
+    ui.command("Go");
+    ui.command("SAVE");
+    assert_eq!(read().widths(), &[w(2.0, 8.0), widths[2], widths[3]]);
+    ui.command("Exit");
+    ui.command("Undo");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Exit");
+    assert!(fs::read_to_string(&path).unwrap().contains("width-source"));
+    document.set_layer_locked("0", true).unwrap();
+    let protected_path = scratch.0.join("protected-width.dxf");
+    let protected = document.to_dxf();
+    fs::write(&protected_path, &protected).unwrap();
+    ui.command(&format!("OPEN {}", protected_path.display()));
+    ui.command("PE 1 Width 8");
+    assert!(ui.has_text("unlock layer 0 before editing it"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&protected_path).unwrap(), protected);
+}
+
+#[test]
+fn wide_polyline_canvas_selection_and_width_keyboard_cancel_work() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("wide-pointer.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("PLINE -30,0 30,0");
+    ui.command("PE 1 Width 20");
+    ui.command("Exit");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    ui.command("SELECT");
+    // New drawing camera is centered at world origin, scale 4. Clicking 24 px
+    // away from its centerline is inside the 80 px wide filled strip.
+    let canvas = ui
+        .nodes
+        .values()
+        .find(|node| {
+            node.label()
+                .is_some_and(|label| label.starts_with("Drawing canvas,"))
+        })
+        .and_then(|node| node.bounds())
+        .unwrap();
+    let y = 0.5 + 24.0 / (canvas.y1 - canvas.y0);
+    ui.canvas_click(0.5, y);
+    ui.command("PE"); // uses the object selected through its filled width
+    assert!(ui.has_text("PEDIT · Close / Reverse / Width"));
+    ui.canvas_click(0.5, y);
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    press(&mut ui, egui::Key::W);
+    assert!(ui.has_text("PEDIT Width · Enter a finite nonnegative uniform width"));
+    press(&mut ui, egui::Key::Enter);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.snapshot("pedit-wide-polyline-selected");
+    ui.command("Width");
+    ui.canvas_click(0.5, y);
     press(&mut ui, egui::Key::Escape);
     ui.command("SAVE");
     assert_eq!(fs::read_to_string(&path).unwrap(), original);

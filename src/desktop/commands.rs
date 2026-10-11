@@ -113,6 +113,23 @@ impl OpenCadApp {
         let rest = rest.trim();
         let tokens: Vec<_> = rest.split_whitespace().collect();
         match verb.to_ascii_uppercase().as_str() {
+            "PLINEREVERSEWIDTHS" => {
+                if !rest.is_empty() {
+                    self.pline_reverse_widths = match rest {
+                        "0" => false,
+                        "1" => true,
+                        _ => return Err("PLINEREVERSEWIDTHS must be 0 or 1.".into()),
+                    };
+                    self.finish();
+                }
+                self.message(
+                    format!(
+                        "PLINEREVERSEWIDTHS = {}",
+                        u8::from(self.pline_reverse_widths)
+                    ),
+                    false,
+                );
+            }
             "PEDITACCEPT" => {
                 if !rest.is_empty() {
                     self.pedit_accept = match rest {

@@ -140,6 +140,7 @@ pub struct OpenCadApp {
     join_source: Option<usize>,
     pedit_input: polyline_editing::PeditInput,
     pedit_accept: bool,
+    pline_reverse_widths: bool,
     corner_trim: bool,
     camera: canvas::Camera,
     fit_pending: bool,
@@ -228,6 +229,7 @@ impl OpenCadApp {
             join_source: None,
             pedit_input: polyline_editing::PeditInput::default(),
             pedit_accept: false,
+            pline_reverse_widths: false,
             corner_trim: true,
             camera: canvas::Camera::default(),
             fit_pending: true,
@@ -762,6 +764,7 @@ impl OpenCadApp {
                 ),
                 (Key::J, "Join"),
                 (Key::E, "Edit"),
+                (Key::W, "Width"),
             ] {
                 if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
                     self.execute(option);

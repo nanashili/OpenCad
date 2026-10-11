@@ -10,7 +10,15 @@ pub(super) struct PeditInput {
     vertex: Option<usize>,
     point_edit: Option<VertexPointEdit>,
     range: Option<VertexRangeEdit>,
+    width: Option<WidthInput>,
     undo: Vec<(usize, u64)>,
+}
+
+#[derive(Clone, Copy)]
+enum WidthInput {
+    Uniform,
+    VertexStart,
+    VertexEnd(f64),
 }
 
 #[derive(Clone, Copy)]
@@ -48,6 +56,7 @@ enum Operation {
     Undo,
     Join,
     Edit,
+    Width,
 }
 
 impl Operation {
@@ -59,6 +68,7 @@ impl Operation {
             "UNDO" | "U" => Self::Undo,
             "JOIN" | "J" => Self::Join,
             "EDIT" | "E" | "EDIT VERTEX" => Self::Edit,
+            "WIDTH" | "W" => Self::Width,
             _ => return None,
         })
     }
@@ -66,6 +76,19 @@ impl Operation {
 
 impl OpenCadApp {
     pub(super) fn pedit_prompt(&self) -> &'static str {
+        if let Some(width) = self.pedit_input.width {
+            return match width {
+                WidthInput::Uniform => {
+                    "PEDIT Width · Enter a finite nonnegative uniform width. Enter or Exit cancels; Escape ends PEDIT."
+                }
+                WidthInput::VertexStart => {
+                    "PEDIT Vertex Width · Enter the outgoing segment's starting width. Enter or Exit cancels; Escape ends PEDIT."
+                }
+                WidthInput::VertexEnd(_) => {
+                    "PEDIT Vertex Width · Enter the outgoing segment's ending width. Enter or Exit cancels both values; Escape ends PEDIT."
+                }
+            };
+        }
         if matches!(self.pedit_input.point_edit, Some(VertexPointEdit::Move)) {
             "PEDIT Move vertex · Specify x,y[,z] or a canvas point. Relative @dx,dy[,dz] uses the marked vertex. Enter or Exit cancels this move; Escape ends PEDIT."
         } else if matches!(self.pedit_input.point_edit, Some(VertexPointEdit::Insert)) {
@@ -75,7 +98,7 @@ impl OpenCadApp {
         } else if matches!(self.pedit_input.range, Some(VertexRangeEdit::Break(_))) {
             "PEDIT Break · Next / Previous chooses the other vertex. Go removes the range; Enter or Exit cancels. Escape ends PEDIT."
         } else if self.pedit_input.vertex.is_some() {
-            "PEDIT Edit vertex · Next / Previous / Move / Insert / Straighten / Break; Enter or Exit returns to PEDIT. Escape ends the session."
+            "PEDIT Edit vertex · Next / Previous / Move / Insert / Straighten / Break / Width / Regen; Enter or Exit returns to PEDIT. Escape ends the session."
         } else if self.pedit_input.joining {
             "PEDIT Join · Select touching XY lines, arcs or open polylines; Enter joins. Source stays selected. Shift removes; All selects visible objects. Escape ends PEDIT."
         } else if self.pedit_input.conversion {
@@ -83,13 +106,124 @@ impl OpenCadApp {
         } else if let Some(source) = self.pedit_input.source {
             if matches!(self.editor.entities().get(source), Some(Entity::Polyline(polyline)) if polyline.is_closed())
             {
-                "PEDIT · Open / Reverse / Undo / Edit vertex; Enter or Exit finishes. Escape ends the session."
+                "PEDIT · Open / Reverse / Width / Undo / Edit vertex; Enter or Exit finishes. Escape ends the session."
             } else {
-                "PEDIT · Close / Reverse / Undo / Join / Edit vertex; Enter or Exit finishes. Escape ends the session."
+                "PEDIT · Close / Reverse / Width / Undo / Join / Edit vertex; Enter or Exit finishes. Escape ends the session."
             }
         } else {
             "PEDIT · Select one XY polyline, line or arc; or enter its object number. Escape cancels."
         }
+    }
+
+    fn pedit_start_width(&mut self, tokens: &[&str]) -> Result<(), String> {
+        if self.pedit_input.conversion {
+            return Err("Confirm conversion to a polyline first.".into());
+        }
+        if self.pedit_input.joining {
+            return Err("Press Enter to finish selecting Join objects first.".into());
+        }
+        if self.pedit_input.point_edit.is_some() {
+            return Err("Exit point entry before choosing Width.".into());
+        }
+        if let Some(range) = self.pedit_input.range {
+            return Err(format!("Use Go or Exit to finish {} first.", range.label()));
+        }
+        let source = self
+            .pedit_input
+            .source
+            .ok_or("Select a PEDIT object first.")?;
+        if !matches!(
+            self.editor.entities().get(source),
+            Some(Entity::Polyline(_))
+        ) {
+            return Err("Select a polyline first.".into());
+        }
+        let vertex = self.pedit_input.vertex.is_some();
+        if tokens.len() > if vertex { 2 } else { 1 } {
+            return Err("Use Width [value], or Width [start [end]] in Edit vertex.".into());
+        }
+        let values = tokens
+            .iter()
+            .map(|token| {
+                let value = token
+                    .parse::<f64>()
+                    .map_err(|_| "Enter a finite nonnegative width.".to_owned())?;
+                crate::PolylineWidth::new(value, value).map_err(|error| error.to_string())?;
+                Ok(value)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        self.pedit_input.width = Some(if vertex {
+            WidthInput::VertexStart
+        } else {
+            WidthInput::Uniform
+        });
+        for value in values {
+            self.pedit_width_value(value)?;
+        }
+        self.message(self.prompt(), false);
+        Ok(())
+    }
+
+    fn pedit_width_value(&mut self, value: f64) -> Result<(), String> {
+        crate::PolylineWidth::new(value, value).map_err(|error| error.to_string())?;
+        let input = self.pedit_input.width.ok_or("Choose Width first.")?;
+        if matches!(input, WidthInput::VertexStart) {
+            self.pedit_input.width = Some(WidthInput::VertexEnd(value));
+            self.message(self.prompt(), false);
+            return Ok(());
+        }
+        let source = self
+            .pedit_input
+            .source
+            .ok_or("Select a PEDIT object first.")?;
+        let Some(Entity::Polyline(original)) = self.editor.entities().get(source) else {
+            return Err("Select a polyline first.".into());
+        };
+        let mut replacement = original.clone();
+        match input {
+            WidthInput::Uniform => replacement.set_uniform_width(value),
+            WidthInput::VertexEnd(start) => replacement.set_width(
+                self.pedit_input.vertex.ok_or("Choose Edit vertex first.")?,
+                start,
+                value,
+            ),
+            WidthInput::VertexStart => unreachable!("handled above"),
+        }
+        .map_err(|error| error.to_string())?;
+        replacement.extrema().map_err(|error| error.to_string())?;
+        if self
+            .editor
+            .update(source, Entity::Polyline(replacement))
+            .map_err(|error| error.to_string())?
+        {
+            self.pedit_checkpoint(source);
+        }
+        self.pedit_input.width = None;
+        self.editor.select(vec![source]);
+        self.message(self.prompt(), false);
+        Ok(())
+    }
+
+    fn pedit_width_text(&mut self, input: &str) -> Option<Result<(), String>> {
+        self.pedit_input.width?;
+        if input.is_empty() || input.eq_ignore_ascii_case("EXIT") || input.eq_ignore_ascii_case("X")
+        {
+            self.pedit_input.width = None;
+            self.message(self.prompt(), false);
+            return Some(Ok(()));
+        }
+        let verb = input.split_whitespace().next().unwrap_or("");
+        if matches!(verb.to_ascii_uppercase().as_str(), "SAVE" | "SAVEAS") {
+            return None;
+        }
+        Some(
+            input
+                .parse::<f64>()
+                .map_err(|_| {
+                    "Enter a finite nonnegative width, or Exit to cancel width entry.".to_owned()
+                })
+                .and_then(|value| self.pedit_width_value(value)),
+        )
     }
 
     pub(super) fn pedit_vertex_active(&self) -> bool {
@@ -140,14 +274,24 @@ impl OpenCadApp {
         let upper = start.max(vertex);
         let mut vertices = original.vertices().to_vec();
         let mut bulges = original.bulges().to_vec();
+        let mut widths = original.widths().to_vec();
         if lower < upper {
             vertices.drain(lower + 1..upper);
             bulges.drain(lower + 1..upper);
+            widths.drain(lower + 1..upper);
+            widths[lower] = crate::PolylineWidth::new(
+                original.widths()[lower].start(),
+                original.widths()[upper - 1].end(),
+            )
+            .expect("existing widths");
         }
         if original.is_closed() || lower + 1 < vertices.len() {
             bulges[lower] = 0.0;
         }
-        let replacement = Polyline2::with_bulges(vertices, bulges, original.is_closed())
+        let mut replacement = Polyline2::with_bulges(vertices, bulges, original.is_closed())
+            .map_err(|error| error.to_string())?;
+        replacement
+            .set_widths(widths)
             .map_err(|error| error.to_string())?;
         replacement.length().map_err(|error| error.to_string())?;
         replacement.extrema().map_err(|error| error.to_string())?;
@@ -275,14 +419,30 @@ impl OpenCadApp {
                     return Err("Insert a point distinct from the adjacent vertices.".into());
                 }
                 let mut bulges = original.bulges().to_vec();
+                let mut widths = original.widths().to_vec();
                 vertices.insert(vertex + 1, point);
                 bulges.insert(vertex + 1, 0.0);
+                let outgoing = widths[vertex];
+                let middle = outgoing.start() / 2.0 + outgoing.end() / 2.0;
+                widths[vertex] =
+                    crate::PolylineWidth::new(outgoing.start(), middle).expect("existing widths");
+                widths.insert(
+                    vertex + 1,
+                    crate::PolylineWidth::new(middle, outgoing.end()).expect("existing widths"),
+                );
                 if append {
                     bulges[vertex + 1] = bulges[vertex];
                     bulges[vertex] = 0.0;
+                    widths[vertex + 1] = outgoing;
+                    widths[vertex] = crate::PolylineWidth::default();
                 }
-                Polyline2::with_bulges(vertices, bulges, original.is_closed())
-                    .map_err(|error| error.to_string())?
+                let mut replacement =
+                    Polyline2::with_bulges(vertices, bulges, original.is_closed())
+                        .map_err(|error| error.to_string())?;
+                replacement
+                    .set_widths(widths)
+                    .map_err(|error| error.to_string())?;
+                replacement
             }
             None => return Err("Choose Move or Insert in Edit vertex first.".into()),
         };
@@ -315,6 +475,28 @@ impl OpenCadApp {
     }
 
     fn pedit_vertex_text(&mut self, input: &str) -> Option<Result<(), String>> {
+        if self.pedit_input.width.is_some() {
+            return self.pedit_width_text(input);
+        }
+        let tokens: Vec<_> = input.split_whitespace().collect();
+        if tokens.first().is_some_and(|token| {
+            token.eq_ignore_ascii_case("WIDTH") || token.eq_ignore_ascii_case("W")
+        }) {
+            return Some(self.pedit_start_width(&tokens[1..]));
+        }
+        if input.eq_ignore_ascii_case("REGEN") {
+            return Some(
+                if self.pedit_input.point_edit.is_some() || self.pedit_input.range.is_some() {
+                    Err("Finish the pending vertex edit before Regen.".into())
+                } else {
+                    self.message(
+                        "Polyline regenerated. Width changes are displayed immediately in OpenCad.",
+                        false,
+                    );
+                    Ok(())
+                },
+            );
+        }
         if input.is_empty() || input.eq_ignore_ascii_case("EXIT") || input.eq_ignore_ascii_case("X")
         {
             if self.pedit_input.point_edit.is_some() {
@@ -413,10 +595,7 @@ impl OpenCadApp {
                 "Exit Edit vertex before using a PEDIT operation.".into()
             ));
         }
-        if matches!(
-            input.to_ascii_uppercase().as_str(),
-            "TANGENT" | "T" | "WIDTH" | "W" | "REGEN"
-        ) {
+        if matches!(input.to_ascii_uppercase().as_str(), "TANGENT" | "T") {
             return Some(Err(
                 "This Edit vertex option is not implemented yet; use Next, Previous, Move, Insert, Straighten or Exit."
                     .into(),
@@ -552,6 +731,9 @@ impl OpenCadApp {
         let Some(Entity::Polyline(original)) = self.editor.entities().get(source) else {
             return Err("Confirm conversion to a polyline first.".into());
         };
+        if matches!(operation, Operation::Width) {
+            return self.pedit_start_width(&[]);
+        }
         if matches!(operation, Operation::Edit) {
             self.pedit_input.vertex = Some(0);
             self.pedit_vertex_message();
@@ -570,8 +752,10 @@ impl OpenCadApp {
         match operation {
             Operation::Close => polyline.set_closed(true),
             Operation::Open => polyline.set_closed(false),
-            Operation::Reverse => polyline.reverse(),
-            Operation::Undo | Operation::Join | Operation::Edit => unreachable!("handled above"),
+            Operation::Reverse => polyline.reverse_with_widths(self.pline_reverse_widths),
+            Operation::Undo | Operation::Join | Operation::Edit | Operation::Width => {
+                unreachable!("handled above")
+            }
         }
         polyline.length().map_err(|error| error.to_string())?;
         polyline.extrema().map_err(|error| error.to_string())?;
@@ -590,6 +774,9 @@ impl OpenCadApp {
     pub(super) fn pedit_text(&mut self, input: &str) -> Option<Result<(), String>> {
         if self.tool != Tool::Pedit {
             return None;
+        }
+        if self.pedit_input.width.is_some() {
+            return self.pedit_width_text(input);
         }
         if self.pedit_vertex_active() {
             return self.pedit_vertex_text(input);
@@ -620,6 +807,11 @@ impl OpenCadApp {
             return Some(Ok(()));
         }
         let tokens: Vec<_> = input.split_whitespace().collect();
+        if tokens.first().is_some_and(|token| {
+            token.eq_ignore_ascii_case("WIDTH") || token.eq_ignore_ascii_case("W")
+        }) {
+            return Some(self.pedit_start_width(&tokens[1..]));
+        }
         if tokens.first().is_some_and(|token| {
             token.eq_ignore_ascii_case("JOIN") || token.eq_ignore_ascii_case("J")
         }) {
@@ -667,7 +859,7 @@ impl OpenCadApp {
         }
         if matches!(
             input.to_ascii_uppercase().as_str(),
-            "W" | "WIDTH" | "F" | "FIT" | "S" | "SPLINE" | "D" | "DECURVE" | "M" | "MULTIPLE"
+            "F" | "FIT" | "S" | "SPLINE" | "D" | "DECURVE" | "M" | "MULTIPLE"
         ) {
             return Some(Err(
                 "This PEDIT option is not implemented yet; use Close, Open, Reverse, Join, Edit or Undo."
@@ -687,11 +879,16 @@ impl OpenCadApp {
             .map(|token| {
                 Operation::parse(token)
                     .filter(|operation| !matches!(operation, Operation::Undo))
-                    .ok_or("Use Close, Open, Reverse, Join or Edit after the PEDIT object number.")
+                    .ok_or("Use Close, Open, Reverse, Width, Join or Edit after the PEDIT object number.")
             })
             .transpose()?;
         let candidates = if matches!(operation, Some(Operation::Join)) {
             self.join_indices(&tokens[2..])?
+        } else if matches!(operation, Some(Operation::Width)) {
+            if tokens.len() > 3 {
+                return Err("Use PEDIT object-number Width [value].".into());
+            }
+            Vec::new()
         } else if tokens.len() > 2
             && !(matches!(operation, Some(Operation::Edit))
                 && tokens.len() == 3
@@ -725,6 +922,14 @@ impl OpenCadApp {
         }
         if let Some(operation) = operation {
             self.pedit_operation(operation)?;
+        }
+        if matches!(operation, Some(Operation::Width))
+            && let Some(value) = tokens.get(2)
+        {
+            let value = value
+                .parse::<f64>()
+                .map_err(|_| "Enter a finite nonnegative width.".to_owned())?;
+            self.pedit_width_value(value)?;
         }
         if !candidates.is_empty() {
             let mut selection = candidates;

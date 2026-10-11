@@ -1,4 +1,4 @@
-use crate::{Arc3, Circle3, Entity, GeometryError, Line3, Point3, Polyline2};
+use crate::{Arc3, Circle3, Entity, GeometryError, Line3, Point3, PolylineWidth};
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 fn sin_cos(angle: f64) -> (f64, f64) {
@@ -162,26 +162,43 @@ impl Entity {
                     end,
                 )?)
             }
-            Self::Polyline(polyline) => Self::Polyline(Polyline2::with_bulges(
-                polyline
-                    .vertices()
-                    .iter()
-                    .copied()
-                    .map(|point| transform.point(point))
-                    .collect::<Result<_, _>>()?,
-                polyline
-                    .bulges()
-                    .iter()
-                    .map(|bulge| {
-                        if matches!(transform.kind, TransformKind::Mirror(_)) {
-                            -*bulge
-                        } else {
-                            *bulge
-                        }
-                    })
-                    .collect(),
-                polyline.is_closed(),
-            )?),
+            Self::Polyline(polyline) => {
+                let mut result = polyline.clone();
+                result.set_vertices(
+                    polyline
+                        .vertices()
+                        .iter()
+                        .copied()
+                        .map(|point| transform.point(point))
+                        .collect::<Result<_, _>>()?,
+                )?;
+                result.set_bulges(
+                    polyline
+                        .bulges()
+                        .iter()
+                        .map(|bulge| {
+                            if matches!(transform.kind, TransformKind::Mirror(_)) {
+                                -*bulge
+                            } else {
+                                *bulge
+                            }
+                        })
+                        .collect(),
+                )?;
+                result.set_widths(
+                    polyline
+                        .widths()
+                        .iter()
+                        .map(|width| {
+                            PolylineWidth::new(
+                                transform.radius(width.start())?,
+                                transform.radius(width.end())?,
+                            )
+                        })
+                        .collect::<Result<_, _>>()?,
+                )?;
+                Self::Polyline(result)
+            }
         })
     }
 }
