@@ -93,6 +93,15 @@ has no preceding tangent: use **Direction**, **Second pt**, **Angle**, or
   then pick the center. Both routes rotate the starting radius by that signed
   angle and add one endpoint. Center followed directly by an endpoint or Length
   remains unfinished; the prompt requires Angle.
+- **Radius** (`R`): enter a finite positive radius, choose **Angle**, enter the
+  included angle, then enter the chord direction in decimal degrees from +X,
+  counterclockwise. Alternatively, choose **Angle**, enter the included angle,
+  choose **Radius**, enter the radius, then pick a chord direction point. In
+  that order, OpenCad uses the vector from the arc start to the picked point;
+  the point is a direction hint, not the resulting endpoint. Both orders derive
+  the chord length from the radius and included angle. An explicit direction is
+  required: Enter has no current-direction default in OpenCad. Radius followed
+  directly by an endpoint remains unfinished; the prompt requires Angle.
 - **Line** (`L`): return to straight segments within the same polyline.
 - **Width** / **Halfwidth**: set the next segment's taper, with the same carry
   behavior as straight segments. The preview shows the curved fill.
@@ -109,7 +118,8 @@ Line
 Close
 ```
 
-Direction, Second pt and Center collect auxiliary picks without adding vertices. Exit
+Direction, Second pt, Center and chord direction collect auxiliary picks without
+adding vertices. Exit
 cancels a construction option; Arc or Line also discards its unfinished picks.
 Enter and Close require the pending construction to be completed or canceled.
 U/Undo removes an accepted segment, restores its width pair, and keeps the current
@@ -144,8 +154,11 @@ Line
 This angle input currently accepts decimal degrees only. It does not apply
 ANGDIR/ANGBASE or parse DMS, radians, grads or surveyor angle formats. The numeric
 range, invalid-input and cancellation rules are OpenCad policies whose native
-parity is unverified. Radius, Center + endpoint, Center + Length and line Length
-construction remain unfinished and report that limitation. Direct point-list
+parity is unverified. Radius input must be positive and finite; chord-direction
+angles wrap modulo 360. OpenCad's direction-point interpretation, validation and
+lack of a current-direction default are explicit policies whose native parity
+is unverified. Center + endpoint, Center + Length, Radius + endpoint and line
+Length construction remain unfinished and report that limitation. Direct point-list
 `PLINE ...` commands create straight segments. Bulge properties can still edit
 individual segments after creation. Canvas **C** continues to mean Close;
 enter **CE** or **Center** in the command field to choose a center.

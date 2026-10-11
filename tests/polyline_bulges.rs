@@ -512,3 +512,97 @@ fn signed_sweep_and_center_arcs_reject_invalid_and_unrepresentable_constructions
     assert!(PolylineSegment::arc_from_sweep(start, huge, 1e-300).is_err());
     assert!(PolylineSegment::arc_about(start, huge, PI).is_err());
 }
+
+#[test]
+fn radius_arcs_match_signed_chords_centers_and_midpoints_at_varied_scales() {
+    for scale in [1e-150, 1.0, 1e150] {
+        let start = point(3.0 * scale, -2.0 * scale, 7.0);
+        for (direction, unit) in [
+            ((1.0, 0.0), (1.0, 0.0)),
+            ((0.0, 1.0), (0.0, 1.0)),
+            ((3.0, 4.0), (0.6, 0.8)),
+            ((1e-320, 1e-320), (0.5_f64.sqrt(), 0.5_f64.sqrt())),
+            ((f64::MAX, f64::MAX), (0.5_f64.sqrt(), 0.5_f64.sqrt())),
+        ] {
+            for sweep in [
+                PI / 2.0,
+                -PI / 2.0,
+                PI,
+                -PI,
+                3.0 * PI / 2.0,
+                -3.0 * PI / 2.0,
+            ] {
+                let segment =
+                    PolylineSegment::arc_from_radius(start, 2.0 * scale, sweep, direction).unwrap();
+                let chord = 4.0 * (sweep.abs() / 2.0).sin();
+                let offset = sweep.signum() * 2.0 * (sweep.abs() / 2.0).cos();
+                let sagitta = sweep.signum() * 2.0 * (1.0 - (sweep.abs() / 2.0).cos());
+                let end = segment.point_at_fraction(1.0).unwrap();
+                near(end.x() / scale, 3.0 + unit.0 * chord);
+                near(end.y() / scale, -2.0 + unit.1 * chord);
+                assert_eq!(end.z(), 7.0);
+                let middle = segment.point_at_fraction(0.5).unwrap();
+                near(
+                    middle.x() / scale,
+                    3.0 + unit.0 * chord / 2.0 + unit.1 * sagitta,
+                );
+                near(
+                    middle.y() / scale,
+                    -2.0 + unit.1 * chord / 2.0 - unit.0 * sagitta,
+                );
+                near(segment.bulge(), (sweep / 4.0).tan());
+                near(segment.length().unwrap() / scale, 2.0 * sweep.abs());
+                let PolylineSegment::Arc { arc, clockwise } = segment else {
+                    panic!("arc")
+                };
+                assert_eq!(clockwise, sweep < 0.0);
+                near(arc.radius() / scale, 2.0);
+                near(
+                    arc.center().x() / scale,
+                    3.0 + unit.0 * chord / 2.0 - unit.1 * offset,
+                );
+                near(
+                    arc.center().y() / scale,
+                    -2.0 + unit.1 * chord / 2.0 + unit.0 * offset,
+                );
+            }
+        }
+    }
+    let start = point(0.0, 0.0, 7.0);
+    let PolylineSegment::Arc { arc, .. } =
+        PolylineSegment::arc_from_radius(start, 1e308, 0.1, (1.0, 0.0)).unwrap()
+    else {
+        panic!("arc")
+    };
+    assert!((arc.radius() / 1e308 - 1.0).abs() < 1e-12);
+    let almost_full = 2.0 * PI - 1e-6;
+    for sweep in [almost_full, -almost_full] {
+        let segment = PolylineSegment::arc_from_radius(start, 1.0, sweep, (1.0, 0.0)).unwrap();
+        let PolylineSegment::Arc { arc, .. } = segment else {
+            panic!("arc")
+        };
+        assert!((arc.radius() - 1.0).abs() < 1e-8);
+        assert!((arc.sweep() - almost_full).abs() < 1e-8);
+    }
+}
+
+#[test]
+fn radius_arcs_reject_invalid_directions_dimensions_and_unrepresentable_results() {
+    let start = point(0.0, 0.0, 7.0);
+    for radius in [0.0, -0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert!(PolylineSegment::arc_from_radius(start, radius, PI, (1.0, 0.0)).is_err());
+    }
+    for sweep in [0.0, 2.0 * PI, -2.0 * PI, f64::NAN, f64::INFINITY] {
+        assert!(PolylineSegment::arc_from_radius(start, 1.0, sweep, (1.0, 0.0)).is_err());
+    }
+    for direction in [(0.0, 0.0), (f64::NAN, 1.0), (0.0, f64::INFINITY)] {
+        assert!(PolylineSegment::arc_from_radius(start, 1.0, PI, direction).is_err());
+    }
+    assert!(
+        PolylineSegment::arc_from_radius(start, f64::from_bits(1), 1e-300, (1.0, 0.0)).is_err()
+    );
+    assert!(PolylineSegment::arc_from_radius(start, f64::MAX, PI, (1.0, 0.0)).is_err());
+    let translated = point(f64::MAX, 0.0, 7.0);
+    assert!(PolylineSegment::arc_from_radius(translated, 1.0, PI / 2.0, (1.0, 0.0)).is_err());
+    assert!(PolylineSegment::arc_from_radius(translated, f64::MAX / 2.0, PI, (1.0, 0.0)).is_err());
+}

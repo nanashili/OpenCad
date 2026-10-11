@@ -1,5 +1,5 @@
 use crate::{GeometryError, Point3, PolylineSegment};
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 
 impl PolylineSegment {
     /// Arc from `start` to `end` with a signed included angle in radians.
@@ -42,6 +42,51 @@ impl PolylineSegment {
             return Err(GeometryError::DegenerateCurve);
         }
         let end = crate::Transform::rotate_xy(center, sweep)?.point(start)?;
+        Ok((end, Self::arc_from_sweep(start, end, sweep)?))
+    }
+
+    /// Arc with a positive radius, signed sweep in radians, and forward XY chord direction.
+    pub fn arc_from_radius(
+        start: Point3,
+        radius: f64,
+        sweep: f64,
+        direction: (f64, f64),
+    ) -> Result<Self, GeometryError> {
+        Self::arc_from_radius_with_endpoint(start, radius, sweep, direction)
+            .map(|(_, segment)| segment)
+    }
+
+    pub(crate) fn arc_from_radius_with_endpoint(
+        start: Point3,
+        radius: f64,
+        sweep: f64,
+        direction: (f64, f64),
+    ) -> Result<(Point3, Self), GeometryError> {
+        validate_sweep(sweep)?;
+        if !radius.is_finite() {
+            return Err(GeometryError::NonFiniteRadius);
+        }
+        if radius < 0.0 {
+            return Err(GeometryError::NegativeRadius);
+        }
+        if radius == 0.0 {
+            return Err(GeometryError::DegenerateCurve);
+        }
+        let (dx, dy) = unit_xy(direction.0, direction.1)?;
+        let angle = sweep.abs();
+        // The complementary angle keeps near-full-turn chords accurate. Scale
+        // the radius by the factor, avoiding unnecessary overflow from 2*r.
+        let half = if angle > PI { TAU - angle } else { angle } / 2.0;
+        let chord = radius * (2.0 * half.sin());
+        if !chord.is_finite() || chord == 0.0 {
+            return Err(GeometryError::UnrepresentableBulge);
+        }
+        let end = Point3::new(
+            dx.mul_add(chord, start.x()),
+            dy.mul_add(chord, start.y()),
+            start.z(),
+        )
+        .map_err(|_| GeometryError::NonFiniteResult)?;
         Ok((end, Self::arc_from_sweep(start, end, sweep)?))
     }
 

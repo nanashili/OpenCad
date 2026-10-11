@@ -6604,7 +6604,8 @@ fn pline_arc_direction_second_point_errors_and_cancel_keep_drafts_atomic() {
     ui.command("0,1"); // no implicit tangent is invented for the first arc
     assert!(ui.has_text("The first arc needs Direction or Second pt"));
     ui.command("Radius");
-    assert!(ui.has_text("PLINE Radius construction is not supported yet"));
+    assert!(ui.has_text("Enter a finite positive radius"));
+    ui.command("Exit");
     ui.command("Direction");
     ui.command("1,0"); // coincident tangent pick
     ui.command("1,1,8"); // nonplanar tangent pick
@@ -6678,6 +6679,16 @@ fn pline_canvas_arc_shortcuts_and_closing_arc_match_saved_geometry() {
     ui.command("ELEVATION 7");
     ui.command(&format!("SAVEAS {}", path.display()));
     let press = |ui: &mut DrawingUi, value| {
+        let canvas = ui
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Drawing canvas,"))
+            })
+            .map(|(id, _)| *id)
+            .expect("canvas");
+        ui.action(canvas, accesskit::Action::Focus);
         ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
         ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
     };
@@ -6689,8 +6700,9 @@ fn pline_canvas_arc_shortcuts_and_closing_arc_match_saved_geometry() {
     ui.canvas_click(0.6, 0.45);
     press(&mut ui, egui::Key::U);
     ui.canvas_click(0.6, 0.45);
-    press(&mut ui, egui::Key::R); // unsupported Radius must retain the draft
-    assert!(ui.has_text("PLINE Radius construction is not supported yet"));
+    press(&mut ui, egui::Key::R); // Radius starts a construction without discarding the draft
+    assert!(ui.has_text("Enter a finite positive radius"));
+    ui.command("Exit");
     press(&mut ui, egui::Key::D);
     ui.canvas_click(0.6, 0.3);
     press(&mut ui, egui::Key::Enter); // unfinished direction+endpoint construction
@@ -6847,9 +6859,7 @@ fn pline_angle_input_center_errors_and_cancel_leave_drafts_atomic() {
     ui.command("Close");
     ui.command("SAVE");
     assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
-    for command in [
-        "90", "0,1,8", "1,0", "Radius", "Center", "1,0", "0,0,8", "SAVE",
-    ] {
+    for command in ["90", "0,1,8", "1,0", "Center", "1,0", "0,0,8", "SAVE"] {
         ui.command(command);
     }
     assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
@@ -6945,5 +6955,245 @@ fn pline_canvas_angle_shortcut_and_center_pick_create_signed_arcs() {
         0.0,
     ]) {
         assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+}
+
+#[test]
+fn pline_radius_angle_routes_preserve_geometry_widths_and_atomic_history() {
+    use opencad::PolylineWidth;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-radius-angle.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("ELEVATION 7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    for command in [
+        "PLINE",
+        "10,20",
+        "Arc",
+        "Width 2 4",
+        "Radius",
+        "2",
+        "Angle",
+        "90",
+        "0",
+        "Radius",
+        "4",
+        "Angle",
+        "-270",
+        "90",
+        "Angle",
+        "180",
+        "Radius",
+        "3",
+        "@-5,0",
+        "U",
+        "Angle",
+        "180",
+        "Radius",
+        "3",
+    ] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("Pick a point defining the forward chord direction"));
+    ui.step(vec![Event::PointerMoved(egui::pos2(950.0, 450.0))]);
+    ui.snapshot("pline-radius-angle-draft");
+    for command in ["@-1,0", "Line", "@0,-10", "", "ZOOM EXTENTS", "SAVE"] {
+        ui.command(command);
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    let x = 10.0 + 2.0 * 2.0_f64.sqrt();
+    let y = 20.0 + 4.0 * 2.0_f64.sqrt();
+    let expected = [
+        (10.0, 20.0),
+        (x, 20.0),
+        (x, y),
+        (x - 6.0, y),
+        (x - 6.0, y - 10.0),
+    ];
+    assert_eq!(polyline.vertices().len(), expected.len());
+    for (actual, (x, y)) in polyline.vertices().iter().zip(expected) {
+        assert!((actual.x() - x).abs() < 1e-10 && (actual.y() - y).abs() < 1e-10);
+        assert_eq!(actual.z(), 7.0);
+    }
+    for (segment, radius) in polyline.segments().take(3).zip([2.0, 4.0, 3.0]) {
+        let opencad::PolylineSegment::Arc { arc, .. } = segment.unwrap() else {
+            panic!("arc")
+        };
+        assert!((arc.radius() - radius).abs() < 1e-10);
+    }
+    let quarter = (std::f64::consts::PI / 8.0).tan();
+    let major = (3.0 * std::f64::consts::PI / 8.0).tan();
+    for (actual, expected) in polyline
+        .bulges()
+        .iter()
+        .zip([quarter, -major, 1.0, 0.0, 0.0])
+    {
+        assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+    assert_eq!(polyline.widths()[0], PolylineWidth::new(2.0, 4.0).unwrap());
+    assert!(
+        polyline.widths()[1..]
+            .iter()
+            .all(|width| *width == PolylineWidth::new(4.0, 4.0).unwrap())
+    );
+    ui.snapshot("pline-radius-angle-finished");
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_radius_angle_invalid_inputs_and_cancel_keep_drafts_atomic() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-radius-errors.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("ELEVATION 7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    for command in ["PLINE", "Arc", "Radius"] {
+        ui.command(command);
+    }
+    ui.command("0,0");
+    ui.command("Arc");
+    ui.command("Radius");
+    for invalid in ["", "0", "-1", "NaN", "inf", "2 4", "1,0"] {
+        ui.command(invalid);
+        assert!(ui.has_text("Enter one finite positive radius"));
+    }
+    ui.command("Width 2 4");
+    ui.command("2");
+    ui.command("10,0");
+    assert!(ui.has_text("Choose Angle to complete the radius construction"));
+    ui.command("Angle");
+    ui.command("360");
+    ui.command("90");
+    for invalid in ["", "NaN", "0 90", "1,0"] {
+        ui.command(invalid);
+        assert!(ui.has_text("Enter one finite chord direction in degrees"));
+    }
+    for command in ["U", "Close", "SAVE"] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("720"); // explicit chord direction wraps; no implicit default
+    for command in [
+        "Angle", "-270", "Radius", "0", "2", "@0,0", "@1,0,1", "SAVE",
+    ] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("@1,0");
+    for command in ["Radius", "1e308", "Angle", "180", "0", "SAVE"] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    for command in ["Exit", "Line", "@0,10", "", "SAVE"] {
+        ui.command(command);
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    let chord = 2.0 * 2.0_f64.sqrt();
+    assert_eq!(polyline.vertices().len(), 4);
+    for (actual, (x, y)) in polyline.vertices().iter().zip([
+        (0.0, 0.0),
+        (chord, 0.0),
+        (2.0 * chord, 0.0),
+        (2.0 * chord, 10.0),
+    ]) {
+        assert!((actual.x() - x).abs() < 1e-10 && (actual.y() - y).abs() < 1e-10);
+        assert_eq!(actual.z(), 7.0);
+    }
+    let quarter = (std::f64::consts::PI / 8.0).tan();
+    let major = (3.0 * std::f64::consts::PI / 8.0).tan();
+    for (actual, expected) in polyline.bulges().iter().zip([quarter, -major, 0.0, 0.0]) {
+        assert!((actual - expected).abs() < 1e-12);
+    }
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    for command in ["PLINE", "0,0", "Arc", "Radius", "2", "Angle", "90"] {
+        ui.command(command);
+    }
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_canvas_radius_shortcut_retains_polyline_and_picks_chord_direction() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-canvas-radius.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("OSNAP OFF");
+    ui.command("SNAP OFF");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let press = |ui: &mut DrawingUi, value| {
+        let canvas = ui
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Drawing canvas,"))
+            })
+            .map(|(id, _)| *id)
+            .expect("canvas");
+        ui.action(canvas, accesskit::Action::Focus);
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("PLINE");
+    ui.canvas_click(0.4, 0.6);
+    press(&mut ui, egui::Key::A);
+    press(&mut ui, egui::Key::R);
+    assert!(ui.has_text("Enter a finite positive radius"));
+    ui.command("2");
+    press(&mut ui, egui::Key::A);
+    assert!(ui.has_text("Included angle in degrees"));
+    ui.command("90");
+    ui.command("0");
+    press(&mut ui, egui::Key::A);
+    ui.command("-270");
+    press(&mut ui, egui::Key::R);
+    ui.command("3");
+    assert!(ui.has_text("Pick a point defining the forward chord direction"));
+    ui.canvas_click(0.6, 0.4);
+    ui.command("");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert_eq!(polyline.vertices().len(), 3);
+    for (segment, (radius, clockwise)) in polyline.segments().zip([(2.0, false), (3.0, true)]) {
+        let opencad::PolylineSegment::Arc {
+            arc,
+            clockwise: actual,
+        } = segment.unwrap()
+        else {
+            panic!("arc")
+        };
+        assert_eq!(actual, clockwise);
+        assert!((arc.radius() - radius).abs() < 1e-10);
     }
 }

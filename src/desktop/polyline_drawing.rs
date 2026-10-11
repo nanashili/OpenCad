@@ -19,6 +19,14 @@ enum ArcInput {
     Center(Option<Point3>),
     AngleCenter(f64),
     CenterAngle(Point3),
+    Radius(Option<f64>),
+    AngleRadius(f64),
+    RadiusAngle(f64),
+    Chord {
+        radius: f64,
+        sweep: f64,
+        point: bool,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -54,11 +62,11 @@ impl OpenCadApp {
             Some(ArcInput::Second(Some(_))) => {
                 "PLINE Arc · Specify endpoint through the second point. Exit cancels this option."
             }
-            Some(ArcInput::Angle(None) | ArcInput::CenterAngle(_)) => {
+            Some(ArcInput::Angle(None) | ArcInput::CenterAngle(_) | ArcInput::RadiusAngle(_)) => {
                 "PLINE Arc · Included angle in degrees: positive CCW, negative clockwise; nonzero and less than 360. Exit cancels this option."
             }
             Some(ArcInput::Angle(Some(_))) => {
-                "PLINE Arc · Specify endpoint or Center for the included angle. Exit cancels this option."
+                "PLINE Arc · Specify endpoint, Center or Radius for the included angle. Exit cancels this option."
             }
             Some(ArcInput::Center(None) | ArcInput::AngleCenter(_)) => {
                 "PLINE Arc · Specify center point. Exit cancels this option."
@@ -66,8 +74,20 @@ impl OpenCadApp {
             Some(ArcInput::Center(Some(_))) => {
                 "PLINE Arc · Choose Angle to complete the center construction. Center + endpoint and Length are unfinished. Exit cancels this option."
             }
+            Some(ArcInput::Radius(None) | ArcInput::AngleRadius(_)) => {
+                "PLINE Arc · Enter a finite positive radius. Exit cancels this option."
+            }
+            Some(ArcInput::Radius(Some(_))) => {
+                "PLINE Arc · Choose Angle to complete the radius construction. Radius + endpoint is unfinished. Exit cancels this option."
+            }
+            Some(ArcInput::Chord { point: true, .. }) => {
+                "PLINE Arc · Pick a point defining the forward chord direction from the arc start. Exit cancels this option."
+            }
+            Some(ArcInput::Chord { point: false, .. }) => {
+                "PLINE Arc · Enter chord direction in degrees from +X, counterclockwise. No current default; Exit cancels this option."
+            }
             None => {
-                "PLINE Arc · Tangent endpoint; Angle / Center / Direction / Second pt / Line / Width / Halfwidth / Undo / Close, or Enter to finish."
+                "PLINE Arc · Tangent endpoint; Angle / Center / Radius / Direction / Second pt / Line / Width / Halfwidth / Undo / Close, or Enter to finish."
             }
         })
     }
@@ -84,8 +104,14 @@ impl OpenCadApp {
             ArcInput::Direction(None)
             | ArcInput::Second(None)
             | ArcInput::Center(None)
-            | ArcInput::AngleCenter(_) => cursor,
-            ArcInput::Second(Some(_)) | ArcInput::Angle(_) => return None,
+            | ArcInput::AngleCenter(_)
+            | ArcInput::Chord { point: true, .. } => cursor,
+            ArcInput::Second(Some(_))
+            | ArcInput::Angle(_)
+            | ArcInput::Radius(_)
+            | ArcInput::AngleRadius(_)
+            | ArcInput::RadiusAngle(_)
+            | ArcInput::Chord { point: false, .. } => return None,
         };
         Some(Line3::new(*self.points.last()?, end))
     }
@@ -145,6 +171,44 @@ impl OpenCadApp {
         Ok((end, segment.bulge()))
     }
 
+    fn pline_radius_arc(
+        &self,
+        radius: f64,
+        sweep: f64,
+        direction: (f64, f64),
+    ) -> Result<(Point3, f64), String> {
+        let start = *self
+            .points
+            .last()
+            .ok_or("Specify the PLINE starting point.")?;
+        let (end, segment) =
+            PolylineSegment::arc_from_radius_with_endpoint(start, radius, sweep, direction)
+                .map_err(|e| e.to_string())?;
+        Ok((end, segment.bulge()))
+    }
+
+    fn pline_construct_endpoint(&self, point: Point3) -> Result<(Point3, f64), String> {
+        match self.pline_input.arc_input {
+            Some(ArcInput::AngleCenter(sweep)) => self.pline_center_arc(point, sweep),
+            Some(ArcInput::Chord {
+                radius,
+                sweep,
+                point: true,
+            }) => {
+                let start = *self.points.last().expect("arc starting point");
+                if point.z() != start.z() {
+                    return Err(crate::GeometryError::NonPlanarPolyline.to_string());
+                }
+                self.pline_radius_arc(
+                    radius,
+                    sweep,
+                    (point.x() - start.x(), point.y() - start.y()),
+                )
+            }
+            _ => Ok((point, self.pline_bulge_to(point)?)),
+        }
+    }
+
     pub(super) fn pline_width_prompt(&self) -> Option<&'static str> {
         let input = self.pline_input.input?;
         Some(match (input.factor == 2.0, input.start.is_some()) {
@@ -169,12 +233,8 @@ impl OpenCadApp {
         closed: bool,
     ) -> Result<Polyline2, String> {
         let (cursor, bulge) = if let Some(cursor) = cursor {
-            if let Some(ArcInput::AngleCenter(sweep)) = self.pline_input.arc_input {
-                let (end, bulge) = self.pline_center_arc(cursor, sweep)?;
-                (Some(end), bulge)
-            } else {
-                (Some(cursor), self.pline_bulge_to(cursor)?)
-            }
+            let (end, bulge) = self.pline_construct_endpoint(cursor)?;
+            (Some(end), bulge)
         } else if closed {
             let first = *self
                 .points
@@ -248,15 +308,25 @@ impl OpenCadApp {
             return Ok(());
         }
         let (point, bulge) = match self.pline_input.arc_input {
-            Some(ArcInput::AngleCenter(sweep)) => self.pline_center_arc(point, sweep)?,
             Some(ArcInput::Center(Some(_))) => {
                 return Err("Choose Angle to complete the center construction. Center + endpoint is unfinished.".into());
             }
-            Some(ArcInput::Angle(None) | ArcInput::CenterAngle(_)) => {
+            Some(ArcInput::Radius(Some(_))) => {
+                return Err("Choose Angle to complete the radius construction. Radius + endpoint is unfinished.".into());
+            }
+            Some(ArcInput::Angle(None) | ArcInput::CenterAngle(_) | ArcInput::RadiusAngle(_)) => {
                 return Err("Enter the included angle in degrees before specifying points.".into());
             }
+            Some(ArcInput::Radius(None) | ArcInput::AngleRadius(_)) => {
+                return Err("Enter the radius before specifying points.".into());
+            }
+            Some(ArcInput::Chord { point: false, .. }) => {
+                return Err(
+                    "Enter the chord direction in degrees; this route requires an angle.".into(),
+                );
+            }
             _ if self.points.is_empty() => (point, 0.0),
-            _ => (point, self.pline_bulge_to(point)?),
+            _ => self.pline_construct_endpoint(point)?,
         };
         self.pline_add_endpoint(point, bulge)
     }
@@ -352,33 +422,12 @@ impl OpenCadApp {
         if let Some(result) = self.pline_arc_text(&tokens, &verb) {
             return Some(result);
         }
-        if matches!(
-            self.pline_input.arc_input,
-            Some(ArcInput::Angle(None) | ArcInput::CenterAngle(_))
-        ) && !matches!(
+        if !matches!(
             verb.as_str(),
             "SAVE" | "SAVEAS" | "PLINEWID" | "W" | "WIDTH" | "H" | "HALFWIDTH"
-        ) {
-            return Some((|| {
-                let error = "Enter one finite signed angle in degrees, nonzero and less than 360.";
-                if tokens.len() != 1 {
-                    return Err(error.into());
-                }
-                let degrees = tokens[0].parse::<f64>().map_err(|_| error.to_owned())?;
-                let sweep = degrees.to_radians();
-                if !degrees.is_finite() || degrees == 0.0 || degrees.abs() >= 360.0 || sweep == 0.0
-                {
-                    return Err(error.into());
-                }
-                if let Some(ArcInput::CenterAngle(center)) = self.pline_input.arc_input {
-                    let (end, bulge) = self.pline_center_arc(center, sweep)?;
-                    self.pline_add_endpoint(end, bulge)?;
-                } else {
-                    self.pline_input.arc_input = Some(ArcInput::Angle(Some(sweep)));
-                }
-                self.message(self.prompt(), false);
-                Ok(())
-            })());
+        ) && let Some(result) = self.pline_arc_value(&tokens)
+        {
+            return Some(result);
         }
         let factor = match verb.as_str() {
             "W" | "WIDTH" => 1.0,
@@ -420,6 +469,78 @@ impl OpenCadApp {
         })())
     }
 
+    fn pline_arc_value(&mut self, tokens: &[&str]) -> Option<Result<(), String>> {
+        let input = self.pline_input.arc_input?;
+        if !matches!(
+            input,
+            ArcInput::Angle(None)
+                | ArcInput::CenterAngle(_)
+                | ArcInput::RadiusAngle(_)
+                | ArcInput::Radius(_)
+                | ArcInput::AngleRadius(_)
+                | ArcInput::Chord { point: false, .. }
+        ) {
+            return None;
+        }
+        Some((|| {
+            match input {
+                ArcInput::Radius(Some(_)) => {
+                    return Err("Choose Angle to complete the radius construction. Radius + endpoint is unfinished.".into());
+                }
+                ArcInput::Radius(None) | ArcInput::AngleRadius(_) => {
+                    let radius = pline_number(tokens, "Enter one finite positive radius.")?;
+                    if radius <= 0.0 {
+                        return Err("Enter one finite positive radius.".into());
+                    }
+                    self.pline_input.arc_input = Some(match input {
+                        ArcInput::AngleRadius(sweep) => ArcInput::Chord {
+                            radius,
+                            sweep,
+                            point: true,
+                        },
+                        _ => ArcInput::Radius(Some(radius)),
+                    });
+                }
+                ArcInput::Chord {
+                    radius,
+                    sweep,
+                    point: false,
+                } => {
+                    let direction = pline_number(tokens, "Enter one finite chord direction in degrees; no current default is defined.")?
+                        .rem_euclid(360.0).to_radians();
+                    let (sin, cos) = direction.sin_cos();
+                    let (end, bulge) = self.pline_radius_arc(radius, sweep, (cos, sin))?;
+                    self.pline_add_endpoint(end, bulge)?;
+                }
+                _ => {
+                    let error =
+                        "Enter one finite signed angle in degrees, nonzero and less than 360.";
+                    let degrees = pline_number(tokens, error)?;
+                    let sweep = degrees.to_radians();
+                    if degrees == 0.0 || degrees.abs() >= 360.0 || sweep == 0.0 {
+                        return Err(error.into());
+                    }
+                    match input {
+                        ArcInput::CenterAngle(center) => {
+                            let (end, bulge) = self.pline_center_arc(center, sweep)?;
+                            self.pline_add_endpoint(end, bulge)?;
+                        }
+                        ArcInput::RadiusAngle(radius) => {
+                            self.pline_input.arc_input = Some(ArcInput::Chord {
+                                radius,
+                                sweep,
+                                point: false,
+                            });
+                        }
+                        _ => self.pline_input.arc_input = Some(ArcInput::Angle(Some(sweep))),
+                    }
+                }
+            }
+            self.message(self.prompt(), false);
+            Ok(())
+        })())
+    }
+
     fn pline_arc_text(&mut self, tokens: &[&str], verb: &str) -> Option<Result<(), String>> {
         if matches!(verb, "EXIT" | "X" | "CANCEL") && tokens.len() == 1 && self.pline_arc_pending()
         {
@@ -435,9 +556,7 @@ impl OpenCadApp {
             "S" | "SE" | "SECOND" | "SECONDPT" if self.pline_input.arc_mode => "SECOND",
             "A" | "ANGLE" if self.pline_input.arc_mode => "ANGLE",
             "CE" | "CENTER" if self.pline_input.arc_mode => "CENTER",
-            "R" | "RADIUS" if self.pline_input.arc_mode => {
-                return Some(Err("PLINE Radius construction is not supported yet. Use Angle, Center + Angle, a tangent endpoint, Direction or Second pt.".into()));
-            }
+            "R" | "RADIUS" if self.pline_input.arc_mode => "RADIUS",
             "LENGTH" | "LEN" => {
                 return Some(Err("PLINE Length construction is not supported yet.".into()));
             }
@@ -460,11 +579,16 @@ impl OpenCadApp {
                 "SECOND" => Some(ArcInput::Second(None)),
                 "ANGLE" => Some(match self.pline_input.arc_input {
                     Some(ArcInput::Center(Some(center))) => ArcInput::CenterAngle(center),
+                    Some(ArcInput::Radius(Some(radius))) => ArcInput::RadiusAngle(radius),
                     _ => ArcInput::Angle(None),
                 }),
                 "CENTER" => Some(match self.pline_input.arc_input {
                     Some(ArcInput::Angle(Some(sweep))) => ArcInput::AngleCenter(sweep),
                     _ => ArcInput::Center(None),
+                }),
+                "RADIUS" => Some(match self.pline_input.arc_input {
+                    Some(ArcInput::Angle(Some(sweep))) => ArcInput::AngleRadius(sweep),
+                    _ => ArcInput::Radius(None),
                 }),
                 _ => None,
             };
@@ -472,4 +596,14 @@ impl OpenCadApp {
             Ok(())
         })())
     }
+}
+
+fn pline_number(tokens: &[&str], error: &str) -> Result<f64, String> {
+    let [text] = tokens else {
+        return Err(error.into());
+    };
+    text.parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| error.into())
 }
