@@ -28,11 +28,18 @@ struct DrawingUi {
 
 impl DrawingUi {
     fn new() -> Self {
+        Self::with_storage(None)
+    }
+
+    fn with_storage(storage: Option<&dyn eframe::Storage>) -> Self {
+        Self::with_storage_and_path(storage, None)
+    }
+
+    fn with_storage_and_path(storage: Option<&dyn eframe::Storage>, path: Option<PathBuf>) -> Self {
         let ctx = egui::Context::default();
-        let app = opencad::desktop::OpenCadApp::new(
-            &eframe::CreationContext::_new_kittest(ctx.clone()),
-            None,
-        );
+        let mut cc = eframe::CreationContext::_new_kittest(ctx.clone());
+        cc.storage = storage;
+        let app = opencad::desktop::OpenCadApp::new(&cc, path);
         let mut ui = Self {
             ctx,
             app,
@@ -133,6 +140,30 @@ impl DrawingUi {
             .map(|(id, _)| *id)
             .unwrap_or_else(|| panic!("missing accessible checkbox {label}"));
         self.action(id, accesskit::Action::Click);
+    }
+
+    fn toolset_header(&self, label: &str) -> accesskit::NodeId {
+        // Other platforms also have a Draw menu; select the palette header.
+        self.nodes
+            .iter()
+            .find(|(_, node)| {
+                node.role() == accesskit::Role::Button
+                    && node.label() == Some(label)
+                    && node.is_expanded().is_some()
+                    && node.bounds().is_some_and(|bounds| {
+                        bounds.x0 >= 0.0 && bounds.x1 <= 184.0 && bounds.y0 >= 58.0
+                    })
+            })
+            .map(|(id, _)| *id)
+            .expect("accessible toolset header")
+    }
+
+    fn dismiss_popup(&mut self) {
+        self.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+        self.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+        for _ in 0..12 {
+            self.step(Vec::new());
+        }
     }
 
     fn checked(&self, label: &str) -> bool {
@@ -295,6 +326,25 @@ impl DrawingUi {
     }
 }
 
+#[derive(Default)]
+struct PreferenceStorage(HashMap<String, String>);
+
+impl eframe::Storage for PreferenceStorage {
+    fn get_string(&self, key: &str) -> Option<String> {
+        self.0.get(key).cloned()
+    }
+
+    fn set_string(&mut self, key: &str, value: String) {
+        self.0.insert(key.to_owned(), value);
+    }
+
+    fn remove_string(&mut self, key: &str) {
+        self.0.remove(key);
+    }
+
+    fn flush(&mut self) {}
+}
+
 fn key(key: egui::Key, modifiers: egui::Modifiers, pressed: bool) -> Event {
     Event::Key {
         key,
@@ -340,6 +390,160 @@ fn reference_start_page_preserves_dirty_drawing_and_reopens_recent_files() {
     ui.click("recent.dxf");
     ui.command("SAVE");
     assert_eq!(fs::read_to_string(drawing).unwrap(), saved);
+}
+
+#[test]
+fn workspace_preferences_and_recent_files_survive_restart() {
+    let scratch = Scratch::new();
+    let drawing = scratch.0.join("restart.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE 0,0 10,20");
+    ui.command(&format!("SAVEAS {}", drawing.display()));
+    ui.click("Customize Draw panel");
+    ui.toggle("Show Draw: Line");
+    ui.toggle("Show Draw: 3D Polyline");
+    ui.dismiss_popup();
+    ui.action(ui.toolset_header("Draw"), accesskit::Action::Click);
+    ui.click("Collapse toolsets");
+    ui.click("Drafting settings");
+    ui.click("Status bar customization");
+    ui.toggle("Show Transparency display");
+    ui.dismiss_popup();
+    ui.step(vec![key(egui::Key::Num1, egui::Modifiers::COMMAND, true)]);
+    ui.step(vec![key(egui::Key::Num1, egui::Modifiers::COMMAND, false)]);
+    ui.click("Start");
+    ui.click("List view");
+    ui.click("restart.dxf");
+    ui.command("LINE 30,40 50,60");
+
+    // Save through eframe's real lifecycle hook and reconstruct with a fresh
+    // egui Context: neither in-memory widgets nor the drawing may leak across.
+    let mut storage = PreferenceStorage::default();
+    ui.app.save(&mut storage);
+    drop(ui);
+    let mut restored = DrawingUi::with_storage(Some(&storage));
+    assert!(restored.has_text("Recent"));
+    assert!(!restored.has_text("Drawing1"));
+    assert!(restored.has_text("restart.dxf"));
+    let recent_label = format!("restart.dxf\n{}", drawing.display());
+    let recent = restored.bounds(&recent_label).unwrap();
+    assert_eq!(recent.height(), 48.0, "recent list presentation restored");
+    restored.click(&recent_label);
+    assert_eq!(
+        restored
+            .bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
+            .unwrap()
+            .left(),
+        90.0
+    );
+    assert!(
+        restored.bounds("My").is_none(),
+        "Properties palette stays hidden"
+    );
+    assert_eq!(
+        restored.nodes[&restored.toolset_header("Draw")].is_expanded(),
+        Some(false)
+    );
+    assert!(restored.bounds("Transparency display").is_none());
+    restored.action(restored.toolset_header("Draw"), accesskit::Action::Click);
+    for _ in 0..12 {
+        restored.step(Vec::new());
+    }
+    restored.click("Customize Draw panel");
+    assert!(!restored.checked("Show Draw: Line"));
+    assert!(restored.checked("Show Draw: 3D Polyline"));
+    restored.dismiss_popup();
+    restored.command("SAVE");
+    assert_eq!(
+        DxfDocument::parse(&fs::read_to_string(&drawing).unwrap())
+            .unwrap()
+            .entities()
+            .len(),
+        1,
+        "workspace persistence must not restore an unsaved drawing"
+    );
+}
+
+#[test]
+fn workspace_preferences_recover_from_invalid_and_outdated_data() {
+    let cases = [
+        ("not a preferences record", 184.0, true),
+        (
+            r#"(
+                panels: {"retired_palette": false},
+                slim_tools: true,
+                collapsed_toolsets: ["Draw", "retired_panel"],
+                tool_visibility: {
+                    "Draw": {"ID_Line": false, "retired_command": true},
+                    "retired_panel": {"ID_Line": false},
+                },
+                hidden_status: ["retired_status"],
+                recent_files: [Text("relative-file.dxf")],
+                future_option: true,
+            )"#,
+            90.0,
+            false,
+        ),
+    ];
+    for (stored, width, line_visible) in cases {
+        let mut storage = PreferenceStorage::default();
+        storage
+            .0
+            .insert("opencad.workspace.v1".into(), stored.into());
+        let mut ui = DrawingUi::with_storage(Some(&storage));
+        assert!(ui.has_text("There is nothing here yet."));
+        ui.click("New");
+        assert_eq!(
+            ui.bounds("Drawing canvas, XY top view. Use the command field for exact coordinates.")
+                .unwrap()
+                .left(),
+            width
+        );
+        assert!(ui.bounds("Transparency display").is_some());
+        assert!(
+            ui.bounds("My").is_some(),
+            "missing preferences retain the Properties palette"
+        );
+        if !line_visible {
+            assert_eq!(
+                ui.nodes[&ui.toolset_header("Draw")].is_expanded(),
+                Some(false)
+            );
+            ui.action(ui.toolset_header("Draw"), accesskit::Action::Click);
+        }
+        ui.click("Customize Draw panel");
+        assert_eq!(ui.checked("Show Draw: Line"), line_visible);
+        ui.dismiss_popup();
+        ui.command("LINE 0,0 10,20");
+        assert!(ui.has_text("1 selected"));
+        assert!(ui.bounds("Apply properties").is_some());
+    }
+}
+
+// Linux permits arbitrary filename bytes; macOS filesystems require Unicode.
+#[cfg(target_os = "linux")]
+#[test]
+fn recent_files_retain_non_utf8_native_paths() {
+    use std::os::unix::ffi::OsStringExt;
+    let scratch = Scratch::new();
+    let drawing = scratch
+        .0
+        .join(std::ffi::OsString::from_vec(b"native-\xff.dxf".to_vec()));
+    let source = fs::read("examples/courtyard.dxf").unwrap();
+    fs::write(&drawing, &source).unwrap();
+    let mut ui = DrawingUi::with_storage_and_path(None, Some(drawing.clone()));
+    let mut storage = PreferenceStorage::default();
+    ui.app.save(&mut storage);
+    drop(ui);
+    let mut restored = DrawingUi::with_storage(Some(&storage));
+    restored.click(&drawing.file_name().unwrap().to_string_lossy());
+    restored.command("SAVE");
+    assert_eq!(fs::read(&drawing).unwrap(), source);
+    assert!(
+        !scratch.0.join("native-�.dxf").exists(),
+        "native path was not replaced by display text"
+    );
 }
 
 #[test]
@@ -483,19 +687,7 @@ fn toolset_gears_and_slim_palette_preserve_drafting_and_property_edits() {
             .expect("section expansion state")
     }
     fn draw_header(ui: &DrawingUi) -> accesskit::NodeId {
-        // Linux and Windows also have a menu button named Draw. Target the
-        // accessible palette header, independent of HashMap iteration order.
-        ui.nodes
-            .iter()
-            .find(|(_, node)| {
-                node.role() == accesskit::Role::Button
-                    && node.label() == Some("Draw")
-                    && node.bounds().is_some_and(|bounds| {
-                        bounds.x0 >= 0.0 && bounds.x1 <= 184.0 && bounds.y0 >= 58.0
-                    })
-            })
-            .map(|(id, _)| *id)
-            .expect("accessible Draw palette header")
+        ui.toolset_header("Draw")
     }
     fn click_draw_header(ui: &mut DrawingUi) {
         ui.action(draw_header(ui), accesskit::Action::Click);

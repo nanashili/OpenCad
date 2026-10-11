@@ -51,6 +51,15 @@ input without opening a window. They check connected actions, focus, dirty-file
 prompts, geometry and saved DXF results. Native OS chrome, file dialogs and GPU
 presentation still need manual testing on the target platform.
 
+Workspace persistence uses eframe's native storage lifecycle and a versioned
+`opencad.workspace.v1` record in `app.ron` (see [locations and reset instructions](USAGE.md#workspace-preferences)).
+The record contains UI preferences and recent paths, with explicit defaults for
+missing fields. Catalog command IDs identify tool visibility overrides; removed
+IDs and unknown fields are ignored. Native filenames are retained losslessly.
+Drawing data and transient widget memory are excluded. Restart tests reconstruct
+the application with a fresh egui context through `CreationContext.storage` and
+`App::save`; they never read or write the developer's personal profile.
+
 ## UI assets
 
 The generated icons and catalog are checked in, so a normal Cargo build requires

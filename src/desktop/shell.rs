@@ -55,7 +55,8 @@ pub(super) struct Workspace {
     pub connect: bool,
     pub hidden_status: HashSet<&'static str>,
     pub slim_tools: bool,
-    tool_visibility: HashMap<(&'static str, usize), bool>,
+    pub(super) tool_visibility: HashMap<(&'static str, usize), bool>,
+    pub(super) collapsed_tools: HashSet<&'static str>,
 }
 
 impl Default for Workspace {
@@ -77,6 +78,7 @@ impl Default for Workspace {
             hidden_status: HashSet::new(),
             slim_tools: false,
             tool_visibility: HashMap::new(),
+            collapsed_tools: HashSet::new(),
         }
     }
 }
@@ -635,6 +637,7 @@ impl OpenCadApp {
         let id = ui.make_persistent_id(("toolset", group.label));
         let mut state =
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+        state.set_open(!self.workspace.collapsed_tools.contains(group.label));
         let (_, header) = ui.allocate_space(egui::vec2(ui.available_width(), 20.0));
         let gear_rect = egui::Rect::from_center_size(
             egui::pos2(header.right() - 9.0, header.center().y),
@@ -647,6 +650,11 @@ impl OpenCadApp {
         let title = ui.interact(title_rect, id, egui::Sense::click());
         if title.clicked() {
             state.toggle(ui);
+            if state.is_open() {
+                self.workspace.collapsed_tools.remove(group.label);
+            } else {
+                self.workspace.collapsed_tools.insert(group.label);
+            }
         }
         title.widget_info(|| {
             egui::WidgetInfo::selected(

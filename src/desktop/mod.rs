@@ -2,6 +2,7 @@ mod canvas;
 mod catalog;
 mod commands;
 mod panels;
+mod preferences;
 mod shell;
 
 pub use shell::{MenuItem, MenuStatus, menu_action_status, native_menus, queue_menu_action};
@@ -201,6 +202,9 @@ impl OpenCadApp {
             recent_search: String::new(),
             recent_list: false,
         };
+        if let Some(storage) = cc.storage {
+            app.restore_preferences(storage);
+        }
         if let Some(path) = path {
             app.open_path(path);
         }
@@ -519,8 +523,10 @@ impl OpenCadApp {
     }
 
     fn remember_file(&mut self, path: &Path) {
-        self.recent_files.retain(|recent| recent != path);
-        self.recent_files.insert(0, path.to_owned());
+        // A later launch may use a different working directory.
+        let path = std::path::absolute(path).unwrap_or_else(|_| path.to_owned());
+        self.recent_files.retain(|recent| recent != &path);
+        self.recent_files.insert(0, path);
         self.recent_files.truncate(20);
     }
 
@@ -687,6 +693,16 @@ impl OpenCadApp {
 }
 
 impl eframe::App for OpenCadApp {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.save_preferences(storage);
+    }
+
+    fn persist_egui_memory(&self) -> bool {
+        // Persist the explicit workspace contract, not transient popup or
+        // drawing-specific widget state. eframe saves native window geometry.
+        false
+    }
+
     fn logic(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         self.drain_menu_actions(ctx);
         // eframe skips ui() while minimized or occluded. Protect dirty drawings

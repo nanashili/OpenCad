@@ -38,13 +38,12 @@ bars and macOS menu chrome are outside the captures. [Reproduce them](docs/DEVEL
 - Use grid, object snap, grid snap, ortho and polar tracking in an XY top view.
 - Open and save supported R12 ASCII DXF documents, preserving untouched source records.
 - Export the XY drawing to SVG and use the geometry/DXF command line tools.
-- Customize toolsets and status items, switch between Start and a drawing, and use native macOS menus.
+- Customize toolsets and status items, retain workspace preferences and recent files across restarts, switch between Start and a drawing, and use native macOS menus.
 
 The interface includes commands that are not implemented yet; they remain
 disabled. Validated header, table and block metadata can be retained without
 being rendered or editable; unsupported top-level entities are rejected. Arbitrary planes, 3D polylines, polyline widths, complex linetypes,
-dimensions, solids and broad block workflows remain unfinished. Palette preferences
-and recent-file state currently last for the session. See [usage and format limits](docs/USAGE.md).
+dimensions, solids and broad block workflows remain unfinished. See [usage and format limits](docs/USAGE.md).
 
 ## Downloads and releases
 

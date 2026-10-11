@@ -34,7 +34,25 @@ Command-W closes through the dirty-file prompt. Command-1 toggles Properties,
 Command-3 the command area, Command-5 toolsets and F2 history. Text fields retain
 their own editing shortcuts. Returning to Start keeps the active drawing.
 
-Palette customization and recent files are session state. The Connect panel is
+## Workspace preferences
+
+OpenCad remembers palette visibility, full/slim toolset width, collapsed toolset
+sections, command visibility, status-item visibility, recent files and the
+recent-file list/grid presentation. Preferences are saved on normal exit and
+every 30 seconds. Recent files retain their absolute paths and most-recent-first
+order, with up to 20 entries. Missing files remain listed and report an error if
+opened. Drawing contents and unsaved edits are not stored in preferences.
+
+The native app stores preferences and window geometry in `app.ron`:
+
+| Platform | Location |
+| --- | --- |
+| macOS | `~/Library/Application Support/org.opendesk.opencad/app.ron` |
+| Windows | `%APPDATA%\org.opendesk.opencad\data\app.ron` |
+| Linux | `$XDG_DATA_HOME/org.opendesk.opencad/app.ron`, or `~/.local/share/org.opendesk.opencad/app.ron` |
+
+To reset preferences and window geometry, close OpenCad and remove that file.
+Unreadable workspace settings fall back to defaults. The Connect panel remains
 an interface placeholder; account sign-in and online services are not connected.
 
 ## DXF boundary
