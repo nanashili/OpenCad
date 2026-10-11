@@ -1,6 +1,7 @@
 use crate::{
-    BoundaryMode, DxfDocument, Entity, EntityStyle, EntityStyleError, GeometryError, Layer,
-    LayerError, Linetype, LinetypeError, Offset, OffsetLayer, OffsetOptions, Transform,
+    BoundaryMode, Corner, CornerParameter, DxfDocument, Entity, EntityStyle, EntityStyleError,
+    GeometryError, Layer, LayerError, Linetype, LinetypeError, Offset, OffsetLayer, OffsetOptions,
+    Transform,
 };
 use std::{error::Error, fmt};
 
@@ -195,6 +196,28 @@ impl Editor {
     }
     pub fn set_linetype_scale(&mut self, scale: f64) -> Result<bool, LinetypeError> {
         self.edit_document(|document| document.set_linetype_scale(scale))
+    }
+    pub fn corner_value(&self, parameter: CornerParameter) -> f64 {
+        self.current.document.corner_value(parameter)
+    }
+    pub fn set_corner_value(
+        &mut self,
+        parameter: CornerParameter,
+        value: f64,
+    ) -> Result<bool, GeometryError> {
+        self.set_corner_values(&[(parameter, value)])
+    }
+    pub fn set_corner_values(
+        &mut self,
+        values: &[(CornerParameter, f64)],
+    ) -> Result<bool, GeometryError> {
+        self.edit_document(|document| {
+            let mut changed = false;
+            for (parameter, value) in values {
+                changed |= document.set_corner_value(*parameter, *value)?;
+            }
+            Ok(changed)
+        })
     }
     pub fn assign_selection_layer(&mut self, name: &str) -> Result<bool, LayerError> {
         self.editable_selection()?;
@@ -462,6 +485,78 @@ impl Editor {
         let edges = self.cutting_edges(index, boundaries);
         let entity = source.extend_xy(&edges, pick, mode)?;
         self.replace_curve_parts(index, vec![entity])
+    }
+
+    /// Construct a line pair and its connector as one drawing transaction.
+    /// Retained source records keep their styles and identities. A connector
+    /// uses BYLAYER defaults on their common layer, or the current layer.
+    pub fn corner_lines(
+        &mut self,
+        picks: [(usize, crate::Point3); 2],
+        corner: Corner,
+        trim: bool,
+    ) -> Result<bool, EditError> {
+        let [(first, first_pick), (second, second_pick)] = picks;
+        if first == second {
+            return Err(GeometryError::UnsupportedCornerEntities.into());
+        }
+        let (Some(Entity::Line(a)), Some(Entity::Line(b))) =
+            (self.entities().get(first), self.entities().get(second))
+        else {
+            return Err(GeometryError::UnsupportedCornerEntities.into());
+        };
+        let result = corner.between_lines(*a, first_pick, *b, second_pick)?;
+        let changed =
+            trim && (result.first() != *a || result.second() != *b) || result.connector().is_some();
+        if !changed {
+            return Ok(false);
+        }
+        let first_layer = self.entity_layer(first).expect("existing source layer");
+        let second_layer = self.entity_layer(second).expect("existing source layer");
+        if trim {
+            self.editable_layer(first_layer)?;
+            self.editable_layer(second_layer)?;
+        } else if !self.is_entity_visible(first) || !self.is_entity_visible(second) {
+            return Err(LayerError::HiddenLayer(
+                if !self.is_entity_visible(first) {
+                    first_layer
+                } else {
+                    second_layer
+                }
+                .into(),
+            )
+            .into());
+        }
+        let connector_layer = if first_layer.eq_ignore_ascii_case(second_layer) {
+            first_layer
+        } else {
+            self.current_layer()
+        }
+        .to_owned();
+        if result.connector().is_some() {
+            self.editable_layer(&connector_layer)?;
+        }
+        self.checkpoint();
+        if trim {
+            self.current
+                .document
+                .replace_entity(first, Entity::Line(result.first()))
+                .expect("validated source line");
+            self.current
+                .document
+                .replace_entity(second, Entity::Line(result.second()))
+                .expect("validated source line");
+        }
+        let mut selected = vec![first, second];
+        if let Some(connector) = result.connector() {
+            selected.push(self.entities().len());
+            self.current
+                .document
+                .push_on_layer(connector.clone(), &connector_layer)
+                .expect("validated connector layer");
+        }
+        self.select(selected);
+        Ok(true)
     }
 
     fn cutting_edges(&self, source: usize, boundaries: &[usize]) -> Vec<Entity> {

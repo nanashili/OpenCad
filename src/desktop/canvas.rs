@@ -143,7 +143,12 @@ impl OpenCadApp {
                 });
                 if !matches!(
                     self.tool,
-                    Tool::Select | Tool::Pan | Tool::Trim | Tool::Extend
+                    Tool::Select
+                        | Tool::Pan
+                        | Tool::Trim
+                        | Tool::Extend
+                        | Tool::Fillet
+                        | Tool::Chamfer
                 ) && let Some(point) = self.cursor
                 {
                     self.cursor = Some(self.snap(point, rect, ui.input(|i| i.modifiers.shift)));
@@ -165,6 +170,14 @@ impl OpenCadApp {
                             }
                         } else {
                             self.editor.select(hit.into_iter().collect());
+                        }
+                    } else if matches!(self.tool, Tool::Fillet | Tool::Chamfer) {
+                        let hit = pointer.and_then(|position| self.hit(position, rect));
+                        if let Some(point) = self.cursor
+                            && let Err(error) =
+                                self.corner_click(hit, point, ui.input(|i| i.modifiers.shift))
+                        {
+                            self.message(error, true);
                         }
                     } else if matches!(self.tool, Tool::Trim | Tool::Extend) {
                         let hit = pointer.and_then(|position| self.hit(position, rect));
@@ -572,6 +585,18 @@ impl OpenCadApp {
             return;
         };
         let stroke = Stroke::new(1.3, ACCENT);
+        if matches!(self.tool, Tool::Fillet | Tool::Chamfer) {
+            if let Some(position) = self.camera.screen(cursor.x(), cursor.y(), rect)
+                && let Some(source) = self.hit(position, rect)
+                && let Some(parts) =
+                    self.corner_preview(source, cursor, painter.ctx().input(|i| i.modifiers.shift))
+            {
+                for part in parts {
+                    self.draw_entity(painter, &part, rect, stroke);
+                }
+            }
+            return;
+        }
         if self.tool == Tool::Offset {
             if let Some(entity) = self.offset_preview(cursor) {
                 self.draw_entity(painter, &entity, rect, stroke);

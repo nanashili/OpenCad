@@ -3,8 +3,8 @@
 //! contents are retained without interpreting their contents.
 
 use crate::{
-    Arc3, Circle3, Entity, EntityStyle, EntityStyleError, Layer, LayerError, Line3, Linetype,
-    LinetypeError, Point3, Polyline2,
+    Arc3, Circle3, CornerParameter, Entity, EntityStyle, EntityStyleError, GeometryError, Layer,
+    LayerError, Line3, Linetype, LinetypeError, Point3, Polyline2,
 };
 use std::collections::HashSet;
 use std::error::Error;
@@ -31,6 +31,7 @@ pub enum DxfErrorKind {
     InvalidLayerValue(u16),
     Linetype(LinetypeError),
     EntityStyle(EntityStyleError),
+    Corner(GeometryError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -72,6 +73,7 @@ impl fmt::Display for DxfError {
             }
             DxfErrorKind::Linetype(error) => error.fmt(f),
             DxfErrorKind::EntityStyle(error) => error.fmt(f),
+            DxfErrorKind::Corner(error) => error.fmt(f),
         }
     }
 }
@@ -253,6 +255,12 @@ struct LinetypeData {
     header_end: Option<usize>,
 }
 
+#[derive(Clone, Debug, Default)]
+struct CornerData {
+    values: [f64; 3],
+    fields: [Option<Coordinate>; 3],
+}
+
 /// An R12 document with editable geometry and layers, retaining source records.
 #[derive(Clone, Debug)]
 pub struct DxfDocument {
@@ -265,6 +273,7 @@ pub struct DxfDocument {
     entity_styles: Vec<EntityStyle>,
     layer_data: LayerData,
     linetype_data: LinetypeData,
+    corner_data: CornerData,
 }
 
 impl DxfDocument {
@@ -294,6 +303,7 @@ impl DxfDocument {
                 }
                 let layer_data = read_layers(input)?;
                 let linetype_data = read_linetypes(input)?;
+                let corner_data = read_corners(input)?;
                 let entity_layers = records
                     .iter()
                     .map(|record| {
@@ -334,6 +344,7 @@ impl DxfDocument {
                     entity_styles,
                     layer_data,
                     linetype_data,
+                    corner_data,
                 });
             }
             if (marker.code, marker.value) != (0, "SECTION") {
@@ -476,6 +487,24 @@ impl DxfDocument {
             return Ok(false);
         }
         self.linetype_data.scale = scale;
+        Ok(true)
+    }
+
+    pub fn corner_value(&self, parameter: CornerParameter) -> f64 {
+        self.corner_data.values[parameter.index()]
+    }
+
+    pub fn set_corner_value(
+        &mut self,
+        parameter: CornerParameter,
+        value: f64,
+    ) -> Result<bool, GeometryError> {
+        let value = crate::corner::dimension(value)?;
+        let current = &mut self.corner_data.values[parameter.index()];
+        if *current == value {
+            return Ok(false);
+        }
+        *current = value;
         Ok(true)
     }
     /// Resolve top-level inheritance. Unknown source names display continuously
@@ -838,8 +867,25 @@ impl DxfDocument {
             }
         }
         let mut tables = String::new();
-        self.linetype_data
-            .write_changes(&mut changes, &mut tables, self.layer_data.table.as_ref());
+        let mut header = String::new();
+        self.linetype_data.write_changes(
+            &mut changes,
+            &mut tables,
+            &mut header,
+            self.layer_data.table.as_ref(),
+        );
+        self.corner_data.write_changes(&mut changes, &mut header);
+        if !header.is_empty() {
+            if let Some(at) = self.linetype_data.header_end {
+                changes.push((at, at, header));
+            } else {
+                changes.push((
+                    0,
+                    0,
+                    format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n{header}0\nENDSEC\n"),
+                ));
+            }
+        }
         self.layer_data.write_changes(&mut changes, &mut tables);
         if !tables.is_empty() {
             if let Some(at) = self.layer_data.tables_end {
@@ -1126,6 +1172,7 @@ impl LinetypeData {
         &self,
         changes: &mut Vec<(usize, usize, String)>,
         tables: &mut String,
+        header: &mut String,
         layer_table: Option<&SymbolTable>,
     ) {
         if self
@@ -1174,18 +1221,78 @@ impl LinetypeData {
                 changes.push((field.start, field.end, self.scale.to_string()));
             }
         } else if self.scale != 1.0 {
-            let variable = format!("9\n$LTSCALE\n40\n{}\n", self.scale);
-            if let Some(at) = self.header_end {
-                changes.push((at, at, variable));
-            } else {
-                changes.push((
-                    0,
-                    0,
-                    format!("0\nSECTION\n2\nHEADER\n9\n$ACADVER\n1\nAC1009\n{variable}0\nENDSEC\n"),
-                ));
+            write!(header, "9\n$LTSCALE\n40\n{}\n", self.scale).expect("String write");
+        }
+    }
+}
+
+impl CornerData {
+    fn write_changes(&self, changes: &mut Vec<(usize, usize, String)>, header: &mut String) {
+        for parameter in CornerParameter::ALL {
+            let index = parameter.index();
+            let value = self.values[index];
+            if let Some(field) = self.fields[index] {
+                if value != field.value {
+                    changes.push((field.start, field.end, value.to_string()));
+                }
+            } else if value != 0.0 {
+                write!(header, "9\n${}\n40\n{value}\n", parameter.name()).expect("String write");
             }
         }
     }
+}
+
+fn read_corners(input: &str) -> Result<CornerData, DxfError> {
+    let mut data = CornerData::default();
+    let mut groups = Groups::new(input);
+    let mut in_header = false;
+    while let Some(group) = groups.next()? {
+        match (group.code, group.value) {
+            (0, "SECTION") => in_header = groups.required()?.value == "HEADER",
+            (0, "ENDSEC") => in_header = false,
+            (9, variable) if in_header => {
+                let Some(parameter) = CornerParameter::ALL
+                    .into_iter()
+                    .find(|parameter| variable.strip_prefix('$') == Some(parameter.name()))
+                else {
+                    continue;
+                };
+                let index = parameter.index();
+                if data.fields[index].is_some() {
+                    return Err(DxfError {
+                        line: group.line,
+                        kind: DxfErrorKind::DuplicateField(9),
+                    });
+                }
+                let field = groups.required()?;
+                if field.code != 40 {
+                    return Err(DxfError {
+                        line: field.line,
+                        kind: DxfErrorKind::Expected("corner dimension in group 40"),
+                    });
+                }
+                let coordinate = coordinate(field)?;
+                let value =
+                    crate::corner::dimension(coordinate.value).map_err(|error| DxfError {
+                        line: field.line,
+                        kind: DxfErrorKind::Corner(error),
+                    })?;
+                if groups
+                    .peek()?
+                    .is_some_and(|next| !matches!(next.code, 0 | 9))
+                {
+                    return Err(DxfError {
+                        line: field.line,
+                        kind: DxfErrorKind::Expected("one corner dimension value"),
+                    });
+                }
+                data.values[index] = value;
+                data.fields[index] = Some(coordinate);
+            }
+            _ => {}
+        }
+    }
+    Ok(data)
 }
 
 // Section framing and handles have already been validated. This second linear

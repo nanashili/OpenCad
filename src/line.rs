@@ -170,6 +170,27 @@ impl Bounds3 {
     }
 }
 
+pub(crate) fn xy_intersection(a: Line3, b: Line3) -> Result<Option<Point3>, GeometryError> {
+    let (rx, ry) = (
+        finite_result(a.end.x - a.start.x)?,
+        finite_result(a.end.y - a.start.y)?,
+    );
+    let (sx, sy) = (
+        finite_result(b.end.x - b.start.x)?,
+        finite_result(b.end.y - b.start.y)?,
+    );
+    let denominator = finite_result(rx * sy - ry * sx)?;
+    if denominator == 0.0 {
+        return Ok(None);
+    }
+    let (qx, qy) = (
+        finite_result(b.start.x - a.start.x)?,
+        finite_result(b.start.y - a.start.y)?,
+    );
+    let parameter = finite_result(finite_result(qx * sy - qy * sx)? / denominator)?;
+    a.point_at_fraction(parameter).map(Some)
+}
+
 fn finite_result(value: f64) -> Result<f64, GeometryError> {
     if value.is_finite() {
         Ok(value)

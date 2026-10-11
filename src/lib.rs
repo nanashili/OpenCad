@@ -3,6 +3,7 @@
 mod arc;
 mod circle;
 mod color;
+mod corner;
 mod dxf;
 mod editor;
 mod entity_style;
@@ -20,6 +21,7 @@ pub mod desktop;
 
 pub use arc::Arc3;
 pub use circle::{Circle3, Entity};
+pub use corner::{Corner, CornerParameter, LineCorner};
 pub use dxf::{DxfDocument, DxfError, DxfErrorKind, read_dxf, write_dxf};
 pub use editor::{EditError, Editor};
 pub use entity_style::{EntityStyle, EntityStyleError};
@@ -79,6 +81,12 @@ pub enum GeometryError {
     DegenerateCurve,
     NoBoundaryIntersection,
     AmbiguousCurvePick,
+    InvalidCornerDimension,
+    UnsupportedCornerEntities,
+    ParallelCorner,
+    AmbiguousCornerPick,
+    CornerOutsideSources,
+    UnrepresentableCorner,
     DegenerateLine,
     NotEnoughSegmentsToClose,
     NotEnoughVertices,
@@ -125,6 +133,26 @@ impl fmt::Display for GeometryError {
                 f,
                 "choose a point inside the portion or nearer one endpoint"
             ),
+            Self::InvalidCornerDimension => {
+                write!(f, "corner dimensions must be finite and nonnegative")
+            }
+            Self::UnsupportedCornerEntities => write!(
+                f,
+                "corners currently require two distinct XY lines at the same elevation"
+            ),
+            Self::ParallelCorner => write!(
+                f,
+                "parallel or nearly parallel lines are not supported for corners yet"
+            ),
+            Self::AmbiguousCornerPick => {
+                write!(f, "pick each line on the side of the corner to keep")
+            }
+            Self::CornerOutsideSources => {
+                write!(f, "the corner would leave no line on the picked side")
+            }
+            Self::UnrepresentableCorner => {
+                write!(f, "the corner is too small at this coordinate precision")
+            }
             Self::DegenerateLine => write!(f, "a coincident line has no unique distance parameter"),
             Self::NotEnoughSegmentsToClose => write!(f, "closing requires at least two segments"),
             Self::NotEnoughVertices => write!(f, "a polyline requires at least two vertices"),

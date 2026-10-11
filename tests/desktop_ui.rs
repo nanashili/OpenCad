@@ -2415,6 +2415,234 @@ fn trim_extend_pointer_preview_shift_edge_options_and_cancel_work() {
 }
 
 #[test]
+fn fillet_chamfer_commands_persist_dimensions_and_undo_complete_corner_edits() {
+    use opencad::CornerParameter::{ChamferFirst, ChamferSecond, FilletRadius};
+    use opencad::desktop::{menu_action_status, queue_menu_action};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("corners.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE 5,0,7 40,0,7");
+    ui.command("LINE 0,40,7 0,5,7");
+    ui.command("FILLETRAD 6");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    assert!(menu_action_status(&ui.ctx, "ID_Fillet").enabled);
+    assert!(menu_action_status(&ui.ctx, "ID_Chamfer").enabled);
+    queue_menu_action(&ui.ctx, "ID_Fillet");
+    ui.step(Vec::new());
+    assert!(ui.has_text("Current tool: Fillet"));
+    ui.command("Multiple");
+    ui.command("Radius");
+    ui.command("-1");
+    assert!(ui.has_text("corner dimensions must be finite and nonnegative"));
+    ui.command("8");
+    ui.command("1 20,0");
+    ui.command("1 30,0");
+    assert!(ui.has_text("corners currently require two distinct XY lines"));
+    ui.command("2 0,20");
+    assert!(ui.has_text("Fillet created."));
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    let Entity::Arc(arc) = document.entities()[2] else {
+        panic!("expected fillet")
+    };
+    assert_eq!(arc.radius(), 8.0);
+    assert!((arc.center().x() - 8.0).abs() < 1e-9);
+    assert!((arc.center().y() - 8.0).abs() < 1e-9);
+    assert_eq!(arc.center().z(), 7.0);
+    ui.command("Undo");
+    ui.command("Undo");
+    ui.command("Undo");
+    assert!(ui.has_text("There are no drawing edits to undo in this corner command."));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("Exit");
+    ui.command("CHAMFER 2 4 1 20,0 2 0,20 NOTRIM");
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(
+        &document.entities()[..2],
+        DxfDocument::parse(&original).unwrap().entities()
+    );
+    let Entity::Line(chamfer) = document.entities()[2] else {
+        panic!("expected chamfer")
+    };
+    assert!((chamfer.start().x() - 2.0).abs() < 1e-9);
+    assert!((chamfer.end().y() - 4.0).abs() < 1e-9);
+    ui.command("UNDO");
+    ui.command("CHA");
+    ui.command("Distance");
+    ui.command("3");
+    ui.command("-5");
+    assert!(ui.has_text("corner dimensions must be finite and nonnegative"));
+    // The distance pair is staged until both values validate.
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("CHA");
+    ui.command("Multiple");
+    ui.command("Distance");
+    ui.command("3");
+    ui.command("5");
+    ui.command("1 20,0");
+    ui.command("2 0,20");
+    ui.command("Undo");
+    ui.command("Undo");
+    ui.command("Exit");
+    ui.command("FILLET 100 1 20,0 2 0,20 TRIM");
+    ui.command("FILLET 2 1 20,0 1 30,0 TRIM");
+    ui.command("CHAMFER -1 2 1 20,0 2 0,20");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.command("CHAMFERA 3");
+    ui.command("CHAMFERB 5");
+    ui.command("FILLETRAD 4");
+    ui.command("SAVE");
+    ui.command("CLOSEDRAWING");
+    ui.click("corners.dxf");
+    for (name, value) in [("FILLETRAD", 4), ("CHAMFERA", 3), ("CHAMFERB", 5)] {
+        ui.command(name);
+        assert!(ui.has_text(&format!("{name} = {value}")));
+    }
+    let saved = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(saved.corner_value(FilletRadius), 4.0);
+    assert_eq!(saved.corner_value(ChamferFirst), 3.0);
+    assert_eq!(saved.corner_value(ChamferSecond), 5.0);
+    ui.command("FILLET");
+    ui.command("Trim");
+    ui.command("NoTrim");
+    ui.command("Exit");
+    let mut storage = PreferenceStorage::default();
+    ui.app.save(&mut storage);
+    drop(ui);
+    let mut ui = DrawingUi::with_storage(Some(&storage));
+    ui.click("New");
+    ui.command("FILLETRAD");
+    assert!(ui.has_text("FILLETRAD = 0"));
+    ui.command("CHAMFERA");
+    assert!(ui.has_text("CHAMFERA = 0"));
+    ui.command("FILLET");
+    assert!(ui.has_text("Radius 0; NoTrim"));
+}
+
+#[test]
+fn fillet_chamfer_canvas_picks_preview_shift_keyboard_and_cancel_work() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pointer-corners.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("LINE -50,0,7 50,0,7");
+    ui.command("LINE 0,-40,7 0,40,7");
+    ui.command("FILLETRAD 12");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let original = fs::read_to_string(&path).unwrap();
+    let position = |ui: &DrawingUi, x: f64, y: f64| {
+        let bounds = ui
+            .nodes
+            .values()
+            .find(|node| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Drawing canvas,"))
+            })
+            .and_then(|node| node.bounds())
+            .unwrap();
+        egui::pos2(
+            ((bounds.x0 + bounds.x1) * 0.5 + 4.0 * x) as f32,
+            ((bounds.y0 + bounds.y1) * 0.5 - 4.0 * y) as f32,
+        )
+    };
+    let click = |ui: &mut DrawingUi, x: f64, y: f64, modifiers| {
+        let pos = position(ui, x, y);
+        ui.step(vec![
+            Event::PointerMoved(pos),
+            Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers,
+            },
+        ]);
+        ui.step(vec![Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers,
+        }]);
+        ui.step(Vec::new());
+    };
+    ui.click("Fillet");
+    // Both picks lie near the lines' midpoint snap. Corner picking uses raw positions.
+    click(&mut ui, 2.0, 0.0, egui::Modifiers::NONE);
+    ui.step(vec![key(egui::Key::M, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::M, egui::Modifiers::NONE, false)]);
+    let pos = position(&ui, 0.0, 2.0);
+    ui.step(vec![Event::PointerMoved(pos)]);
+    ui.snapshot("fillet-preview");
+    click(&mut ui, 0.0, 2.0, egui::Modifiers::SHIFT);
+    assert!(ui.has_text("Fillet created."));
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 2);
+    assert_eq!(
+        document.corner_value(opencad::CornerParameter::FilletRadius),
+        12.0
+    );
+    for entity in document.entities() {
+        let Entity::Line(line) = entity else {
+            panic!("expected sharp sources")
+        };
+        assert_eq!(line.start(), Point3::new(0.0, 0.0, 7.0).unwrap());
+    }
+    // Return focus from the command field without picking another source.
+    click(&mut ui, 30.0, 20.0, egui::Modifiers::NONE);
+    ui.step(vec![key(egui::Key::U, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::U, egui::Modifiers::NONE, false)]);
+    assert!(ui.has_text("Corner edit undone."));
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    ui.custom_action("Fillet", "Open command menu");
+    ui.click("Chamfer");
+    click(&mut ui, 30.0, 20.0, egui::Modifiers::NONE);
+    ui.step(vec![key(egui::Key::D, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::D, egui::Modifiers::NONE, false)]);
+    ui.command("3");
+    ui.command("6");
+    ui.command("Trim");
+    ui.command("invalid");
+    assert!(ui.has_text("Enter Trim or NoTrim."));
+    ui.command("NoTrim");
+    click(&mut ui, 30.0, 0.0, egui::Modifiers::NONE);
+    let pos = position(&ui, 0.0, 30.0);
+    ui.step(vec![Event::PointerMoved(pos)]);
+    ui.snapshot("chamfer-preview");
+    click(&mut ui, 0.0, 30.0, egui::Modifiers::NONE);
+    assert!(ui.has_text("Chamfer created."));
+    assert!(ui.has_text("Current tool: Select"));
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(
+        &document.entities()[..2],
+        DxfDocument::parse(&original).unwrap().entities()
+    );
+    let Entity::Line(chamfer) = document.entities()[2] else {
+        panic!("expected chamfer")
+    };
+    assert_eq!(chamfer.start(), Point3::new(3.0, 0.0, 7.0).unwrap());
+    assert_eq!(chamfer.end(), Point3::new(0.0, 6.0, 7.0).unwrap());
+    ui.command("FILLET");
+    click(&mut ui, 30.0, 0.0, egui::Modifiers::NONE);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
 fn closing_a_hidden_dirty_drawing_waits_for_cancel_or_save() {
     let scratch = Scratch::new();
     let drawing = scratch.0.join("quit.dxf");

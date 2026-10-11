@@ -23,6 +23,7 @@ struct Preferences {
     tool_visibility: BTreeMap<String, BTreeMap<String, bool>>,
     recent_files: Vec<StoredPath>,
     recent_list: bool,
+    corner_trim: Option<bool>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -198,6 +199,9 @@ impl OpenCadApp {
         }
         self.workspace.tool_order = order;
         self.recent_list = preferences.recent_list;
+        if let Some(trim) = preferences.corner_trim {
+            self.corner_trim = trim;
+        }
         for path in preferences
             .recent_files
             .into_iter()
@@ -274,6 +278,7 @@ impl OpenCadApp {
                 .filter_map(|path| StoredPath::from_path(path))
                 .collect(),
             recent_list: self.recent_list,
+            corner_trim: Some(self.corner_trim),
         };
         eframe::set_value(storage, STORAGE_KEY, &preferences);
     }

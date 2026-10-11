@@ -127,6 +127,41 @@ Standard/NoExtend mode are OpenCad policies, not verified native defaults.
 Polyline targets, other entities, Quick mode, Fence/Crossing/Erase options,
 projection/UCS modes and TRIMEXTENDMODE/EDGEMODE variables remain unfinished.
 
+## Fillet and chamfer
+
+Choose **Fillet** or **Chamfer** in Modify, or enter `FILLET` (`F`) or `CHAMFER`
+(`CHA`). Pick two straight lines on the sides of the corner to keep. Exact picks
+use `entity-number x,y[,z]`. Hover the second line to preview the result.
+
+**Radius** sets the fillet radius; **Distance** sets the chamfer's first and second
+distances in selection order. Enter retains the corresponding drawing value.
+**Trim** offers Trim/NoTrim. **Multiple** keeps the command active after each
+corner. **Undo** reverses drawing edits in the current command, including a
+radius or completed distance-pair change. Escape/Exit ends the command. Holding
+Shift for the second canvas pick temporarily uses zero dimensions; stored
+defaults stay unchanged. Zero dimensions with NoTrim leave the drawing unchanged.
+
+`FILLETRAD`, `CHAMFERA` and `CHAMFERB` query drawing defaults; append a nonnegative
+number to set them. Defaults save in the R12 DXF header and support undo. New
+drawings start at zero. Trim/NoTrim is a workspace preference, initially Trim.
+These initial values are OpenCad policies. Direct forms use dimensions for that
+operation without changing the drawing defaults:
+
+```text
+FILLET 5 1 20,0 2 0,20 TRIM
+CHAMFER 3 6 1 20,0 2 0,20 NOTRIM
+```
+
+Supported pairs are nonparallel, equal-Z world-XY LINEs. Both retained sides must
+have positive length beyond their tangent/chamfer points, including in NoTrim
+mode. Sources retain their identity/style; the connector uses BYLAYER defaults
+on their common layer, or the current layer when they differ. Both source edits
+and the connector undo together. Near-parallel lines (normalized determinant
+at most `1e-12`), ambiguous picks and precision collapse are rejected. These are
+OpenCad numerical policies. Parallel-line fillets, curved/polyline sources,
+chamfer Angle/Method, and 3D corners remain unfinished. The canvas **F** key fits
+the drawing; `F` in the command field starts FILLET.
+
 ## Reordering toolset panels
 
 Click **Reorder panels** at the bottom left of the Drafting toolset. Drag a panel

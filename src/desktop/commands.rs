@@ -20,7 +20,8 @@ impl OpenCadApp {
         let input = input.trim();
         if input.is_empty() {
             if let Some(result) = self
-                .trim_text(input)
+                .corner_text(input)
+                .or_else(|| self.trim_text(input))
                 .or_else(|| self.offset_text(input))
                 .or_else(|| self.transform_text(input))
             {
@@ -44,6 +45,9 @@ impl OpenCadApp {
     }
 
     fn command_result(&mut self, input: &str) -> Result<(), String> {
+        if let Some(result) = self.corner_text(input) {
+            return result;
+        }
         if let Some(result) = self.trim_text(input) {
             return result;
         }
@@ -198,6 +202,27 @@ impl OpenCadApp {
                     .map_err(|error| error.to_string())?;
                 self.message("Linetype scale applied.", false);
             }
+            "FILLETRAD" | "CHAMFERA" | "CHAMFERB" => {
+                let parameter = match verb.to_ascii_uppercase().as_str() {
+                    "FILLETRAD" => CornerParameter::FilletRadius,
+                    "CHAMFERA" => CornerParameter::ChamferFirst,
+                    _ => CornerParameter::ChamferSecond,
+                };
+                if !rest.is_empty() {
+                    self.editor
+                        .set_corner_value(parameter, number(rest)?)
+                        .map_err(|error| error.to_string())?;
+                    self.finish();
+                }
+                self.message(
+                    format!(
+                        "{} = {}",
+                        parameter.name(),
+                        self.editor.corner_value(parameter)
+                    ),
+                    false,
+                );
+            }
             "LINE" | "L" => {
                 if tokens.is_empty() {
                     self.set_tool(Tool::Line);
@@ -318,6 +343,8 @@ impl OpenCadApp {
             }
             "OFFSET" | "O" => self.offset_command(&tokens)?,
             "TRIM" | "TR" | "T" => self.trim_command(&tokens, false)?,
+            "FILLET" | "F" => self.corner_command(&tokens, false)?,
+            "CHAMFER" | "CHA" => self.corner_command(&tokens, true)?,
             "EXTEND" | "EX" | "E" => self.trim_command(&tokens, true)?,
             "ROTATE" | "RO" | "SCALE" | "SC" => {
                 let rotate = verb.eq_ignore_ascii_case("ROTATE") || verb.eq_ignore_ascii_case("RO");
@@ -421,7 +448,7 @@ impl OpenCadApp {
             "ZOOM" if rest.eq_ignore_ascii_case("EXTENTS") || rest.eq_ignore_ascii_case("E") => {
                 self.fit_pending = true;
             }
-            "FIT" | "F" => self.fit_pending = true,
+            "FIT" => self.fit_pending = true,
             "ZOOM" if rest.to_ascii_uppercase().ends_with('X') => {
                 let factor = number(&rest[..rest.len() - 1])?;
                 self.camera.zoom(factor)?;

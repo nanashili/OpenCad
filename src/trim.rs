@@ -323,24 +323,7 @@ impl Entity {
 fn intersections(first: Curve, second: Curve) -> Result<Vec<Point3>, GeometryError> {
     match (first, second) {
         (Curve::Line(a), Curve::Line(b)) => {
-            let (rx, ry) = (
-                finite(a.end().x() - a.start().x())?,
-                finite(a.end().y() - a.start().y())?,
-            );
-            let (sx, sy) = (
-                finite(b.end().x() - b.start().x())?,
-                finite(b.end().y() - b.start().y())?,
-            );
-            let denominator = finite(rx * sy - ry * sx)?;
-            if denominator == 0.0 {
-                return Ok(Vec::new());
-            }
-            let (qx, qy) = (
-                finite(b.start().x() - a.start().x())?,
-                finite(b.start().y() - a.start().y())?,
-            );
-            let parameter = finite(finite(qx * sy - qy * sx)? / denominator)?;
-            Ok(vec![a.point_at_fraction(parameter)?])
+            Ok(crate::line::xy_intersection(a, b)?.into_iter().collect())
         }
         (Curve::Line(line), Curve::Round { center, radius, .. })
         | (Curve::Round { center, radius, .. }, Curve::Line(line)) => {
