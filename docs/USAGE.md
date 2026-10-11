@@ -74,6 +74,34 @@ width choices leave PLINEWID unchanged; setting PLINEWID during a draft affects
 later PLINE commands. These details are OpenCad policies whose native parity is
 unverified. Width and Halfwidth also apply to interactive arc segments.
 
+## Polyline line-length creation
+
+In interactive PLINE line mode, choose **Length** (`L`, `LEN`) and enter a finite
+positive distance. The new straight segment follows the preceding line's
+direction, or the preceding arc's end tangent, and retains the polyline's Z
+elevation and current width pair.
+
+```text
+PLINE
+0,0
+3,4
+Length
+10
+
+```
+
+This ends at `(9,12)`. OpenCad requires a preceding segment with a nonzero XY
+tangent; it has no first-segment heading or Enter default. Zero, negative,
+nonfinite and unrepresentable lengths are rejected without changing the draft.
+These validation, abbreviation and default rules are OpenCad policies whose
+AutoCAD parity is unverified.
+
+While awaiting the length, points, widths, Undo and finishing are blocked.
+Exit cancels the option; Arc or Line also cancels it. Escape discards the whole
+draft. Save writes only committed entities. An accepted segment carries its
+ending width forward, and draft Undo restores the removed segment's width pair.
+Finishing creates one polyline with one document Undo action.
+
 ## Polyline arc creation
 
 After the first interactive PLINE point, **Arc** (`A`) enters arc mode.
@@ -99,7 +127,7 @@ has no preceding tangent: use **Direction**, **Second pt**, **Angle**, or
   chord length. Positive selects the minor counterclockwise arc; negative selects
   the major counterclockwise arc. Either sign of the diameter creates a
   semicircle. The magnitude must not exceed the diameter computed from the
-  starting point and center; OpenCad does not clamp an oversized chord. Length
+  starting point and center; OpenCad does not clamp an oversized chord. Arc Length
   construction without an explicit center remains unfinished. Ctrl to reverse
   center endpoint/Length traversal is not implemented. Projection and signed
   Length rules are original OpenCad policies; their AutoCAD PLINE parity is
@@ -113,7 +141,7 @@ has no preceding tangent: use **Direction**, **Second pt**, **Angle**, or
   the chord length from the radius and included angle. An explicit direction is
   required: Enter has no current-direction default in OpenCad. Radius followed
   directly by an endpoint remains unfinished; the prompt requires Angle.
-- **Line** (`L`, except while awaiting a center endpoint): return to straight
+- **Line** (`L` in arc mode, except while awaiting a center endpoint): return to straight
   segments within the same polyline. Spell **Line** to cancel a center endpoint
   construction; `L` selects Length at that prompt.
 - **Width** / **Halfwidth**: set the next segment's taper, with the same carry
@@ -170,8 +198,8 @@ range, invalid-input and cancellation rules are OpenCad policies whose native
 parity is unverified. Radius input must be positive and finite; chord-direction
 angles wrap modulo 360. OpenCad's direction-point interpretation, validation and
 lack of a current-direction default are explicit policies whose native parity
-is unverified. Radius + endpoint and line Length construction remain unfinished
-and report that limitation. Direct point-list
+is unverified. Radius + endpoint construction remains unfinished and reports
+that limitation. Direct point-list
 `PLINE ...` commands create straight segments. Bulge properties can still edit
 individual segments after creation. Canvas **C** continues to mean Close;
 enter **CE** or **Center** in the command field to choose a center.

@@ -321,6 +321,7 @@ impl OpenCadApp {
         if self.tool == Tool::Polyline
             && let Some(prompt) = self
                 .pline_width_prompt()
+                .or_else(|| self.pline_line_length_prompt())
                 .or_else(|| self.pline_arc_prompt())
         {
             return prompt;
@@ -333,7 +334,7 @@ impl OpenCadApp {
             (Tool::Line, _) => "LINE · Next point, U to undo, C to close, or Enter to finish.",
             (Tool::Polyline, 0) => "PLINE · Specify first point: x,y[,z]",
             (Tool::Polyline, _) => {
-                "PLINE · Next vertex, Arc / Width / Halfwidth, U to undo, C to close, or Enter to finish."
+                "PLINE · Next vertex, Arc / Length / Width / Halfwidth, U to undo, C to close, or Enter to finish."
             }
             (Tool::Circle, 0) => "CIRCLE · Specify center: x,y[,z]",
             (Tool::Circle, _) => "CIRCLE · Specify radius or a point on the circle.",
@@ -412,6 +413,9 @@ impl OpenCadApp {
     fn finish_polyline(&mut self, closed: bool) -> Result<(), String> {
         if self.pline_width_prompt().is_some() {
             return Err("Complete or cancel the PLINE width values before finishing.".into());
+        }
+        if self.pline_line_length_prompt().is_some() {
+            return Err("Complete or cancel the PLINE line length before finishing.".into());
         }
         if self.pline_arc_pending() {
             return Err("Complete or cancel the PLINE arc construction before finishing.".into());

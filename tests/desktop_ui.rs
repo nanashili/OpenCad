@@ -6631,7 +6631,8 @@ fn pline_arc_direction_second_point_errors_and_cancel_keep_drafts_atomic() {
     ui.command("Halfwidth 1 2");
     ui.command("Line");
     ui.command("Length");
-    assert!(ui.has_text("PLINE Length construction is not supported yet"));
+    assert!(ui.has_text("Enter a finite positive line length"));
+    ui.command("Exit");
     ui.command("1,-1");
     ui.command("");
     ui.command("SAVE");
@@ -7444,4 +7445,310 @@ fn pline_center_canvas_projection_and_contextual_length_shortcut() {
     assert!((polyline.bulges()[0] - (std::f64::consts::PI / 8.0).tan()).abs() < 1e-12);
     assert!((polyline.bulges()[1] - 1.0).abs() < 1e-12);
     assert_eq!(&polyline.bulges()[2..], &[0.0, 0.0]);
+}
+
+#[test]
+fn pline_line_length_continues_lines_and_arc_tangents_with_widths_and_history() {
+    use opencad::{PolylineSegment, PolylineWidth};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-line-length.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("ELEVATION 7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    for command in [
+        "PLINE",
+        "0,-12",
+        "Width 1 3",
+        "3,-8",
+        "Length",
+        "10",
+        "Width 2 4",
+        "Arc",
+        "Angle",
+        "90",
+        "@-2,2",
+        "Line",
+        "L",
+        "6",
+        "U",
+        "L",
+        "3",
+        "Arc",
+        "Angle",
+        "-270",
+        "@-4,0",
+        "Line",
+        "LEN",
+    ] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("Enter a finite positive line length"));
+    ui.step(vec![Event::PointerMoved(egui::pos2(950.0, 450.0))]);
+    ui.snapshot("pline-line-length-draft");
+    for command in ["2.8284271247461903", "", "ZOOM EXTENTS", "SAVE"] {
+        ui.command(command);
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    let expected = [
+        (0.0, -12.0),
+        (3.0, -8.0),
+        (9.0, 0.0),
+        (7.0, 2.0),
+        (4.0, 2.0),
+        (0.0, 2.0),
+        (2.0, 4.0),
+    ];
+    assert_eq!(polyline.vertices().len(), expected.len());
+    assert!(!polyline.is_closed());
+    for (actual, (x, y)) in polyline.vertices().iter().zip(expected) {
+        assert!((actual.x() - x).abs() < 1e-10 && (actual.y() - y).abs() < 1e-10);
+        assert_eq!(actual.z(), 7.0);
+    }
+    let quarter = (std::f64::consts::PI / 8.0).tan();
+    let major = (3.0 * std::f64::consts::PI / 8.0).tan();
+    for (actual, expected) in polyline
+        .bulges()
+        .iter()
+        .zip([0.0, 0.0, quarter, 0.0, -major, 0.0, 0.0])
+    {
+        assert!((actual - expected).abs() < 1e-12);
+    }
+    for (index, segment) in polyline.segments().enumerate() {
+        match (index, segment.unwrap()) {
+            (0 | 1 | 3 | 5, PolylineSegment::Line(line)) => {
+                let expected_length = match index {
+                    0 => 5.0,
+                    1 => 10.0,
+                    3 => 3.0,
+                    5 => 2.0 * 2.0_f64.sqrt(),
+                    _ => unreachable!(),
+                };
+                assert!((line.length().unwrap() - expected_length).abs() < 1e-10);
+            }
+            (2 | 4, PolylineSegment::Arc { arc, clockwise }) => {
+                let (x, radius) = if index == 2 {
+                    (7.0, 2.0)
+                } else {
+                    (2.0, 2.0 * 2.0_f64.sqrt())
+                };
+                assert_eq!(clockwise, index == 4);
+                assert!((arc.center().x() - x).abs() < 1e-10);
+                assert!(arc.center().y().abs() < 1e-10);
+                assert!((arc.radius() - radius).abs() < 1e-10);
+            }
+            other => panic!("unexpected segment: {other:?}"),
+        }
+    }
+    assert_eq!(polyline.widths()[0], PolylineWidth::new(1.0, 3.0).unwrap());
+    assert_eq!(polyline.widths()[1], PolylineWidth::new(3.0, 3.0).unwrap());
+    assert_eq!(polyline.widths()[2], PolylineWidth::new(2.0, 4.0).unwrap());
+    assert!(
+        polyline.widths()[3..]
+            .iter()
+            .all(|width| *width == PolylineWidth::new(4.0, 4.0).unwrap())
+    );
+    ui.snapshot("pline-line-length-finished");
+    for command in ["UNDO", "SAVE"] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    for command in ["REDO", "SAVE"] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_line_length_validation_cancel_and_save_keep_drafts_atomic() {
+    use opencad::PolylineWidth;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-line-length-errors.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    ui.command("PLINE");
+    ui.command("Length");
+    assert!(ui.has_text("Line Length needs a preceding segment"));
+    ui.command("0,0");
+    ui.command("L");
+    assert!(ui.has_text("Line Length needs a preceding segment"));
+    ui.command("0,0");
+    ui.command("Length");
+    assert!(ui.has_text("Previous segment has no tangent"));
+    for command in ["U", "1,0", "Width 2 4", "Length"] {
+        ui.command(command);
+    }
+    for invalid in ["", "0", "-1", "NaN", "inf", "2 4", "@1,0", "0,1", "2foo"] {
+        ui.command(invalid);
+        assert!(ui.has_text("Enter one finite positive line length"));
+    }
+    ui.canvas_click(0.5, 0.4);
+    assert!(ui.has_text("Enter the line length before specifying points"));
+    ui.command("U");
+    assert!(ui.has_text("Complete or cancel the PLINE construction option before Undo"));
+    ui.command("Width 8 9");
+    assert!(ui.has_text("Complete or cancel the PLINE line length before setting widths"));
+    for command in ["Close", "", "SAVE"] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    for command in [
+        "Exit", "Length", "Arc", "Line", "Length", "Line", "@0,2", "Length", "2", "U", "", "SAVE",
+    ] {
+        ui.command(command);
+    }
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert_eq!(polyline.vertices().len(), 3);
+    for (actual, (x, y)) in polyline
+        .vertices()
+        .iter()
+        .zip([(0.0, 0.0), (1.0, 0.0), (1.0, 2.0)])
+    {
+        assert_eq!((actual.x(), actual.y(), actual.z()), (x, y, 0.0));
+    }
+    assert_eq!(polyline.widths()[0], PolylineWidth::new(0.0, 0.0).unwrap());
+    assert_eq!(polyline.widths()[1], PolylineWidth::new(2.0, 4.0).unwrap());
+    assert_eq!(polyline.widths()[2], PolylineWidth::new(4.0, 4.0).unwrap());
+    for command in ["PLINE", "0,0", "1,0", "Length"] {
+        ui.command(command);
+    }
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_line_length_canvas_shortcut_preserves_line_and_arc_context() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-line-length-canvas.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let press = |ui: &mut DrawingUi, value| {
+        let canvas = ui
+            .nodes
+            .iter()
+            .find(|(_, node)| {
+                node.label()
+                    .is_some_and(|label| label.starts_with("Drawing canvas,"))
+            })
+            .map(|(id, _)| *id)
+            .expect("canvas");
+        ui.action(canvas, accesskit::Action::Focus);
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    for command in ["PLINE", "0,0", "3,4"] {
+        ui.command(command);
+    }
+    press(&mut ui, egui::Key::L);
+    assert!(ui.has_text("Enter a finite positive line length"));
+    ui.command("5");
+    press(&mut ui, egui::Key::L);
+    press(&mut ui, egui::Key::C);
+    assert!(ui.has_text("Complete or cancel the PLINE line length before finishing"));
+    press(&mut ui, egui::Key::Enter);
+    assert!(ui.has_text("Enter one finite positive line length"));
+    press(&mut ui, egui::Key::U);
+    assert!(ui.has_text("Complete or cancel the PLINE construction option before Undo"));
+    ui.command("Exit");
+    press(&mut ui, egui::Key::A);
+    assert!(ui.has_text("PLINE Arc"));
+    press(&mut ui, egui::Key::L);
+    assert!(ui.has_text("Next vertex, Arc / Length"));
+    press(&mut ui, egui::Key::L);
+    assert!(ui.has_text("Enter a finite positive line length"));
+    for command in ["2.5", "", "SAVE"] {
+        ui.command(command);
+    }
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert_eq!(polyline.vertices().len(), 4);
+    for (actual, (x, y)) in
+        polyline
+            .vertices()
+            .iter()
+            .zip([(0.0, 0.0), (3.0, 4.0), (6.0, 8.0), (7.5, 10.0)])
+    {
+        assert!((actual.x() - x).abs() < 1e-12 && (actual.y() - y).abs() < 1e-12);
+    }
+    assert!(polyline.bulges().iter().all(|bulge| *bulge == 0.0));
+}
+
+#[test]
+fn pline_line_length_numeric_range_and_failed_values_preserve_the_tangent() {
+    for scale in [1e-150, 1.0, 1e150] {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("pline-line-length-scale.dxf");
+        let mut ui = DrawingUi::new();
+        ui.click("New");
+        ui.command(&format!("SAVEAS {}", path.display()));
+        for command in [
+            "PLINE".to_owned(),
+            "0,0".into(),
+            format!("{},{}", 3.0 * scale, 4.0 * scale),
+            "Length".into(),
+            (5.0 * scale).to_string(),
+            "".into(),
+            "SAVE".into(),
+        ] {
+            ui.command(&command);
+        }
+        let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(document.entities().len(), 1);
+        let Entity::Polyline(polyline) = &document.entities()[0] else {
+            panic!("polyline")
+        };
+        assert_eq!(polyline.vertices().len(), 3);
+        let end = polyline.vertices()[2];
+        assert!((end.x() / scale - 6.0).abs() < 1e-12);
+        assert!((end.y() / scale - 8.0).abs() < 1e-12);
+    }
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-line-length-range.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    for command in ["PLINE", "1e308,0", "1.1e308,0", "Length", "1e308", "SAVE"] {
+        ui.command(command);
+    }
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    for command in ["1e307", "", "SAVE"] {
+        ui.command(command);
+    }
+    for command in ["PLINE", "0,0", "1,0", "Length", "1e-320"] {
+        ui.command(command);
+    }
+    assert!(ui.has_text("The requested line length cannot produce a distinct endpoint"));
+    for command in ["2", "", "SAVE"] {
+        ui.command(command);
+    }
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 2);
+    for (entity, expected_x) in document.entities().iter().zip([1.2e308, 3.0]) {
+        let Entity::Polyline(polyline) = entity else {
+            panic!("polyline")
+        };
+        assert_eq!(polyline.vertices().len(), 3);
+        assert!((polyline.vertices()[2].x() / expected_x - 1.0).abs() < 1e-12);
+        assert_eq!(polyline.vertices()[2].y(), 0.0);
+    }
 }

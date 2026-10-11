@@ -7,6 +7,7 @@ pub(super) struct PlineInput {
     bulges: Vec<f64>,
     next: PolylineWidth,
     input: Option<WidthInput>,
+    line_length: bool,
     arc_mode: bool,
     arc_input: Option<ArcInput>,
 }
@@ -46,6 +47,48 @@ impl PlineInput {
 }
 
 impl OpenCadApp {
+    pub(super) fn pline_line_length_prompt(&self) -> Option<&'static str> {
+        self.pline_input.line_length.then_some(
+            "PLINE Length · Enter a finite positive line length along the preceding segment's end tangent. No default; Exit cancels this option.",
+        )
+    }
+
+    fn pline_line_tangent(&self) -> Result<(f64, f64), String> {
+        if self.points.len() < 2 {
+            return Err(
+                "Line Length needs a preceding segment. Specify another point first.".into(),
+            );
+        }
+        self.pline_candidate(None, false)?
+            .segments()
+            .last()
+            .expect("previous segment")
+            .and_then(PolylineSegment::end_tangent_xy)
+            .map_err(|e| {
+                format!("Previous segment has no tangent: {e}. Specify another point first.")
+            })
+    }
+
+    fn pline_line_length_value(&mut self, tokens: &[&str]) -> Result<(), String> {
+        let error = "Enter one finite positive line length.";
+        let length = pline_number(tokens, error)?;
+        if length <= 0.0 {
+            return Err(error.into());
+        }
+        let (ux, uy) = self.pline_line_tangent()?;
+        let start = *self.points.last().expect("previous segment");
+        let end = Point3::new(
+            ux.mul_add(length, start.x()),
+            uy.mul_add(length, start.y()),
+            start.z(),
+        )
+        .map_err(|_| crate::GeometryError::NonFiniteResult.to_string())?;
+        if Line3::new(start, end).length().map_err(|e| e.to_string())? == 0.0 {
+            return Err("The requested line length cannot produce a distinct endpoint.".into());
+        }
+        self.pline_add_endpoint(end, 0.0)
+    }
+
     pub(super) fn pline_arc_prompt(&self) -> Option<&'static str> {
         if !self.pline_input.arc_mode || self.points.is_empty() {
             return None;
@@ -193,6 +236,9 @@ impl OpenCadApp {
     }
 
     fn pline_construct_endpoint(&self, point: Point3) -> Result<(Point3, f64), String> {
+        if self.pline_input.line_length {
+            return Err("Enter the line length before specifying points.".into());
+        }
         match self.pline_input.arc_input {
             Some(ArcInput::AngleCenter(sweep)) => self.pline_center_arc(point, sweep),
             Some(ArcInput::Center(Some(center))) => {
@@ -292,6 +338,9 @@ impl OpenCadApp {
         if self.pline_input.input.is_some() {
             return Err("Complete or cancel the PLINE width values before adding a vertex.".into());
         }
+        if self.pline_input.line_length {
+            return Err("Enter the line length before specifying points.".into());
+        }
         if self
             .points
             .first()
@@ -350,6 +399,7 @@ impl OpenCadApp {
                 candidate.bulges()[self.points.len() - 1];
             let end = self.pline_input.next.end();
             self.pline_input.next = PolylineWidth::new(end, end).expect("validated width");
+            self.pline_input.line_length = false;
             self.pline_input.arc_input = None;
         }
         self.points.push(point);
@@ -359,7 +409,10 @@ impl OpenCadApp {
     }
 
     pub(super) fn pline_undo_point(&mut self) {
-        if self.pline_input.input.is_some() || self.pline_arc_pending() {
+        if self.pline_input.input.is_some()
+            || self.pline_input.line_length
+            || self.pline_arc_pending()
+        {
             self.message(
                 "Complete or cancel the PLINE construction option before Undo.",
                 true,
@@ -437,9 +490,13 @@ impl OpenCadApp {
         if !matches!(
             verb.as_str(),
             "SAVE" | "SAVEAS" | "PLINEWID" | "W" | "WIDTH" | "H" | "HALFWIDTH"
-        ) && let Some(result) = self.pline_arc_value(&tokens)
-        {
-            return Some(result);
+        ) {
+            if self.pline_input.line_length {
+                return Some(self.pline_line_length_value(&tokens));
+            }
+            if let Some(result) = self.pline_arc_value(&tokens) {
+                return Some(result);
+            }
         }
         let factor = match verb.as_str() {
             "W" | "WIDTH" => 1.0,
@@ -447,6 +504,11 @@ impl OpenCadApp {
             _ => return None,
         };
         Some((|| {
+            if self.pline_input.line_length {
+                return Err(
+                    "Complete or cancel the PLINE line length before setting widths.".into(),
+                );
+            }
             if self.pline_arc_pending() {
                 return Err(
                     "Complete or cancel the PLINE arc construction before setting widths.".into(),
@@ -564,8 +626,11 @@ impl OpenCadApp {
     }
 
     fn pline_arc_text(&mut self, tokens: &[&str], verb: &str) -> Option<Result<(), String>> {
-        if matches!(verb, "EXIT" | "X" | "CANCEL") && tokens.len() == 1 && self.pline_arc_pending()
+        if matches!(verb, "EXIT" | "X" | "CANCEL")
+            && tokens.len() == 1
+            && (self.pline_input.line_length || self.pline_arc_pending())
         {
+            self.pline_input.line_length = false;
             self.pline_input.arc_input = None;
             self.message(self.prompt(), false);
             return Some(Ok(()));
@@ -573,7 +638,9 @@ impl OpenCadApp {
         let option = match verb {
             "A" if !self.pline_input.arc_mode => "ARC",
             "ARC" => "ARC",
-            "L" if matches!(self.pline_input.arc_input, Some(ArcInput::Center(Some(_)))) => {
+            "L" if !self.pline_input.arc_mode
+                || matches!(self.pline_input.arc_input, Some(ArcInput::Center(Some(_)))) =>
+            {
                 "LENGTH"
             }
             "LINE" | "L" => "LINE",
@@ -593,6 +660,12 @@ impl OpenCadApp {
             {
                 return Err("Enter the PLINE option, then specify its construction points.".into());
             }
+            if option == "LENGTH" && !self.pline_input.arc_mode {
+                self.pline_line_tangent()?;
+                self.pline_input.line_length = true;
+                self.message(self.prompt(), false);
+                return Ok(());
+            }
             if option != "LINE" && self.points.is_empty() {
                 return Err("Specify the PLINE starting point before choosing Arc.".into());
             }
@@ -603,6 +676,7 @@ impl OpenCadApp {
                     "PLINE Length construction is not supported yet without an arc center.".into(),
                 );
             }
+            self.pline_input.line_length = false;
             self.pline_input.arc_mode = option != "LINE";
             self.pline_input.arc_input = match option {
                 "DIRECTION" => Some(ArcInput::Direction(None)),
