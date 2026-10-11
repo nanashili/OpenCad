@@ -1,0 +1,28 @@
+[package]
+name = "opencad"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93.1"
+license = "MIT"
+repository = "https://github.com/nanashili/OpenCad"
+default-run = "opencad"
+description = "Original Rust CAD desktop editor with source-preserving R12 DXF exchange"
+
+[dependencies]
+eframe = { version = "=0.35.0", optional = true, default-features = false, features = ["default_fonts", "glow", "accesskit", "x11", "wayland"] }
+rfd = { version = "=0.17.2", optional = true }
+image = { version = "=0.25.10", optional = true, default-features = false, features = ["png"] }
+
+[features]
+desktop = ["dep:eframe", "dep:rfd", "dep:image", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:raw-window-handle"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "=0.6.5", optional = true }
+objc2-app-kit = { version = "=0.3.2", optional = true, default-features = false, features = ["std", "NSApplication", "NSCell", "NSEvent", "NSMenu", "NSMenuItem", "NSResponder", "NSView", "NSWindow"] }
+objc2-foundation = { version = "=0.3.2", optional = true, default-features = false, features = ["std", "NSObject", "NSString"] }
+raw-window-handle = { version = "=0.6.2", optional = true }
+
+[[bin]]
+name = "opencad-ui"
+path = "src/bin/opencad-ui.rs"
+required-features = ["desktop"]

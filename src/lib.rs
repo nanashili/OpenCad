@@ -1,0 +1,256 @@
+//! Original CAD geometry, line drawing, and a limited ASCII DXF exchange path.
+
+mod arc;
+mod circle;
+mod color;
+mod dxf;
+mod editor;
+mod entity_style;
+mod layer;
+mod line;
+mod linetype;
+mod polyline;
+mod svg;
+
+#[cfg(feature = "desktop")]
+pub mod desktop;
+
+pub use arc::Arc3;
+pub use circle::{Circle3, Entity};
+pub use dxf::{DxfDocument, DxfError, DxfErrorKind, read_dxf, write_dxf};
+pub use editor::{EditError, Editor};
+pub use entity_style::{EntityStyle, EntityStyleError};
+pub use layer::{Layer, LayerError};
+pub use line::{Bounds3, Line3, Point3};
+pub use linetype::{Linetype, LinetypeError};
+pub use polyline::{Polyline2, PolylineSegment};
+pub use svg::{SvgError, render_document_svg, render_entities_svg, render_svg};
+
+use std::error::Error;
+use std::fmt;
+
+/// A point in a Cartesian coordinate system with positive Y upward.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Point2 {
+    x: f64,
+    y: f64,
+}
+
+impl Point2 {
+    pub fn new(x: f64, y: f64) -> Result<Self, GeometryError> {
+        if !x.is_finite() || !y.is_finite() {
+            return Err(GeometryError::NonFiniteCoordinate);
+        }
+        Ok(Self { x, y })
+    }
+
+    pub fn x(self) -> f64 {
+        self.x
+    }
+
+    pub fn y(self) -> f64 {
+        self.y
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GeometryError {
+    NonFiniteCoordinate,
+    NonFiniteParameter,
+    NonFiniteDistance,
+    NonFiniteRadius,
+    NegativeRadius,
+    NonFiniteAngle,
+    NonFiniteResult,
+    DegenerateLine,
+    NotEnoughSegmentsToClose,
+    NotEnoughVertices,
+    NonPlanarPolyline,
+    NonFiniteBulge,
+    InvalidBulgeCount,
+    InvalidVertexIndex,
+    UnrepresentableBulge,
+}
+
+impl fmt::Display for GeometryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFiniteCoordinate => write!(f, "coordinates must be finite"),
+            Self::NonFiniteParameter => write!(f, "the parameter must be finite"),
+            Self::NonFiniteDistance => write!(f, "the distance must be finite"),
+            Self::NonFiniteRadius => write!(f, "the radius must be finite"),
+            Self::NegativeRadius => write!(f, "the radius must be nonnegative"),
+            Self::NonFiniteAngle => write!(f, "angles must be finite"),
+            Self::NonFiniteResult => write!(f, "the geometry result exceeds the finite range"),
+            Self::DegenerateLine => write!(f, "a coincident line has no unique distance parameter"),
+            Self::NotEnoughSegmentsToClose => write!(f, "closing requires at least two segments"),
+            Self::NotEnoughVertices => write!(f, "a polyline requires at least two vertices"),
+            Self::NonPlanarPolyline => write!(f, "polyline vertices must share one Z elevation"),
+            Self::NonFiniteBulge => write!(f, "bulges must be finite"),
+            Self::InvalidBulgeCount => write!(f, "each polyline vertex needs one bulge value"),
+            Self::InvalidVertexIndex => write!(f, "the polyline vertex index is out of range"),
+            Self::UnrepresentableBulge => {
+                write!(f, "the bulged segment exceeds representable geometry")
+            }
+        }
+    }
+}
+
+impl Error for GeometryError {}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LineSegment {
+    start: Point2,
+    end: Point2,
+}
+
+impl LineSegment {
+    pub fn start(self) -> Point2 {
+        self.start
+    }
+
+    pub fn end(self) -> Point2 {
+        self.end
+    }
+}
+
+/// A drawing of independent line segments. Successive clicks form a chain.
+#[derive(Debug, Default)]
+pub struct Drawing {
+    segments: Vec<LineSegment>,
+    chain_start: Option<Point2>,
+    chain_end: Option<Point2>,
+    chain_segment_start: usize,
+}
+
+impl Drawing {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Start or extend the current chain. Returns the newly created segment, if any.
+    pub fn click(&mut self, point: Point2) -> Option<LineSegment> {
+        if self.chain_end.is_none() {
+            self.chain_start = Some(point);
+            self.chain_segment_start = self.segments.len();
+        }
+        let segment = self
+            .chain_end
+            .map(|start| LineSegment { start, end: point });
+        if let Some(segment) = segment {
+            self.segments.push(segment);
+        }
+        self.chain_end = Some(point);
+        segment
+    }
+
+    /// Remove the most recent segment of the active chain, if one exists.
+    pub fn undo_last_segment(&mut self) -> Option<LineSegment> {
+        if self.segments.len() == self.chain_segment_start {
+            return None;
+        }
+        let segment = self.segments.pop()?;
+        self.chain_end = Some(segment.start());
+        Some(segment)
+    }
+
+    /// Connect the active chain's last point to its first, then end the chain.
+    pub fn close_chain(&mut self) -> Result<LineSegment, GeometryError> {
+        if self.segments.len() - self.chain_segment_start < 2 {
+            return Err(GeometryError::NotEnoughSegmentsToClose);
+        }
+        let segment = LineSegment {
+            start: self
+                .chain_end
+                .expect("a chain with segments has an endpoint"),
+            end: self.chain_start.expect("a chain with segments has a start"),
+        };
+        self.segments.push(segment);
+        self.finish_chain();
+        Ok(segment)
+    }
+
+    /// End the current chain; the next click starts a new one.
+    pub fn finish_chain(&mut self) {
+        self.chain_start = None;
+        self.chain_end = None;
+        self.chain_segment_start = self.segments.len();
+    }
+
+    pub fn segments(&self) -> &[LineSegment] {
+        &self.segments
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn points_reject_non_finite_coordinates() {
+        assert_eq!(
+            Point2::new(f64::NAN, 0.0),
+            Err(GeometryError::NonFiniteCoordinate)
+        );
+        assert_eq!(
+            Point2::new(0.0, f64::INFINITY),
+            Err(GeometryError::NonFiniteCoordinate)
+        );
+    }
+
+    #[test]
+    fn clicks_make_connected_segments_and_finish_starts_a_new_chain() {
+        let a = Point2::new(0.0, 0.0).unwrap();
+        let b = Point2::new(10.0, 0.0).unwrap();
+        let c = Point2::new(10.0, 5.0).unwrap();
+        let d = Point2::new(20.0, 20.0).unwrap();
+        let mut drawing = Drawing::new();
+
+        assert_eq!(drawing.click(a), None);
+        assert_eq!(drawing.click(b).unwrap().start(), a);
+        assert_eq!(drawing.click(c).unwrap().start(), b);
+        drawing.finish_chain();
+        assert_eq!(drawing.click(d), None);
+        assert_eq!(drawing.segments().len(), 2);
+        assert_eq!(drawing.segments()[1].end(), c);
+    }
+
+    #[test]
+    fn undo_and_close_change_only_the_active_line_sequence() {
+        let a = Point2::new(0.0, 0.0).unwrap();
+        let b = Point2::new(10.0, 0.0).unwrap();
+        let c = Point2::new(10.0, 10.0).unwrap();
+        let d = Point2::new(20.0, 20.0).unwrap();
+        let e = Point2::new(30.0, 20.0).unwrap();
+        let mut drawing = Drawing::new();
+
+        drawing.click(a);
+        drawing.click(b);
+        drawing.finish_chain();
+        drawing.click(b);
+        drawing.click(c);
+        drawing.click(d);
+        drawing.click(e);
+        assert_eq!(drawing.undo_last_segment().unwrap().end(), e);
+        assert_eq!(drawing.close_chain().unwrap().end(), b);
+
+        assert_eq!(drawing.segments().len(), 4);
+        assert_eq!(drawing.segments()[0].start(), a);
+        assert_eq!(drawing.segments()[1].end(), c);
+        assert_eq!(drawing.segments()[2].start(), c);
+        assert_eq!(drawing.segments()[3].start(), d);
+        assert_eq!(drawing.undo_last_segment(), None);
+    }
+
+    #[test]
+    fn close_requires_two_active_segments() {
+        let mut drawing = Drawing::new();
+        drawing.click(Point2::new(0.0, 0.0).unwrap());
+        drawing.click(Point2::new(10.0, 0.0).unwrap());
+        assert_eq!(
+            drawing.close_chain(),
+            Err(GeometryError::NotEnoughSegmentsToClose)
+        );
+        assert_eq!(drawing.segments().len(), 1);
+    }
+}

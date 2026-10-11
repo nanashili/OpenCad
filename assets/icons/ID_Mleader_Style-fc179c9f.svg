@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<title>Multileader Style Manager</title>
+<line x1="3" y1="21" x2="11" y2="3" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="11" y1="3" x2="13" y2="3" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="13" y1="3" x2="21" y2="21" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="7" y1="14" x2="17" y2="14" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+</svg>

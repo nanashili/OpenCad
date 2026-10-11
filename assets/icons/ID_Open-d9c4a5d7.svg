@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<title>Open...</title>
+<line x1="3" y1="18" x2="3" y2="5" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="3" y1="5" x2="10" y2="5" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="10" y1="5" x2="12" y2="8" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="12" y1="8" x2="21" y2="8" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="21" y1="8" x2="21" y2="11" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="3" y1="20" x2="7" y2="11" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="7" y1="11" x2="22" y2="11" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="22" y1="11" x2="18" y2="20" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="18" y1="20" x2="3" y2="20" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+</svg>

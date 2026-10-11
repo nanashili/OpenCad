@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<title>ortho</title>
+<line x1="4" y1="3" x2="4" y2="20" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="4" y1="20" x2="21" y2="20" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="4" y1="14" x2="10" y2="14" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="10" y1="14" x2="10" y2="20" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+</svg>

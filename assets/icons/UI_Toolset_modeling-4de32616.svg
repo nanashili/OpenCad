@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<title>Modeling</title>
+<line x1="3" y1="7" x2="12" y2="2" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="12" y1="2" x2="21" y2="7" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="21" y1="7" x2="21" y2="17" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="21" y1="17" x2="12" y2="22" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="12" y1="22" x2="3" y2="17" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="3" y1="17" x2="3" y2="7" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="3" y1="7" x2="12" y2="12" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="12" y1="12" x2="21" y2="7" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="12" y1="12" x2="12" y2="22" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+</svg>

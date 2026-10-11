@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<title>Zoom Window</title>
+<circle cx="10" cy="10" r="7" fill="none" stroke="#d8dee7" stroke-width="1.35"/>
+<line x1="15" y1="15" x2="22" y2="22" stroke="#81c9ec" stroke-width="2" stroke-linecap="round"/>
+<line x1="6" y1="10" x2="14" y2="10" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="10" y1="6" x2="10" y2="14" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+</svg>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<title>Multileader Align</title>
+<line x1="14" y1="7" x2="4" y2="21" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="4" y1="21" x2="4.06074" y2="18.0006" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="4" y1="21" x2="6.81756" y2="19.9698" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="14" y1="7" x2="22" y2="7" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<circle cx="18" cy="7" r="4" fill="none" stroke="#d8dee7" stroke-width="1.35"/>
+</svg>

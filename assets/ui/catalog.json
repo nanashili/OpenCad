@@ -1,0 +1,7303 @@
+{
+  "schemaVersion": 1,
+  "provenance": "Functional command names and UI organization documented from AutoCAD for Mac. Icons and implementation are original OpenCad work. This metadata contains no native code, command macros, binary data, or source-application artwork.",
+  "menus": [
+    {
+      "label": "File",
+      "action": "",
+      "items": [
+        {
+          "label": "New Drawing...",
+          "action": "ID_New",
+          "items": []
+        },
+        {
+          "label": "New Sheet Set...",
+          "action": "ID_NewSheet",
+          "items": []
+        },
+        {
+          "label": "Open...",
+          "action": "ID_Open",
+          "items": []
+        },
+        {
+          "label": "Open Sheet Set...",
+          "action": "ID_OpenSheet",
+          "items": []
+        },
+        {
+          "label": "Open Recent",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Close",
+          "action": "ID_DWG_CLOSE",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Import...",
+          "action": "ID_IMPORT",
+          "items": []
+        },
+        {
+          "label": "Attach...",
+          "action": "ID_INSERT_ATTACH",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Save",
+          "action": "ID_Save",
+          "items": []
+        },
+        {
+          "label": "Save As...",
+          "action": "ID_Saveas",
+          "items": []
+        },
+        {
+          "label": "Export...",
+          "action": "ID_Export",
+          "items": []
+        },
+        {
+          "label": "Export to PDF...",
+          "action": "ID_Print",
+          "items": []
+        },
+        {
+          "label": "Export Layout to Model...",
+          "action": "ID_ExportLayout",
+          "items": []
+        },
+        {
+          "label": "Package Drawing...",
+          "action": "ID_PACKAGEDRAWING",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "DWG Compare...",
+          "action": "ID_DwgCompare",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Markup Import...",
+          "action": "ID_MarkupImport",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Page Setup Manager...",
+          "action": "ID_PlotSetup",
+          "items": []
+        },
+        {
+          "label": "Plot Styles...",
+          "action": "ID_PlotStyMgr",
+          "items": []
+        },
+        {
+          "label": "Print...",
+          "action": "ID_Print",
+          "items": []
+        },
+        {
+          "label": "Batch Publish...",
+          "action": "ID_Pub",
+          "items": []
+        },
+        {
+          "label": "Share...",
+          "action": "ID_Share",
+          "items": []
+        }
+      ]
+    },
+    {
+      "label": "Edit",
+      "action": "",
+      "items": [
+        {
+          "label": "Undo",
+          "action": "ID_U",
+          "items": []
+        },
+        {
+          "label": "Redo",
+          "action": "ID_Redo",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Cut",
+          "action": "ID_Cutclip",
+          "items": []
+        },
+        {
+          "label": "Cut with Base Point",
+          "action": "ID_Cutbaseclip",
+          "items": []
+        },
+        {
+          "label": "Copy",
+          "action": "ID_Copyclip",
+          "items": []
+        },
+        {
+          "label": "Copy with Base Point",
+          "action": "ID_Copybase",
+          "items": []
+        },
+        {
+          "label": "Paste",
+          "action": "ID_Pasteclip",
+          "items": []
+        },
+        {
+          "label": "Paste as Block",
+          "action": "ID_Pastebloc",
+          "items": []
+        },
+        {
+          "label": "Paste to Original Coordinates",
+          "action": "ID_Pasteorig",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Clear",
+          "action": "MM_1561",
+          "items": []
+        },
+        {
+          "label": "Select All",
+          "action": "ID_SelAll",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Quick Select...",
+          "action": "ID_Qselect",
+          "items": []
+        },
+        {
+          "label": "Find...",
+          "action": "ID_TextFind",
+          "items": []
+        }
+      ]
+    },
+    {
+      "label": "View",
+      "action": "",
+      "items": [
+        {
+          "label": "Zoom",
+          "action": "",
+          "items": [
+            {
+              "label": "Realtime",
+              "action": "ID_ZoomRealt",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Previous",
+              "action": "ID_ZoomPrevi",
+              "items": []
+            },
+            {
+              "label": "Window",
+              "action": "ID_ZoomWindo",
+              "items": []
+            },
+            {
+              "label": "Dynamic",
+              "action": "ID_ZoomDynam",
+              "items": []
+            },
+            {
+              "label": "Scale",
+              "action": "ID_ZoomScale",
+              "items": []
+            },
+            {
+              "label": "Center",
+              "action": "ID_ZoomCente",
+              "items": []
+            },
+            {
+              "label": "Object",
+              "action": "ID_ZoomObjec",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "In",
+              "action": "ID_ZoomIn",
+              "items": []
+            },
+            {
+              "label": "Out",
+              "action": "ID_ZoomOut",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "All",
+              "action": "ID_ZoomAll",
+              "items": []
+            },
+            {
+              "label": "Extents",
+              "action": "ID_ZoomExten",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Pan",
+          "action": "",
+          "items": [
+            {
+              "label": "Realtime",
+              "action": "ID_Pan",
+              "items": []
+            },
+            {
+              "label": "Point",
+              "action": "ID_PanPick",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Left",
+              "action": "ID_PanLeft",
+              "items": []
+            },
+            {
+              "label": "Right",
+              "action": "ID_PanRight",
+              "items": []
+            },
+            {
+              "label": "Up",
+              "action": "ID_PanUp",
+              "items": []
+            },
+            {
+              "label": "Down",
+              "action": "ID_PanDown",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Orbit",
+          "action": "",
+          "items": [
+            {
+              "label": "Constrained Orbit",
+              "action": "ID_Constrained_Orbit",
+              "items": []
+            },
+            {
+              "label": "Free Orbit",
+              "action": "ID_Free_Orbit",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Camera",
+          "action": "",
+          "items": [
+            {
+              "label": "Adjust Distance",
+              "action": "ID_3ddistanc",
+              "items": []
+            },
+            {
+              "label": "Swivel",
+              "action": "ID_3dswivel",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Viewports",
+          "action": "",
+          "items": [
+            {
+              "label": "Named Viewports...",
+              "action": "ID_Ai_tiledv",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "New Viewports...",
+              "action": "ID_VportsSav",
+              "items": []
+            },
+            {
+              "label": "1 Viewport",
+              "action": "ID_VportsSin",
+              "items": []
+            },
+            {
+              "label": "2 Viewports",
+              "action": "ID_Vports2",
+              "items": []
+            },
+            {
+              "label": "3 Viewports",
+              "action": "ID_Vports3",
+              "items": []
+            },
+            {
+              "label": "4 Viewports",
+              "action": "ID_Vports4",
+              "items": []
+            },
+            {
+              "label": "Polygonal Viewport",
+              "action": "ID_VportsRes",
+              "items": []
+            },
+            {
+              "label": "Object",
+              "action": "ID_VportsDel",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Join",
+              "action": "ID_VportsJoi",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "3D Views",
+          "action": "",
+          "items": [
+            {
+              "label": "Viewpoint",
+              "action": "ID_VpointTri",
+              "items": []
+            },
+            {
+              "label": "Plan View",
+              "action": "",
+              "items": [
+                {
+                  "label": "Current UCS",
+                  "action": "ID_PlanCurre",
+                  "items": []
+                },
+                {
+                  "label": "World UCS",
+                  "action": "ID_PlanWorld",
+                  "items": []
+                },
+                {
+                  "label": "Named UCS",
+                  "action": "ID_PlanUCS",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Top",
+              "action": "ID_VpointTop",
+              "items": []
+            },
+            {
+              "label": "Bottom",
+              "action": "ID_VpointBot",
+              "items": []
+            },
+            {
+              "label": "Left",
+              "action": "ID_VpointLef",
+              "items": []
+            },
+            {
+              "label": "Right",
+              "action": "ID_VpointRig",
+              "items": []
+            },
+            {
+              "label": "Front",
+              "action": "ID_VpointFro",
+              "items": []
+            },
+            {
+              "label": "Back",
+              "action": "ID_VpointBac",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "SW Isometric",
+              "action": "ID_VpointSW",
+              "items": []
+            },
+            {
+              "label": "SE Isometric",
+              "action": "ID_VpointSE",
+              "items": []
+            },
+            {
+              "label": "NE Isometric",
+              "action": "ID_VpointNE",
+              "items": []
+            },
+            {
+              "label": "NW Isometric",
+              "action": "ID_VpointNW",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Show Annotative Objects",
+          "action": "",
+          "items": [
+            {
+              "label": "Current Scale Only",
+              "action": "ID_CurScale",
+              "items": []
+            },
+            {
+              "label": "All Scales",
+              "action": "ID_AllScale",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Hide",
+          "action": "ID_Hide",
+          "items": []
+        },
+        {
+          "label": "Visual Styles",
+          "action": "",
+          "items": [
+            {
+              "label": "2D Wireframe",
+              "action": "MM_1725",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Wireframe",
+              "action": "MM_1722",
+              "items": []
+            },
+            {
+              "label": "Hidden",
+              "action": "MM_1723",
+              "items": []
+            },
+            {
+              "label": "Realistic",
+              "action": "MM_1721",
+              "items": []
+            },
+            {
+              "label": "Conceptual",
+              "action": "MM_1726",
+              "items": []
+            },
+            {
+              "label": "Shaded",
+              "action": "MM_1744",
+              "items": []
+            },
+            {
+              "label": "Shaded with Edges",
+              "action": "MM_1743",
+              "items": []
+            },
+            {
+              "label": "Shades of Gray",
+              "action": "MM_1740",
+              "items": []
+            },
+            {
+              "label": "Sketchy",
+              "action": "MM_1741",
+              "items": []
+            },
+            {
+              "label": "X-Ray",
+              "action": "MM_1742",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Render",
+          "action": "",
+          "items": [
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Light",
+              "action": "",
+              "items": [
+                {
+                  "label": "New Point Light",
+                  "action": "ID_PointLight",
+                  "items": []
+                },
+                {
+                  "label": "New Spotlight",
+                  "action": "ID_SpotLight",
+                  "items": []
+                },
+                {
+                  "label": "New Distant Light",
+                  "action": "ID_DistantLight",
+                  "items": []
+                },
+                {
+                  "label": "",
+                  "action": "",
+                  "items": []
+                },
+                {
+                  "label": "Light Glyphs",
+                  "action": "ID_LightGlyphsShow",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "Materials Browser",
+              "action": "ID_Materials",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "UCS Icon",
+          "action": "",
+          "items": [
+            {
+              "label": "On",
+              "action": "ID_UcsiconOn",
+              "items": []
+            },
+            {
+              "label": "Origin",
+              "action": "ID_UcsiconOr",
+              "items": []
+            },
+            {
+              "label": "Properties...",
+              "action": "ID_UcsiconPr",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "ViewCube",
+          "action": "",
+          "items": [
+            {
+              "label": "On",
+              "action": "ID_ViewcubeOn",
+              "items": []
+            },
+            {
+              "label": "Settings",
+              "action": "ID_ViewcubePr",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Attribute Display",
+          "action": "",
+          "items": [
+            {
+              "label": "Normal",
+              "action": "ID_AttdispNo",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "On",
+              "action": "ID_AttdispOn",
+              "items": []
+            },
+            {
+              "label": "Off",
+              "action": "ID_AttdispOf",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Lights",
+          "action": "ID_LightGlyphsShow",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Redraw",
+          "action": "ID_Redrawall",
+          "items": []
+        },
+        {
+          "label": "Regen",
+          "action": "ID_Regen",
+          "items": []
+        },
+        {
+          "label": "Regen All",
+          "action": "ID_Regenall",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Full Screen",
+          "action": "ID_FullScreen",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        }
+      ]
+    },
+    {
+      "label": "Insert",
+      "action": "",
+      "items": [
+        {
+          "label": "Block...",
+          "action": "ID_Ddinsert",
+          "items": []
+        },
+        {
+          "label": "DWG Reference...",
+          "action": "ID_Xattach",
+          "items": []
+        },
+        {
+          "label": "PDF Underlay...",
+          "action": "ID_PDFATTACH",
+          "items": []
+        },
+        {
+          "label": "Raster Image Reference...",
+          "action": "ID_Imageatta",
+          "items": []
+        },
+        {
+          "label": "Field...",
+          "action": "ID_Field",
+          "items": []
+        },
+        {
+          "label": "Data Link...",
+          "action": "ID_DataLink",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Layout",
+          "action": "",
+          "items": [
+            {
+              "label": "New Layout",
+              "action": "ID_NewLayout",
+              "items": []
+            },
+            {
+              "label": "Layout from Template...",
+              "action": "ID_TmplLayou",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "ACIS File...",
+          "action": "ID_Acisin",
+          "items": []
+        },
+        {
+          "label": "Drawing Exchange Binary...",
+          "action": "ID_Dxbin",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Reference Manager",
+          "action": "ID_ExtReferences",
+          "items": []
+        }
+      ]
+    },
+    {
+      "label": "Format",
+      "action": "",
+      "items": [
+        {
+          "label": "Layers",
+          "action": "ID_Layer",
+          "items": []
+        },
+        {
+          "label": "Layer States Manager...",
+          "action": "ID_LayerStatesMgr",
+          "items": []
+        },
+        {
+          "label": "Layer Tools",
+          "action": "",
+          "items": [
+            {
+              "label": "Make Current",
+              "action": "ID_Laymcur",
+              "items": []
+            },
+            {
+              "label": "Layer Match",
+              "action": "ID_LAYMCH",
+              "items": []
+            },
+            {
+              "label": "Change to Current Layer",
+              "action": "ID_LAYCUR",
+              "items": []
+            },
+            {
+              "label": "Previous Layer",
+              "action": "ID_LayerP",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Isolate Layer",
+              "action": "ID_LAYISO",
+              "items": []
+            },
+            {
+              "label": "Unisolate Layer",
+              "action": "MM_LAYUNISO",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Freeze Layer",
+              "action": "ID_LAYFRZ",
+              "items": []
+            },
+            {
+              "label": "Layer Off",
+              "action": "ID_LAYOFF",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Lock Layer",
+              "action": "ID_LAYLCK",
+              "items": []
+            },
+            {
+              "label": "Unlock Layer",
+              "action": "ID_LAYULK",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Color...",
+          "action": "ID_Ddcolor",
+          "items": []
+        },
+        {
+          "label": "Linetype...",
+          "action": "ID_Linetype",
+          "items": []
+        },
+        {
+          "label": "Lineweight...",
+          "action": "ID_Linewt",
+          "items": []
+        },
+        {
+          "label": "Transparency",
+          "action": "ID_Transparency",
+          "items": []
+        },
+        {
+          "label": "Scale List...",
+          "action": "ID_ScaleList",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Text Style...",
+          "action": "ID_Style",
+          "items": []
+        },
+        {
+          "label": "Dimension Style...",
+          "action": "ID_Ddim",
+          "items": []
+        },
+        {
+          "label": "Table Style...",
+          "action": "ID_TblStyle",
+          "items": []
+        },
+        {
+          "label": "Multileader Style...",
+          "action": "ID_Mleader_Style",
+          "items": []
+        },
+        {
+          "label": "Plot Style...",
+          "action": "ID_PlotStyle",
+          "items": []
+        },
+        {
+          "label": "Point Style...",
+          "action": "ID_Ddptype",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Units...",
+          "action": "ID_Units",
+          "items": []
+        },
+        {
+          "label": "Thickness",
+          "action": "ID_Thickness",
+          "items": []
+        },
+        {
+          "label": "Drawing Limits",
+          "action": "ID_Limits",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Rename...",
+          "action": "ID_Ddrename",
+          "items": []
+        }
+      ]
+    },
+    {
+      "label": "Tools",
+      "action": "",
+      "items": [
+        {
+          "label": "Spelling",
+          "action": "ID_Spell",
+          "items": []
+        },
+        {
+          "label": "Draw Order",
+          "action": "",
+          "items": [
+            {
+              "label": "Bring to Front",
+              "action": "ID_DrawordeF",
+              "items": []
+            },
+            {
+              "label": "Send to Back",
+              "action": "ID_DrawordeB",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Bring Above Objects",
+              "action": "ID_DrawordeA",
+              "items": []
+            },
+            {
+              "label": "Send Under Objects",
+              "action": "ID_DrawordeU",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Bring Annotations to Front",
+              "action": "",
+              "items": [
+                {
+                  "label": "Text Objects Only",
+                  "action": "ID_TextOnly",
+                  "items": []
+                },
+                {
+                  "label": "Dimension Objects Only",
+                  "action": "ID_DimsOnly",
+                  "items": []
+                },
+                {
+                  "label": "Leaders Only",
+                  "action": "ID_LeaderOnly",
+                  "items": []
+                },
+                {
+                  "label": "All Annotation Objects",
+                  "action": "ID_TxtAllAnno",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "Send Hatches to Back",
+              "action": "ID_HatchToBack",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Isolate",
+          "action": "",
+          "items": [
+            {
+              "label": "Isolate Objects",
+              "action": "ID_IsolateObjects",
+              "items": []
+            },
+            {
+              "label": "Hide Objects",
+              "action": "ID_HideObjects",
+              "items": []
+            },
+            {
+              "label": "End Object Isolation",
+              "action": "ID_UnIsolateObjects",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Inquiry",
+          "action": "",
+          "items": [
+            {
+              "label": "Quick",
+              "action": "ID_QuickMeasure",
+              "items": []
+            },
+            {
+              "label": "Distance",
+              "action": "ID_Dist",
+              "items": []
+            },
+            {
+              "label": "Radius",
+              "action": "ID_Radius",
+              "items": []
+            },
+            {
+              "label": "Angle",
+              "action": "ID_Angle",
+              "items": []
+            },
+            {
+              "label": "Area",
+              "action": "ID_Area",
+              "items": []
+            },
+            {
+              "label": "Volume",
+              "action": "ID_Volume",
+              "items": []
+            },
+            {
+              "label": "Region/Mass Properties",
+              "action": "ID_Massprop",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "List",
+              "action": "ID_List",
+              "items": []
+            },
+            {
+              "label": "ID Point",
+              "action": "ID_Id",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Time",
+              "action": "ID_Time",
+              "items": []
+            },
+            {
+              "label": "Status",
+              "action": "ID_Status",
+              "items": []
+            },
+            {
+              "label": "Set Variable",
+              "action": "ID_Setvar",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Update Fields",
+          "action": "ID_UpdField",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Count",
+          "action": "ID_Count",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Block Editor",
+          "action": "ID_Bedit",
+          "items": []
+        },
+        {
+          "label": "Edit Xref in Place",
+          "action": "ID_RefEditor",
+          "items": []
+        },
+        {
+          "label": "Open Xref",
+          "action": "ID_XOpen",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Load Application...",
+          "action": "ID_Appload",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Parametric",
+          "action": "",
+          "items": [
+            {
+              "label": "Geometric Constraints",
+              "action": "",
+              "items": [
+                {
+                  "label": "Coincident",
+                  "action": "MM_GeomConstraint_Coincident",
+                  "items": []
+                },
+                {
+                  "label": "Perpendicular",
+                  "action": "MM_GeomConstraint_Perpendicular",
+                  "items": []
+                },
+                {
+                  "label": "Parallel",
+                  "action": "MM_GeomConstraint_Parallel",
+                  "items": []
+                },
+                {
+                  "label": "Tangent",
+                  "action": "MM_GeomConstraint_Tangent",
+                  "items": []
+                },
+                {
+                  "label": "Horizontal",
+                  "action": "MM_GeomConstraint_Horizontal",
+                  "items": []
+                },
+                {
+                  "label": "Vertical",
+                  "action": "MM_GeomConstraint_Vertical",
+                  "items": []
+                },
+                {
+                  "label": "Collinear",
+                  "action": "MM_GeomConstraint_Colinear",
+                  "items": []
+                },
+                {
+                  "label": "Concentric",
+                  "action": "MM_GeomConstraint_Concentric",
+                  "items": []
+                },
+                {
+                  "label": "Smooth",
+                  "action": "MM_Geomconstraint_smooth",
+                  "items": []
+                },
+                {
+                  "label": "Symmetric",
+                  "action": "MM_GeomConstraint_Symmetric",
+                  "items": []
+                },
+                {
+                  "label": "Equal",
+                  "action": "MM_GeomConstraint_Equal",
+                  "items": []
+                },
+                {
+                  "label": "Fix",
+                  "action": "MM_GeomConstraint_Fix",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "AutoConstrain",
+              "action": "MM_AutoConstrain",
+              "items": []
+            },
+            {
+              "label": "Constraint Bars",
+              "action": "",
+              "items": [
+                {
+                  "label": "Select Objects",
+                  "action": "MM_SelectObject",
+                  "items": []
+                },
+                {
+                  "label": "Show All",
+                  "action": "MM_Show_All",
+                  "items": []
+                },
+                {
+                  "label": "Hide All",
+                  "action": "MM_Hide_All",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Dimensional Constraints",
+              "action": "",
+              "items": [
+                {
+                  "label": "Aligned",
+                  "action": "MM_DimConstraint_Aligned",
+                  "items": []
+                },
+                {
+                  "label": "Horizontal",
+                  "action": "MM_DimConstraint_Horizontal",
+                  "items": []
+                },
+                {
+                  "label": "Vertical",
+                  "action": "MM_DimConstraint_Vertical",
+                  "items": []
+                },
+                {
+                  "label": "Angular",
+                  "action": "MM_DimConstraint_Angular",
+                  "items": []
+                },
+                {
+                  "label": "Radius",
+                  "action": "MM_DimConstraint_Radius",
+                  "items": []
+                },
+                {
+                  "label": "Diameter",
+                  "action": "MM_DimConstraint_Diameter",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "Dynamic Dimensions",
+              "action": "",
+              "items": [
+                {
+                  "label": "Select Objects",
+                  "action": "MM_Show_Dyn_Constr",
+                  "items": []
+                },
+                {
+                  "label": "Show All",
+                  "action": "MM_Show_All_Dyn_Constr",
+                  "items": []
+                },
+                {
+                  "label": "Hide All",
+                  "action": "MM_Hide_All_Dyn_Constr",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Delete Constraints",
+              "action": "MM_Del_Constraint",
+              "items": []
+            },
+            {
+              "label": "Constraint Settings",
+              "action": "MM_ConstraintBarSettings",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "New UCS",
+          "action": "",
+          "items": [
+            {
+              "label": "World",
+              "action": "ID_UcsWorld",
+              "items": []
+            },
+            {
+              "label": "Previous",
+              "action": "ID_UcsPrevio",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Face",
+              "action": "ID_UcsFace",
+              "items": []
+            },
+            {
+              "label": "Object",
+              "action": "ID_UcsObject",
+              "items": []
+            },
+            {
+              "label": "View",
+              "action": "ID_UcsView",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Origin",
+              "action": "ID_UcsOrigin",
+              "items": []
+            },
+            {
+              "label": "Z Axis Vector",
+              "action": "ID_UcsZAxVec",
+              "items": []
+            },
+            {
+              "label": "3 Point",
+              "action": "ID_Ucs3point",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "X",
+              "action": "ID_UcsXAxRot",
+              "items": []
+            },
+            {
+              "label": "Y",
+              "action": "ID_UcsYAxRot",
+              "items": []
+            },
+            {
+              "label": "Z",
+              "action": "ID_UcsZAxRot",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Named UCS...",
+          "action": "ID_Dducs",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Drafting Settings...",
+          "action": "ID_Ddrmodes",
+          "items": []
+        },
+        {
+          "label": "Customize",
+          "action": "",
+          "items": [
+            {
+              "label": "Interface (CUI)...",
+              "action": "ID_Menuload",
+              "items": []
+            },
+            {
+              "label": "Edit Command Aliases (PGP)...",
+              "action": "ID_AliasEdit",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Import Settings",
+          "action": "ID_ImportUserSettings",
+          "items": []
+        },
+        {
+          "label": "Export Settings",
+          "action": "ID_ExportUserSettings",
+          "items": []
+        },
+        {
+          "label": "Express Tools",
+          "action": "",
+          "items": [
+            {
+              "label": "Convert Text to Mtext",
+              "action": "ID_ACETTXT2MT",
+              "items": []
+            },
+            {
+              "label": "Break-line Symbol",
+              "action": "ID_ACETBREAKL",
+              "items": []
+            },
+            {
+              "label": "Explode Attributes to Text",
+              "action": "ID_ACETBURST",
+              "items": []
+            },
+            {
+              "label": "Move/Copy/Rotate",
+              "action": "ID_MOCORO",
+              "items": []
+            },
+            {
+              "label": "Replace Block...",
+              "action": "ID_ACETBLOCKREPLACE",
+              "items": []
+            },
+            {
+              "label": "Super Hatch",
+              "action": "",
+              "items": [
+                {
+                  "label": "Image...",
+                  "action": "ID_ACETSUPERHATCH_IMAGE",
+                  "items": []
+                },
+                {
+                  "label": "Block...",
+                  "action": "ID_ACETSUPERHATCH_BLOCK",
+                  "items": []
+                },
+                {
+                  "label": "Xref...",
+                  "action": "ID_ACETSUPERHATCH_XREF",
+                  "items": []
+                },
+                {
+                  "label": "Wipeout",
+                  "action": "ID_ACETSUPERHATCH_WIPEOUT",
+                  "items": []
+                },
+                {
+                  "label": "Select Existing Object",
+                  "action": "ID_ACETSUPERHATCH_ACQUIRE",
+                  "items": []
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Draw",
+      "action": "",
+      "items": [
+        {
+          "label": "3D Modeling",
+          "action": "",
+          "items": [
+            {
+              "label": "Polysolid",
+              "action": "ID_Polysolid",
+              "items": []
+            },
+            {
+              "label": "Box",
+              "action": "ID_Box",
+              "items": []
+            },
+            {
+              "label": "Wedge",
+              "action": "ID_Wedge",
+              "items": []
+            },
+            {
+              "label": "Cone",
+              "action": "ID_Cone",
+              "items": []
+            },
+            {
+              "label": "Sphere",
+              "action": "ID_Sphere",
+              "items": []
+            },
+            {
+              "label": "Cylinder",
+              "action": "ID_Cylinder",
+              "items": []
+            },
+            {
+              "label": "Torus",
+              "action": "ID_Torus",
+              "items": []
+            },
+            {
+              "label": "Pyramid",
+              "action": "ID_Pyramid",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Extrude",
+              "action": "ID_Extrude",
+              "items": []
+            },
+            {
+              "label": "Revolve",
+              "action": "ID_Revolve",
+              "items": []
+            },
+            {
+              "label": "Sweep",
+              "action": "ID_Sweep",
+              "items": []
+            },
+            {
+              "label": "Loft",
+              "action": "ID_Loft",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Section Plane",
+              "action": "MM_1719",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Surfaces",
+              "action": "",
+              "items": [
+                {
+                  "label": "Planar",
+                  "action": "ID_Planesurf",
+                  "items": []
+                },
+                {
+                  "label": "Network",
+                  "action": "ID_SURF_NETWORK",
+                  "items": []
+                },
+                {
+                  "label": "Blend",
+                  "action": "ID_SURF_BLEND",
+                  "items": []
+                },
+                {
+                  "label": "Patch",
+                  "action": "ID_SURF_PATCH",
+                  "items": []
+                },
+                {
+                  "label": "Offset",
+                  "action": "ID_SURF_OFFSET",
+                  "items": []
+                },
+                {
+                  "label": "Fillet",
+                  "action": "ID_SURF_FILLET",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "Meshes",
+              "action": "",
+              "items": [
+                {
+                  "label": "Primitives",
+                  "action": "",
+                  "items": [
+                    {
+                      "label": "Box",
+                      "action": "ID_MESH_PRIMITIVE_BOX",
+                      "items": []
+                    },
+                    {
+                      "label": "Wedge",
+                      "action": "ID_MESH_PRIMITIVE_WEDGE",
+                      "items": []
+                    },
+                    {
+                      "label": "Cone",
+                      "action": "ID_MESH_PRIMITIVE_CONE",
+                      "items": []
+                    },
+                    {
+                      "label": "Sphere",
+                      "action": "ID_MESH_PRIMITIVE_SPHERE",
+                      "items": []
+                    },
+                    {
+                      "label": "Cylinder",
+                      "action": "ID_MESH_PRIMITIVE_CYLINDER",
+                      "items": []
+                    },
+                    {
+                      "label": "Torus",
+                      "action": "ID_MESH_PRIMITIVE_TORUS",
+                      "items": []
+                    },
+                    {
+                      "label": "Pyramid",
+                      "action": "ID_MESH_PRIMITIVE_PYRAMID",
+                      "items": []
+                    }
+                  ]
+                },
+                {
+                  "label": "Smooth Mesh",
+                  "action": "ID_MESH_SMOOTH",
+                  "items": []
+                },
+                {
+                  "label": "",
+                  "action": "",
+                  "items": []
+                },
+                {
+                  "label": "3D Face",
+                  "action": "ID_3dface",
+                  "items": []
+                },
+                {
+                  "label": "",
+                  "action": "",
+                  "items": []
+                },
+                {
+                  "label": "Meshes, Revolved Surface",
+                  "action": "ID_Revsurf",
+                  "items": []
+                },
+                {
+                  "label": "Meshes, Tabulated Surface",
+                  "action": "ID_Tabsurf",
+                  "items": []
+                },
+                {
+                  "label": "Meshes, Ruled Surface",
+                  "action": "ID_Rulesurf",
+                  "items": []
+                },
+                {
+                  "label": "Meshes, Edge Surface",
+                  "action": "ID_Edgesurf",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Setup",
+              "action": "",
+              "items": [
+                {
+                  "label": "Drawing",
+                  "action": "ID_Soldraw",
+                  "items": []
+                },
+                {
+                  "label": "View",
+                  "action": "ID_Solview",
+                  "items": []
+                },
+                {
+                  "label": "Profile",
+                  "action": "ID_Solprof",
+                  "items": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Line",
+          "action": "ID_Line",
+          "items": []
+        },
+        {
+          "label": "Polyline",
+          "action": "ID_Pline",
+          "items": []
+        },
+        {
+          "label": "3D Polyline",
+          "action": "ID_3dpoly",
+          "items": []
+        },
+        {
+          "label": "Spline",
+          "action": "",
+          "items": [
+            {
+              "label": "Fit Points",
+              "action": "ID_SURF_SPLINE_KNOT",
+              "items": []
+            },
+            {
+              "label": "Control Vertices",
+              "action": "ID_SURF_SPLINECV",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Ray",
+          "action": "ID_Ray",
+          "items": []
+        },
+        {
+          "label": "Construction Line",
+          "action": "ID_Xline",
+          "items": []
+        },
+        {
+          "label": "Multiline",
+          "action": "ID_Mline",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Arc",
+          "action": "",
+          "items": [
+            {
+              "label": "3 Points",
+              "action": "ID_Arc3point",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Start, Center, End",
+              "action": "ID_ArcStCeEn",
+              "items": []
+            },
+            {
+              "label": "Start, Center, Angle",
+              "action": "ID_ArcStCeAn",
+              "items": []
+            },
+            {
+              "label": "Start, Center, Length",
+              "action": "ID_ArcStCeLe",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Start, End, Angle",
+              "action": "ID_ArcStEnAg",
+              "items": []
+            },
+            {
+              "label": "Start, End, Direction",
+              "action": "ID_ArcStEnDi",
+              "items": []
+            },
+            {
+              "label": "Start, End, Radius",
+              "action": "ID_ArcStEnRa",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Center, Start, End",
+              "action": "ID_ArcCeStEn",
+              "items": []
+            },
+            {
+              "label": "Center, Start, Angle",
+              "action": "ID_ArcCeStAn",
+              "items": []
+            },
+            {
+              "label": "Center, Start, Length",
+              "action": "ID_ArcCeStLe",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Continue",
+              "action": "ID_ArcContin",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Circle",
+          "action": "",
+          "items": [
+            {
+              "label": "Center, Radius",
+              "action": "ID_CircleRad",
+              "items": []
+            },
+            {
+              "label": "Center, Diameter",
+              "action": "ID_CircleDia",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "2 Points",
+              "action": "ID_Circle2pt",
+              "items": []
+            },
+            {
+              "label": "3 Points",
+              "action": "ID_Circle3pt",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Tan, Tan, Radius",
+              "action": "ID_CircleTTR",
+              "items": []
+            },
+            {
+              "label": "Tan, Tan, Tan",
+              "action": "ID_CircleTTT",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Ellipse",
+          "action": "",
+          "items": [
+            {
+              "label": "Center",
+              "action": "ID_EllipseCe",
+              "items": []
+            },
+            {
+              "label": "Axis, End",
+              "action": "ID_EllipseAx",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Arc",
+              "action": "ID_EllipseAr",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Polygon",
+          "action": "ID_Polygon",
+          "items": []
+        },
+        {
+          "label": "Rectangle",
+          "action": "ID_Rectang",
+          "items": []
+        },
+        {
+          "label": "Revision Cloud",
+          "action": "",
+          "items": [
+            {
+              "label": "Rectangular",
+              "action": "ID_RevcloudRectangular",
+              "items": []
+            },
+            {
+              "label": "Polygonal",
+              "action": "ID_RevcloudPolygonal",
+              "items": []
+            },
+            {
+              "label": "Freehand",
+              "action": "ID_RevcloudFreehand",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Point",
+          "action": "",
+          "items": [
+            {
+              "label": "Single Point",
+              "action": "ID_PointSing",
+              "items": []
+            },
+            {
+              "label": "Multiple Point",
+              "action": "ID_PointMult",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Divide",
+              "action": "ID_Divide",
+              "items": []
+            },
+            {
+              "label": "Measure",
+              "action": "ID_Measure",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Helix",
+          "action": "ID_Helix",
+          "items": []
+        },
+        {
+          "label": "Donut",
+          "action": "ID_Donut",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Hatch...",
+          "action": "ID_Bhatch",
+          "items": []
+        },
+        {
+          "label": "Gradient...",
+          "action": "ID_Gradient",
+          "items": []
+        },
+        {
+          "label": "Boundary...",
+          "action": "ID_Boundary",
+          "items": []
+        },
+        {
+          "label": "Region",
+          "action": "ID_Region",
+          "items": []
+        },
+        {
+          "label": "Wipeout",
+          "action": "ID_Wipeout",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Block",
+          "action": "",
+          "items": [
+            {
+              "label": "Make...",
+              "action": "ID_Bmake",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Base",
+              "action": "ID_Base",
+              "items": []
+            },
+            {
+              "label": "Define Attributes...",
+              "action": "ID_Attdef",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Text",
+          "action": "",
+          "items": [
+            {
+              "label": "Multiline Text...",
+              "action": "ID_Mtext",
+              "items": []
+            },
+            {
+              "label": "Single Line Text",
+              "action": "ID_Text",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Table...",
+          "action": "ID_Table",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Center Line",
+          "action": "ID_Centerline",
+          "items": []
+        },
+        {
+          "label": "Center Mark",
+          "action": "ID_Centermark",
+          "items": []
+        }
+      ]
+    },
+    {
+      "label": "Dimension",
+      "action": "",
+      "items": [
+        {
+          "label": "Dimension",
+          "action": "ID_Dimension",
+          "items": []
+        },
+        {
+          "label": "Quick Dimension",
+          "action": "ID_QDim",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Linear",
+          "action": "ID_Dimlinear",
+          "items": []
+        },
+        {
+          "label": "Aligned",
+          "action": "ID_Dimaligne",
+          "items": []
+        },
+        {
+          "label": "Arc Length",
+          "action": "ID_Dimarclen",
+          "items": []
+        },
+        {
+          "label": "Ordinate",
+          "action": "ID_Dimordina",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Radius",
+          "action": "ID_Dimradius",
+          "items": []
+        },
+        {
+          "label": "Jogged",
+          "action": "ID_Dimjogged",
+          "items": []
+        },
+        {
+          "label": "Diameter",
+          "action": "ID_Dimdiamet",
+          "items": []
+        },
+        {
+          "label": "Angular",
+          "action": "ID_Dimangula",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Baseline",
+          "action": "ID_Dimbaseli",
+          "items": []
+        },
+        {
+          "label": "Continue",
+          "action": "ID_Dimcontin",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Dimension Space",
+          "action": "ID_Dimspace",
+          "items": []
+        },
+        {
+          "label": "Dimension Break",
+          "action": "ID_Dimbreak",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Multileader",
+          "action": "ID_Mleader",
+          "items": []
+        },
+        {
+          "label": "Tolerance...",
+          "action": "ID_Tolerance",
+          "items": []
+        },
+        {
+          "label": "Inspection",
+          "action": "ID_Diminspection",
+          "items": []
+        },
+        {
+          "label": "Jogged Linear",
+          "action": "ID_Dimjoglin",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Oblique",
+          "action": "ID_Dimedito",
+          "items": []
+        },
+        {
+          "label": "Align Text",
+          "action": "",
+          "items": [
+            {
+              "label": "Home",
+              "action": "ID_DimeditH",
+              "items": []
+            },
+            {
+              "label": "Angle",
+              "action": "ID_DimteditA",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Left",
+              "action": "ID_DimteditL",
+              "items": []
+            },
+            {
+              "label": "Center",
+              "action": "ID_DimteditC",
+              "items": []
+            },
+            {
+              "label": "Right",
+              "action": "ID_DimteditR",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Dimension Style...",
+          "action": "ID_Ddim",
+          "items": []
+        },
+        {
+          "label": "Override",
+          "action": "ID_Dimoverri",
+          "items": []
+        },
+        {
+          "label": "Update",
+          "action": "ID_DimstyleA",
+          "items": []
+        },
+        {
+          "label": "Reassociate Dimensions",
+          "action": "ID_Dimreasso",
+          "items": []
+        }
+      ]
+    },
+    {
+      "label": "Modify",
+      "action": "",
+      "items": [
+        {
+          "label": "Properties",
+          "action": "ID_Ai_propch",
+          "items": []
+        },
+        {
+          "label": "Match Properties",
+          "action": "ID_Matchprop",
+          "items": []
+        },
+        {
+          "label": "Object",
+          "action": "",
+          "items": [
+            {
+              "label": "External Reference",
+              "action": "",
+              "items": [
+                {
+                  "label": "Bind...",
+                  "action": "ID_Xbind",
+                  "items": []
+                },
+                {
+                  "label": "Frame",
+                  "action": "ID_Xclipfram",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "Image",
+              "action": "",
+              "items": [
+                {
+                  "label": "Adjust...",
+                  "action": "ID_Imageadju",
+                  "items": []
+                },
+                {
+                  "label": "Quality",
+                  "action": "ID_Imagequal",
+                  "items": []
+                },
+                {
+                  "label": "Transparency",
+                  "action": "ID_Transpare",
+                  "items": []
+                },
+                {
+                  "label": "",
+                  "action": "",
+                  "items": []
+                },
+                {
+                  "label": "Frame",
+                  "action": "ID_Imagefram",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Hatch...",
+              "action": "ID_Hatchedit",
+              "items": []
+            },
+            {
+              "label": "Polyline",
+              "action": "ID_Pedit",
+              "items": []
+            },
+            {
+              "label": "Spline",
+              "action": "ID_Splinedit",
+              "items": []
+            },
+            {
+              "label": "Array",
+              "action": "ID_EditArray",
+              "items": []
+            },
+            {
+              "label": "Multileader",
+              "action": "",
+              "items": [
+                {
+                  "label": "Add Leader",
+                  "action": "ID_Mleader_Add",
+                  "items": []
+                },
+                {
+                  "label": "Remove Leader",
+                  "action": "ID_Mleader_Remove",
+                  "items": []
+                },
+                {
+                  "label": "",
+                  "action": "",
+                  "items": []
+                },
+                {
+                  "label": "Align",
+                  "action": "ID_Mleader_Align",
+                  "items": []
+                },
+                {
+                  "label": "Collect",
+                  "action": "ID_Mleader_Collect",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "Multiline...",
+              "action": "ID_Mledit",
+              "items": []
+            },
+            {
+              "label": "Attribute",
+              "action": "",
+              "items": [
+                {
+                  "label": "Single...",
+                  "action": "ID_EAttEdit",
+                  "items": []
+                },
+                {
+                  "label": "Global",
+                  "action": "ID_AtteditGlo",
+                  "items": []
+                },
+                {
+                  "label": "Block Attribute Manager...",
+                  "action": "ID_BattMan",
+                  "items": []
+                }
+              ]
+            },
+            {
+              "label": "Block Description...",
+              "action": "MM_1589",
+              "items": []
+            },
+            {
+              "label": "Edit Text...",
+              "action": "ID_Ddedit",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Clip",
+          "action": "",
+          "items": [
+            {
+              "label": "Image",
+              "action": "ID_ImageClip",
+              "items": []
+            },
+            {
+              "label": "Xref",
+              "action": "ID_XrefClip",
+              "items": []
+            },
+            {
+              "label": "Viewport",
+              "action": "ID_VportClip",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Annotative Object Scale",
+          "action": "",
+          "items": [
+            {
+              "label": "Add Current Scale",
+              "action": "MM_1900",
+              "items": []
+            },
+            {
+              "label": "Delete Current Scale",
+              "action": "MM_1901",
+              "items": []
+            },
+            {
+              "label": "Add/Delete Scales...",
+              "action": "MM_1735",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Synchronize Multiple-scale Positions",
+              "action": "MM_1736",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Erase",
+          "action": "ID_Erase",
+          "items": []
+        },
+        {
+          "label": "Copy",
+          "action": "ID_Copy",
+          "items": []
+        },
+        {
+          "label": "Mirror",
+          "action": "ID_Mirror",
+          "items": []
+        },
+        {
+          "label": "Offset",
+          "action": "ID_Offset",
+          "items": []
+        },
+        {
+          "label": "Array",
+          "action": "",
+          "items": [
+            {
+              "label": "Rectangular Array",
+              "action": "ID_RectangularArray",
+              "items": []
+            },
+            {
+              "label": "Path Array",
+              "action": "ID_PathArray",
+              "items": []
+            },
+            {
+              "label": "Polar Array",
+              "action": "ID_PolarArray",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Delete Duplicate Objects",
+          "action": "ID_OVERKILL",
+          "items": []
+        },
+        {
+          "label": "Copy Nested Objects",
+          "action": "ID_ACETNCOPY",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Move",
+          "action": "ID_Move",
+          "items": []
+        },
+        {
+          "label": "Rotate",
+          "action": "ID_Rotate",
+          "items": []
+        },
+        {
+          "label": "Scale",
+          "action": "ID_Scale",
+          "items": []
+        },
+        {
+          "label": "Stretch",
+          "action": "ID_Stretch",
+          "items": []
+        },
+        {
+          "label": "Lengthen",
+          "action": "ID_Lengthen",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Trim",
+          "action": "ID_Trim",
+          "items": []
+        },
+        {
+          "label": "Extend",
+          "action": "ID_Extend",
+          "items": []
+        },
+        {
+          "label": "Break",
+          "action": "ID_Break",
+          "items": []
+        },
+        {
+          "label": "Break At Point",
+          "action": "ID_BreakSele",
+          "items": []
+        },
+        {
+          "label": "Join",
+          "action": "ID_Join",
+          "items": []
+        },
+        {
+          "label": "Chamfer",
+          "action": "ID_Chamfer",
+          "items": []
+        },
+        {
+          "label": "Fillet",
+          "action": "ID_Fillet",
+          "items": []
+        },
+        {
+          "label": "Blend",
+          "action": "ID_BLEND_CURVES",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "3D Operations",
+          "action": "",
+          "items": [
+            {
+              "label": "3D Move",
+              "action": "ID_3DMove",
+              "items": []
+            },
+            {
+              "label": "3D Rotate",
+              "action": "ID_3DROTATE",
+              "items": []
+            },
+            {
+              "label": "Align",
+              "action": "ID_Align",
+              "items": []
+            },
+            {
+              "label": "3D Align",
+              "action": "ID_3dalign",
+              "items": []
+            },
+            {
+              "label": "3D Mirror",
+              "action": "ID_Mirror3d",
+              "items": []
+            },
+            {
+              "label": "3D Array",
+              "action": "ID_3darray",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Interference Checking",
+              "action": "ID_Interfere",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Slice",
+              "action": "ID_Slice",
+              "items": []
+            },
+            {
+              "label": "Thicken",
+              "action": "ID_Thicken",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Convert to Solid",
+              "action": "ID_CONV2SOLID",
+              "items": []
+            },
+            {
+              "label": "Convert to Surface",
+              "action": "ID_Conv2surface",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Extract Edges",
+              "action": "ID_ExtractEdges",
+              "items": []
+            },
+            {
+              "label": "Extract Isolines",
+              "action": "ID_EXTRACTISOLINES",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Solid Editing",
+          "action": "",
+          "items": [
+            {
+              "label": "Union",
+              "action": "ID_Union",
+              "items": []
+            },
+            {
+              "label": "Subtract",
+              "action": "ID_Subtract",
+              "items": []
+            },
+            {
+              "label": "Intersect",
+              "action": "ID_Intersect",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Imprint Edges",
+              "action": "ID_Imprint",
+              "items": []
+            },
+            {
+              "label": "Fillet edges",
+              "action": "ID_FILLET_EDGE",
+              "items": []
+            },
+            {
+              "label": "Chamfer edges",
+              "action": "ID_CHAMFER_EDGE",
+              "items": []
+            },
+            {
+              "label": "Color edges",
+              "action": "ID_EdgeColor",
+              "items": []
+            },
+            {
+              "label": "Copy edges",
+              "action": "ID_EdgeCopy",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Extrude faces",
+              "action": "ID_FaceExtru",
+              "items": []
+            },
+            {
+              "label": "Move faces",
+              "action": "ID_FaceMove",
+              "items": []
+            },
+            {
+              "label": "Offset faces",
+              "action": "ID_FaceOffse",
+              "items": []
+            },
+            {
+              "label": "Delete faces",
+              "action": "ID_FaceDel",
+              "items": []
+            },
+            {
+              "label": "Rotate faces",
+              "action": "ID_FaceRotat",
+              "items": []
+            },
+            {
+              "label": "Taper faces",
+              "action": "ID_FaceTaper",
+              "items": []
+            },
+            {
+              "label": "Color faces",
+              "action": "ID_FaceColor",
+              "items": []
+            },
+            {
+              "label": "Copy faces",
+              "action": "ID_FaceCopy",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Clean",
+              "action": "ID_BodyCln",
+              "items": []
+            },
+            {
+              "label": "Separate",
+              "action": "ID_Separate",
+              "items": []
+            },
+            {
+              "label": "Shell",
+              "action": "ID_Shell",
+              "items": []
+            },
+            {
+              "label": "Check",
+              "action": "ID_BodyChk",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "Surface Editing",
+          "action": "",
+          "items": [
+            {
+              "label": "Trim",
+              "action": "ID_SURF_TRIM",
+              "items": []
+            },
+            {
+              "label": "Untrim",
+              "action": "ID_SURF_UNTRIM",
+              "items": []
+            },
+            {
+              "label": "Extend",
+              "action": "ID_SURF_EXTEND",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Sculpt",
+              "action": "ID_SURF_SCULPT",
+              "items": []
+            },
+            {
+              "label": "Convert to NURBS",
+              "action": "ID_SURF_CONVTONURBS",
+              "items": []
+            },
+            {
+              "label": "Convert to Mesh",
+              "action": "ID_MESH_SMOOTH",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "NURBS Surface Editing",
+              "action": "",
+              "items": [
+                {
+                  "label": "Show CV",
+                  "action": "ID_CV_SHOW",
+                  "items": []
+                },
+                {
+                  "label": "Hide CV",
+                  "action": "ID_CV_HIDE",
+                  "items": []
+                },
+                {
+                  "label": "",
+                  "action": "",
+                  "items": []
+                },
+                {
+                  "label": "Add CV",
+                  "action": "ID_SURF_CV_ADD",
+                  "items": []
+                },
+                {
+                  "label": "Remove CV",
+                  "action": "ID_SURF_CV_REMOVE",
+                  "items": []
+                },
+                {
+                  "label": "",
+                  "action": "",
+                  "items": []
+                },
+                {
+                  "label": "Rebuild",
+                  "action": "ID_SURF_CV_REBUILD",
+                  "items": []
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "label": "Mesh Editing",
+          "action": "",
+          "items": [
+            {
+              "label": "Smooth More",
+              "action": "ID_MESH_SMOOTH_MORE",
+              "items": []
+            },
+            {
+              "label": "Smooth Less",
+              "action": "ID_MESH_SMOOTH_LESS",
+              "items": []
+            },
+            {
+              "label": "Refine Mesh",
+              "action": "ID_MESH_SMOOTH_REFINE",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Crease",
+              "action": "ID_MESH_SMOOTH_CREASE",
+              "items": []
+            },
+            {
+              "label": "Uncrease",
+              "action": "ID_MESH_SMOOTH_UNCREASE",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Split Face",
+              "action": "ID_MESH_SPLIT_FACE",
+              "items": []
+            },
+            {
+              "label": "Extrude Face",
+              "action": "ID_MESH_EXTRUDE_FACE",
+              "items": []
+            },
+            {
+              "label": "Merge Face",
+              "action": "ID_MESH_MERGE_FACES",
+              "items": []
+            },
+            {
+              "label": "Spin Triangle Face",
+              "action": "ID_MESH_SPIN_TRIANGE_FACES",
+              "items": []
+            },
+            {
+              "label": "Close Hole",
+              "action": "ID_MESH_CLOSE_HOLE",
+              "items": []
+            },
+            {
+              "label": "Collapse Face or Edge",
+              "action": "ID_MESH_COLLAPSE_FACE_EDGE",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Convert to Faceted Solid",
+              "action": "ID_MESH_CONVERT_TO_FACETED_SOLID",
+              "items": []
+            },
+            {
+              "label": "Convert to Faceted Surface",
+              "action": "ID_MESH_CONVERT_TO_FACETED_SURFACE",
+              "items": []
+            },
+            {
+              "label": "",
+              "action": "",
+              "items": []
+            },
+            {
+              "label": "Convert to Smooth Solid",
+              "action": "ID_MESH_CONVERT_TO_SMOOTH_SOLID",
+              "items": []
+            },
+            {
+              "label": "Convert to Smooth Surface",
+              "action": "ID_MESH_CONVERT_TO_SMOOTH_SURFACE",
+              "items": []
+            }
+          ]
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Change Space",
+          "action": "ID_CHSPACE",
+          "items": []
+        },
+        {
+          "label": "Flatten Objects",
+          "action": "ID_FlattenZ",
+          "items": []
+        },
+        {
+          "label": "Explode",
+          "action": "ID_Explode",
+          "items": []
+        }
+      ]
+    },
+    {
+      "label": "Window",
+      "action": "",
+      "items": [
+        {
+          "label": "Minimize",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Zoom",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Tool Bar",
+          "action": "ID_Toolbar",
+          "items": []
+        },
+        {
+          "label": "File Tab",
+          "action": "ID_FileTab",
+          "items": []
+        },
+        {
+          "label": "Tool Sets",
+          "action": "ID_ToolSets",
+          "items": []
+        },
+        {
+          "label": "Status Bar",
+          "action": "ID_StatusBar",
+          "items": []
+        },
+        {
+          "label": "Command Line",
+          "action": "ID_CmdLine",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Blocks",
+          "action": "ID_Content",
+          "items": []
+        },
+        {
+          "label": "Count",
+          "action": "ID_Ddcountlist",
+          "items": []
+        },
+        {
+          "label": "Layers",
+          "action": "ID_Layer",
+          "items": []
+        },
+        {
+          "label": "Properties Inspector",
+          "action": "ID_Properties",
+          "items": []
+        },
+        {
+          "label": "Reference Manager",
+          "action": "ID_ExtReferences",
+          "items": []
+        },
+        {
+          "label": "Traces",
+          "action": "ID_TracePalette",
+          "items": []
+        },
+        {
+          "label": "Sheet Set Manager",
+          "action": "ID_SheetSetManager",
+          "items": []
+        },
+        {
+          "label": "Materials Browser",
+          "action": "ID_Materials",
+          "items": []
+        },
+        {
+          "label": "Activity Insights",
+          "action": "ID_ActivityInsights",
+          "items": []
+        },
+        {
+          "label": "Geometry Cleanup",
+          "action": "ID_GEOMETRYCLEANUP",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Palettes",
+          "action": "MM_1904",
+          "items": []
+        },
+        {
+          "label": "Reset Palettes",
+          "action": "ID_ResetPalettes",
+          "items": []
+        }
+      ]
+    },
+    {
+      "label": "Help",
+      "action": "",
+      "items": [
+        {
+          "label": "AutoCAD Help",
+          "action": "ID_Help",
+          "items": []
+        },
+        {
+          "label": "Autodesk Assistant",
+          "action": "ID_ASSISTANT",
+          "items": []
+        },
+        {
+          "label": "Download Offline Help",
+          "action": "ID_Download_OfflineHelp",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "What's New",
+          "action": "MM_WhatsNew",
+          "items": []
+        },
+        {
+          "label": "Highlight New Features",
+          "action": "ID_SHOWNEW",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Recover Files",
+          "action": "ID_OpenDR",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Send Feedback",
+          "action": "ID_SendFeedback",
+          "items": []
+        },
+        {
+          "label": "",
+          "action": "",
+          "items": []
+        },
+        {
+          "label": "Privacy Settings...",
+          "action": "ID_DESKTOPANALYTICS",
+          "items": []
+        }
+      ]
+    }
+  ],
+  "toolbars": [
+    {
+      "label": "File",
+      "actions": [
+        "ID_New",
+        "ID_Open",
+        "ID_Save",
+        "ID_Saveas"
+      ]
+    },
+    {
+      "label": "History",
+      "actions": [
+        "ID_U",
+        "ID_Redo"
+      ]
+    },
+    {
+      "label": "Plot",
+      "actions": [
+        "ID_Print",
+        "ID_Pub",
+        "ID_PlotSetup",
+        "ID_PageSetupEdit"
+      ]
+    },
+    {
+      "label": "Import",
+      "actions": [
+        "ID_Import",
+        "ID_Export",
+        "ID_ATTACH",
+        "ID_PACKAGEDRAWING"
+      ]
+    },
+    {
+      "label": "Navigation",
+      "actions": [
+        "ID_ZoomWindo",
+        "ID_Pan",
+        "ID_3d_orbit"
+      ]
+    },
+    {
+      "label": "Efficiency",
+      "actions": [
+        "ID_Matchprop",
+        "ID_Qselect",
+        "ID_SelSimilar",
+        "ID_AddSelected",
+        "ID_Purge",
+        "ID_Count"
+      ]
+    },
+    {
+      "label": "Collaborate",
+      "actions": [
+        "ID_DwgCompare",
+        "ID_Share",
+        "ID_TracePalette",
+        "ID_MarkupImport"
+      ]
+    },
+    {
+      "label": "ActivityInsights",
+      "actions": [
+        "ID_ActivityInsights"
+      ]
+    },
+    {
+      "label": "Geometry Cleanup",
+      "actions": [
+        "ID_GEOMETRYCLEANUP"
+      ]
+    }
+  ],
+  "toolGroups": [
+    {
+      "label": "Draw",
+      "layout": "Layout1",
+      "items": [
+        {
+          "label": "Line",
+          "visible": true,
+          "actions": [
+            "ID_Line"
+          ]
+        },
+        {
+          "label": "Polyline",
+          "visible": true,
+          "actions": [
+            "ID_Pline"
+          ]
+        },
+        {
+          "label": "Circle Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_CircleRad",
+            "ID_CircleDia",
+            "ID_Circle2pt",
+            "ID_Circle3pt",
+            "ID_CircleTTR",
+            "ID_CircleTTT"
+          ]
+        },
+        {
+          "label": "Polygonal Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Rectang",
+            "ID_Polygon"
+          ]
+        },
+        {
+          "label": "Arc Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Arc3point",
+            "ID_ArcStCeEn",
+            "ID_ArcStCeAn",
+            "ID_ArcStCeLe",
+            "ID_ArcStEnAg",
+            "ID_ArcStEnDi",
+            "ID_ArcStEnRa",
+            "ID_ArcCeStEn",
+            "ID_ArcCeStAn",
+            "ID_ArcCeStLe",
+            "ID_ArcContin"
+          ]
+        },
+        {
+          "label": "Spline Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Spline",
+            "ID_SURF_SPLINECV"
+          ]
+        },
+        {
+          "label": "Center Lines Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Centerline",
+            "ID_Centermark"
+          ]
+        },
+        {
+          "label": "Xline Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Xline",
+            "ID_Ray"
+          ]
+        },
+        {
+          "label": "Ellipse Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_EllipseCe",
+            "ID_EllipseAx",
+            "ID_EllipseAr"
+          ]
+        },
+        {
+          "label": "Rev-Cloud Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_RevcloudRectangular",
+            "ID_RevcloudPolygonal",
+            "ID_RevcloudFreehand"
+          ]
+        },
+        {
+          "label": "Point Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_PointSing",
+            "ID_PointMult",
+            "ID_Divide",
+            "ID_Measure"
+          ]
+        },
+        {
+          "label": "Break-line Symbol",
+          "visible": true,
+          "actions": [
+            "ID_ACETBREAKL"
+          ]
+        },
+        {
+          "label": "3D Polyline",
+          "visible": false,
+          "actions": [
+            "ID_3dpoly"
+          ]
+        },
+        {
+          "label": "Helix",
+          "visible": false,
+          "actions": [
+            "ID_Helix"
+          ]
+        },
+        {
+          "label": "Donut",
+          "visible": false,
+          "actions": [
+            "ID_Donut"
+          ]
+        },
+        {
+          "label": "Multiline",
+          "visible": false,
+          "actions": [
+            "ID_Mline"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Hatch",
+      "layout": "Layout2",
+      "items": [
+        {
+          "label": "Hatch...",
+          "visible": true,
+          "actions": [
+            "ID_Bhatch"
+          ]
+        },
+        {
+          "label": "Superhatch Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_ACETSUPERHATCH_IMAGE",
+            "ID_ACETSUPERHATCH_BLOCK",
+            "ID_ACETSUPERHATCH_XREF",
+            "ID_ACETSUPERHATCH_WIPEOUT",
+            "ID_ACETSUPERHATCH_ACQUIRE"
+          ]
+        },
+        {
+          "label": "Gradient...",
+          "visible": true,
+          "actions": [
+            "ID_Gradient"
+          ]
+        },
+        {
+          "label": "Boundary...",
+          "visible": true,
+          "actions": [
+            "ID_Boundary"
+          ]
+        },
+        {
+          "label": "Wipeout",
+          "visible": true,
+          "actions": [
+            "ID_Wipeout"
+          ]
+        },
+        {
+          "label": "Region",
+          "visible": true,
+          "actions": [
+            "ID_Region"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Block",
+      "layout": "Layout1",
+      "items": [
+        {
+          "label": "Block, Make...",
+          "visible": true,
+          "actions": [
+            "ID_Bmake"
+          ]
+        },
+        {
+          "label": "Blocks Palette...",
+          "visible": true,
+          "actions": [
+            "ID_Ddinsert"
+          ]
+        },
+        {
+          "label": "Block Editor",
+          "visible": true,
+          "actions": [
+            "ID_Bedit"
+          ]
+        },
+        {
+          "label": "Attribute Editor Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_EAttEdit",
+            "ID_AtteditGlo"
+          ]
+        },
+        {
+          "label": "Define Attribute",
+          "visible": true,
+          "actions": [
+            "ID_BAttdef"
+          ]
+        },
+        {
+          "label": "Attribute, Block Attribute Manager...",
+          "visible": true,
+          "actions": [
+            "ID_BattMan"
+          ]
+        },
+        {
+          "label": "Write Block...",
+          "visible": true,
+          "actions": [
+            "MM_1934"
+          ]
+        },
+        {
+          "label": "Detect and Convert",
+          "visible": true,
+          "actions": [
+            "ID_Detect"
+          ]
+        },
+        {
+          "label": "Search and Convert",
+          "visible": true,
+          "actions": [
+            "ID_BConvert"
+          ]
+        },
+        {
+          "label": "Block, Base",
+          "visible": true,
+          "actions": [
+            "ID_Base"
+          ]
+        },
+        {
+          "label": "Synchronize Attributes",
+          "visible": true,
+          "actions": [
+            "ID_AttSync"
+          ]
+        },
+        {
+          "label": "Explode Attributes to Text",
+          "visible": true,
+          "actions": [
+            "ID_ACETBURST"
+          ]
+        },
+        {
+          "label": "Replace block with another block",
+          "visible": false,
+          "actions": [
+            "ID_ACETBLOCKREPLACE"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Modify",
+      "layout": "Layout3",
+      "items": [
+        {
+          "label": "Move",
+          "visible": true,
+          "actions": [
+            "ID_Move"
+          ]
+        },
+        {
+          "label": "Copy",
+          "visible": true,
+          "actions": [
+            "ID_Copy"
+          ]
+        },
+        {
+          "label": "Mirror",
+          "visible": true,
+          "actions": [
+            "ID_Mirror"
+          ]
+        },
+        {
+          "label": "Rotate",
+          "visible": true,
+          "actions": [
+            "ID_Rotate"
+          ]
+        },
+        {
+          "label": "Move/Copy/Rotate",
+          "visible": true,
+          "actions": [
+            "ID_MOCORO"
+          ]
+        },
+        {
+          "label": "Trim Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Trim",
+            "ID_Extend"
+          ]
+        },
+        {
+          "label": "Fillet Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Fillet",
+            "ID_Chamfer"
+          ]
+        },
+        {
+          "label": "Offset",
+          "visible": true,
+          "actions": [
+            "ID_Offset"
+          ]
+        },
+        {
+          "label": "Array Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_RectangularArray",
+            "ID_PathArray",
+            "ID_PolarArray"
+          ]
+        },
+        {
+          "label": "Explode",
+          "visible": true,
+          "actions": [
+            "ID_Explode"
+          ]
+        },
+        {
+          "label": "Stretch",
+          "visible": true,
+          "actions": [
+            "ID_Stretch"
+          ]
+        },
+        {
+          "label": "Flatten Objects",
+          "visible": true,
+          "actions": [
+            "ID_FlattenZ"
+          ]
+        },
+        {
+          "label": "Scale",
+          "visible": true,
+          "actions": [
+            "ID_Scale"
+          ]
+        },
+        {
+          "label": "Break Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_BreakSele",
+            "ID_Break"
+          ]
+        },
+        {
+          "label": "Join",
+          "visible": true,
+          "actions": [
+            "ID_Join"
+          ]
+        },
+        {
+          "label": "Change Space",
+          "visible": true,
+          "actions": [
+            "ID_CHSPACE"
+          ]
+        },
+        {
+          "label": "Copy Nested Objects",
+          "visible": true,
+          "actions": [
+            "ID_ACETNCOPY"
+          ]
+        },
+        {
+          "label": "Delete Duplicate Objects",
+          "visible": true,
+          "actions": [
+            "ID_OVERKILL"
+          ]
+        },
+        {
+          "label": "Erase",
+          "visible": false,
+          "actions": [
+            "ID_Erase"
+          ]
+        },
+        {
+          "label": "Align",
+          "visible": false,
+          "actions": [
+            "ID_Align"
+          ]
+        },
+        {
+          "label": "Reverse",
+          "visible": false,
+          "actions": [
+            "ID_Reverse"
+          ]
+        },
+        {
+          "label": "Lengthen",
+          "visible": false,
+          "actions": [
+            "ID_Lengthen"
+          ]
+        },
+        {
+          "label": "Polyline Edit",
+          "visible": false,
+          "actions": [
+            "ID_Pedit"
+          ]
+        },
+        {
+          "label": "Spline Edit",
+          "visible": false,
+          "actions": [
+            "ID_Splinedit"
+          ]
+        },
+        {
+          "label": "Hatch Edit",
+          "visible": false,
+          "actions": [
+            "ID_Hatchedit"
+          ]
+        },
+        {
+          "label": "Edit Array",
+          "visible": false,
+          "actions": [
+            "ID_EditArray"
+          ]
+        },
+        {
+          "label": "Draw Order Drop-down",
+          "visible": false,
+          "actions": [
+            "ID_DrawordeF",
+            "ID_DrawordeB",
+            "ID_DrawordeA",
+            "ID_DrawordeU",
+            "ID_TextOnly",
+            "ID_DimsOnly",
+            "ID_LeaderOnly",
+            "ID_TxtAllAnno",
+            "ID_HatchToBack"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Text",
+      "layout": "Layout4",
+      "items": [
+        {
+          "label": "Multiline Text...",
+          "visible": true,
+          "actions": [
+            "ID_Mtext"
+          ]
+        },
+        {
+          "label": "Text Style...",
+          "visible": true,
+          "actions": [
+            "ID_Style"
+          ]
+        },
+        {
+          "label": "Single Line Text",
+          "visible": true,
+          "actions": [
+            "ID_Text"
+          ]
+        },
+        {
+          "label": "Convert Text to Mtext",
+          "visible": true,
+          "actions": [
+            "ID_ACETTXT2MT"
+          ]
+        },
+        {
+          "label": "Spell Check",
+          "visible": true,
+          "actions": [
+            "ID_Spell"
+          ]
+        },
+        {
+          "label": "Find...",
+          "visible": true,
+          "actions": [
+            "ID_TextFind"
+          ]
+        },
+        {
+          "label": "Field...",
+          "visible": true,
+          "actions": [
+            "ID_Field"
+          ]
+        },
+        {
+          "label": "Update Fields",
+          "visible": true,
+          "actions": [
+            "ID_UpdField"
+          ]
+        },
+        {
+          "label": "Recognize SHX Text",
+          "visible": true,
+          "actions": [
+            "ID_INSERT_PDFSHXTEXT"
+          ]
+        },
+        {
+          "label": "Recognition Settings",
+          "visible": true,
+          "actions": [
+            "ID_INSERT_PDFSHXTEXT_SETTINGS"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Dimension",
+      "layout": "Layout4",
+      "items": [
+        {
+          "label": "Dimension",
+          "visible": true,
+          "actions": [
+            "ID_Dimension"
+          ]
+        },
+        {
+          "label": "Dimension, Dimension Style...",
+          "visible": true,
+          "actions": [
+            "ID_Ddim"
+          ]
+        },
+        {
+          "label": "Dimension Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Dimlinear",
+            "ID_Dimaligne",
+            "ID_Dimangula",
+            "ID_Dimarclen",
+            "ID_Dimradius",
+            "ID_Dimdiamet",
+            "ID_Dimjogged",
+            "ID_Dimordina"
+          ]
+        },
+        {
+          "label": "Continue and Base Dimension Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Dimcontin",
+            "ID_Dimbaseli"
+          ]
+        },
+        {
+          "label": "Center Mark Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_Centermark",
+            "ID_Centerline"
+          ]
+        },
+        {
+          "label": "Dimension, Tolerance...",
+          "visible": true,
+          "actions": [
+            "ID_Tolerance"
+          ]
+        },
+        {
+          "label": "Dimension, Dimbreak",
+          "visible": true,
+          "actions": [
+            "ID_Dimbreak"
+          ]
+        },
+        {
+          "label": "Dimension, Diminspect",
+          "visible": true,
+          "actions": [
+            "ID_Diminspection"
+          ]
+        },
+        {
+          "label": "Dimension, Dimspace",
+          "visible": true,
+          "actions": [
+            "ID_Dimspace"
+          ]
+        },
+        {
+          "label": "Dimension Text Edit Drop-down",
+          "visible": true,
+          "actions": [
+            "ID_DimteditA",
+            "ID_DimteditL",
+            "ID_DimteditC",
+            "ID_DimteditR",
+            "ID_Dimedito"
+          ]
+        },
+        {
+          "label": "Dimension, Quick Dimension",
+          "visible": false,
+          "actions": [
+            "ID_QDim"
+          ]
+        },
+        {
+          "label": "Dimension, Dimjogline",
+          "visible": false,
+          "actions": [
+            "ID_Dimjoglin"
+          ]
+        },
+        {
+          "label": "Dimension, Reassociate Dimensions",
+          "visible": false,
+          "actions": [
+            "ID_Dimreasso"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Leader",
+      "layout": "Layout4",
+      "items": [
+        {
+          "label": "Multileader",
+          "visible": true,
+          "actions": [
+            "ID_Mleader"
+          ]
+        },
+        {
+          "label": "Multileader Style Manager",
+          "visible": true,
+          "actions": [
+            "ID_Mleader_Style"
+          ]
+        },
+        {
+          "label": "Add Leader",
+          "visible": true,
+          "actions": [
+            "ID_Mleader_Add"
+          ]
+        },
+        {
+          "label": "Remove Leader",
+          "visible": true,
+          "actions": [
+            "ID_Mleader_Remove"
+          ]
+        },
+        {
+          "label": "Multileader Align",
+          "visible": true,
+          "actions": [
+            "ID_Mleader_Align"
+          ]
+        },
+        {
+          "label": "Multileader Collect",
+          "visible": true,
+          "actions": [
+            "ID_Mleader_Collect"
+          ]
+        },
+        {
+          "label": "Dimension, Leader",
+          "visible": true,
+          "actions": [
+            "ID_Leader"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Table",
+      "layout": "Layout4",
+      "items": [
+        {
+          "label": "Table...",
+          "visible": true,
+          "actions": [
+            "ID_Table"
+          ]
+        },
+        {
+          "label": "Table Style...",
+          "visible": true,
+          "actions": [
+            "ID_TblStyle"
+          ]
+        },
+        {
+          "label": "Data Link",
+          "visible": true,
+          "actions": [
+            "ID_DataLink"
+          ]
+        },
+        {
+          "label": "Insert Field",
+          "visible": true,
+          "actions": [
+            "ID_InsertField"
+          ]
+        },
+        {
+          "label": "Update Data Link",
+          "visible": true,
+          "actions": [
+            "ID_DataLinkUpdate"
+          ]
+        },
+        {
+          "label": "Write Data Link",
+          "visible": true,
+          "actions": [
+            "ID_DataLinkWrite"
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Parametric",
+      "layout": "Layout3",
+      "items": [
+        {
+          "label": "Geometric Constraint Drop-down",
+          "visible": true,
+          "actions": [
+            "MM_GeomConstraint_Coincident",
+            "MM_GeomConstraint_Colinear",
+            "MM_GeomConstraint_Concentric",
+            "MM_GeomConstraint_Fix",
+            "MM_GeomConstraint_Perpendicular",
+            "MM_GeomConstraint_Parallel",
+            "MM_GeomConstraint_Horizontal",
+            "MM_GeomConstraint_Vertical",
+            "MM_GeomConstraint_Tangent",
+            "MM_Geomconstraint_smooth",
+            "MM_GeomConstraint_Symmetric",
+            "MM_GeomConstraint_Equal"
+          ]
+        },
+        {
+          "label": "AutoConstrain",
+          "visible": true,
+          "actions": [
+            "MM_AutoConstrain"
+          ]
+        },
+        {
+          "label": "Show Constraints",
+          "visible": true,
+          "actions": [
+            "MM_SelectObject"
+          ]
+        },
+        {
+          "label": "Show All Geometric Constraints",
+          "visible": true,
+          "actions": [
+            "MM_Show_All"
+          ]
+        },
+        {
+          "label": "Hide All Geometric Constraints",
+          "visible": true,
+          "actions": [
+            "MM_Hide_All"
+          ]
+        },
+        {
+          "label": "Dimensional Constraint Drop-down",
+          "visible": true,
+          "actions": [
+            "MMU_0031",
+            "MM_DimConstraint_Aligned",
+            "MM_DimConstraint_Horizontal",
+            "MM_DimConstraint_Vertical",
+            "MM_DimConstraint_Angular",
+            "MM_DimConstraint_Radius",
+            "MM_DimConstraint_Diameter"
+          ]
+        },
+        {
+          "label": "Dimensional Constraint, Convert",
+          "visible": true,
+          "actions": [
+            "ID_DimensionalConstraintConvert"
+          ]
+        },
+        {
+          "label": "Show Dynamic Constraints",
+          "visible": true,
+          "actions": [
+            "MM_Show_Dyn_Constr"
+          ]
+        },
+        {
+          "label": "Show All Dynamic Constraints",
+          "visible": true,
+          "actions": [
+            "MM_Show_All_Dyn"
+          ]
+        },
+        {
+          "label": "Hide All Dynamic Constriants",
+          "visible": true,
+          "actions": [
+            "MM_Hide_All_Dyn"
+          ]
+        },
+        {
+          "label": "Constraint Settings...",
+          "visible": false,
+          "actions": [
+            "MM_ConstraintBarSettings"
+          ]
+        },
+        {
+          "label": "Delete Constraints",
+          "visible": false,
+          "actions": [
+            "MM_Del_Constraint"
+          ]
+        }
+      ]
+    }
+  ],
+  "statusItems": [
+    {
+      "id": "ID_CursorCoordinates",
+      "label": "Cursor coordinates",
+      "off": "",
+      "on": ""
+    },
+    {
+      "id": "ID_ModelSpace",
+      "label": "Model / paper space",
+      "off": "",
+      "on": ""
+    },
+    {
+      "id": "ID_GridMode",
+      "label": "Grid display",
+      "off": "UI_Status_GridMode_off",
+      "on": "UI_Status_GridMode_on"
+    },
+    {
+      "id": "ID_SnapMode",
+      "label": "Snap mode",
+      "off": "UI_Status_SnapMode_off",
+      "on": "UI_Status_SnapMode_on"
+    },
+    {
+      "id": "ID_OrthoMode",
+      "label": "Ortho mode",
+      "off": "UI_Status_OrthoMode_off",
+      "on": "UI_Status_OrthoMode_on"
+    },
+    {
+      "id": "ID_PolarTracking",
+      "label": "Polar tracking",
+      "off": "UI_Status_PolarTracking_off",
+      "on": "UI_Status_PolarTracking_on"
+    },
+    {
+      "id": "ID_DynamicInput",
+      "label": "Dynamic input",
+      "off": "UI_Status_DynamicInput_off",
+      "on": "UI_Status_DynamicInput_on"
+    },
+    {
+      "id": "ID_LineWeight",
+      "label": "Lineweight display",
+      "off": "UI_Status_LineWeight_off",
+      "on": "UI_Status_LineWeight_on"
+    },
+    {
+      "id": "ID_Transparency",
+      "label": "Transparency display",
+      "off": "UI_Status_Transparency_off",
+      "on": "UI_Status_Transparency_on"
+    },
+    {
+      "id": "ID_GroupSelection",
+      "label": "Group selection",
+      "off": "UI_Status_GroupSelection_off",
+      "on": "UI_Status_GroupSelection_on"
+    },
+    {
+      "id": "ID_ObjectSnapTracking",
+      "label": "Object snap tracking",
+      "off": "UI_Status_ObjectSnapTracking_off",
+      "on": "UI_Status_ObjectSnapTracking_on"
+    },
+    {
+      "id": "ID_ObjectSnap",
+      "label": "Object snap",
+      "off": "UI_Status_ObjectSnap_off",
+      "on": "UI_Status_ObjectSnap_on"
+    },
+    {
+      "id": "ID_VPMax",
+      "label": "Viewport maximize",
+      "off": "UI_Status_VPMax_off",
+      "on": "UI_Status_VPMax_on"
+    },
+    {
+      "id": "ID_AnnotationVisibility",
+      "label": "Annotation visibility",
+      "off": "UI_Status_AnnotationVisibility_off",
+      "on": "UI_Status_AnnotationVisibility_on"
+    },
+    {
+      "id": "ID_AutoScale",
+      "label": "Annotation auto scale",
+      "off": "UI_Status_AutoScale_off",
+      "on": "UI_Status_AutoScale_on"
+    },
+    {
+      "id": "ID_LockViewport",
+      "label": "Lock viewport",
+      "off": "UI_Status_LockViewport_off",
+      "on": "UI_Status_LockViewport_on"
+    },
+    {
+      "id": "ID_AnnotationScale",
+      "label": "Annotation scale",
+      "off": "UI_Status_AnnotationScale_off",
+      "on": "UI_Status_AnnotationScale_off"
+    },
+    {
+      "id": "ID_ViewportScale",
+      "label": "Viewport scale",
+      "off": "UI_Status_ViewportScale_off",
+      "on": "UI_Status_ViewportScale_off"
+    },
+    {
+      "id": "ID_AnnotationScaleSync",
+      "label": "Annotation scale sync",
+      "off": "UI_Status_AnnotationScaleSync_off",
+      "on": "UI_Status_AnnotationScaleSync_off"
+    },
+    {
+      "id": "ID_IsolateObjects",
+      "label": "Isolate objects",
+      "off": "UI_Status_IsolateObjects_off",
+      "on": "UI_Status_IsolateObjects_off"
+    }
+  ],
+  "actions": [
+    {
+      "id": "ID_3DMove",
+      "label": "3D Move",
+      "icon": false
+    },
+    {
+      "id": "ID_3DROTATE",
+      "label": "3D Rotate",
+      "icon": false
+    },
+    {
+      "id": "ID_3d_orbit",
+      "label": "3D Orbit",
+      "icon": true
+    },
+    {
+      "id": "ID_3dalign",
+      "label": "3D Align",
+      "icon": false
+    },
+    {
+      "id": "ID_3darray",
+      "label": "3D Array",
+      "icon": false
+    },
+    {
+      "id": "ID_3ddistanc",
+      "label": "3D Adjust Distance",
+      "icon": false
+    },
+    {
+      "id": "ID_3dface",
+      "label": "Modeling, Meshes, 3D Face",
+      "icon": false
+    },
+    {
+      "id": "ID_3dpoly",
+      "label": "3D Polyline",
+      "icon": true
+    },
+    {
+      "id": "ID_3dswivel",
+      "label": "3D Swivel",
+      "icon": false
+    },
+    {
+      "id": "ID_ACETBLOCKREPLACE",
+      "label": "Replace block with another block",
+      "icon": true
+    },
+    {
+      "id": "ID_ACETBREAKL",
+      "label": "Break-line Symbol",
+      "icon": true
+    },
+    {
+      "id": "ID_ACETBURST",
+      "label": "Explode Attributes to Text",
+      "icon": true
+    },
+    {
+      "id": "ID_ACETNCOPY",
+      "label": "Copy Nested Objects",
+      "icon": true
+    },
+    {
+      "id": "ID_ACETSUPERHATCH_ACQUIRE",
+      "label": "Super hatch with existing image, block or Xref",
+      "icon": true
+    },
+    {
+      "id": "ID_ACETSUPERHATCH_BLOCK",
+      "label": "Super hatch, block",
+      "icon": true
+    },
+    {
+      "id": "ID_ACETSUPERHATCH_IMAGE",
+      "label": "Super hatch, image",
+      "icon": true
+    },
+    {
+      "id": "ID_ACETSUPERHATCH_WIPEOUT",
+      "label": "Super hatch, wipeout",
+      "icon": true
+    },
+    {
+      "id": "ID_ACETSUPERHATCH_XREF",
+      "label": "Super hatch, Xref",
+      "icon": true
+    },
+    {
+      "id": "ID_ACETTXT2MT",
+      "label": "Convert Text to Mtext",
+      "icon": true
+    },
+    {
+      "id": "ID_ASSISTANT",
+      "label": "Autodesk Assistant",
+      "icon": false
+    },
+    {
+      "id": "ID_ATTACH",
+      "label": "Attach",
+      "icon": true
+    },
+    {
+      "id": "ID_Acisin",
+      "label": "ACIS File...",
+      "icon": false
+    },
+    {
+      "id": "ID_ActivityInsights",
+      "label": "Activity Insights",
+      "icon": true
+    },
+    {
+      "id": "ID_AddSelected",
+      "label": "Add Selected",
+      "icon": true
+    },
+    {
+      "id": "ID_Ai_propch",
+      "label": "Properties",
+      "icon": false
+    },
+    {
+      "id": "ID_Ai_tiledv",
+      "label": "Viewports, Named Viewports...",
+      "icon": true
+    },
+    {
+      "id": "ID_AliasEdit",
+      "label": "Customize, Edit Command Aliases...",
+      "icon": false
+    },
+    {
+      "id": "ID_Align",
+      "label": "Align",
+      "icon": true
+    },
+    {
+      "id": "ID_AllScale",
+      "label": "View, AllScale",
+      "icon": false
+    },
+    {
+      "id": "ID_Angle",
+      "label": "Measure Angle",
+      "icon": true
+    },
+    {
+      "id": "ID_Appload",
+      "label": "Load Application...",
+      "icon": false
+    },
+    {
+      "id": "ID_Arc3point",
+      "label": "Arc, 3 Points",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcCeStAn",
+      "label": "Arc, Center, Start, Angle",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcCeStEn",
+      "label": "Arc, Center, Start, End",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcCeStLe",
+      "label": "Arc, Center, Start, Length",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcContin",
+      "label": "Arc, Continue",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcStCeAn",
+      "label": "Arc, Start, Center, Angle",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcStCeEn",
+      "label": "Arc, Start, Center, End",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcStCeLe",
+      "label": "Arc, Start, Center, Length",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcStEnAg",
+      "label": "Arc, Start, End, Angle",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcStEnDi",
+      "label": "Arc, Start, End, Direction",
+      "icon": true
+    },
+    {
+      "id": "ID_ArcStEnRa",
+      "label": "Arc, Start, End, Radius",
+      "icon": true
+    },
+    {
+      "id": "ID_Area",
+      "label": "Measure Area",
+      "icon": true
+    },
+    {
+      "id": "ID_AttSync",
+      "label": "Synchronize Attributes",
+      "icon": true
+    },
+    {
+      "id": "ID_Attdef",
+      "label": "Block, Define Attributes...",
+      "icon": false
+    },
+    {
+      "id": "ID_AttdispNo",
+      "label": "Attribute Display, Normal",
+      "icon": false
+    },
+    {
+      "id": "ID_AttdispOf",
+      "label": "Attribute Display, Off",
+      "icon": false
+    },
+    {
+      "id": "ID_AttdispOn",
+      "label": "Attribute Display, On",
+      "icon": false
+    },
+    {
+      "id": "ID_AtteditGlo",
+      "label": "Attribute, Global",
+      "icon": true
+    },
+    {
+      "id": "ID_BAttdef",
+      "label": "Define Attribute",
+      "icon": true
+    },
+    {
+      "id": "ID_BConvert",
+      "label": "Search and Convert",
+      "icon": true
+    },
+    {
+      "id": "ID_BLEND_CURVES",
+      "label": "Blend Curves",
+      "icon": false
+    },
+    {
+      "id": "ID_Base",
+      "label": "Block, Base",
+      "icon": true
+    },
+    {
+      "id": "ID_BattMan",
+      "label": "Attribute, Block Attribute Manager...",
+      "icon": true
+    },
+    {
+      "id": "ID_Bedit",
+      "label": "Block Editor",
+      "icon": true
+    },
+    {
+      "id": "ID_Bhatch",
+      "label": "Hatch...",
+      "icon": true
+    },
+    {
+      "id": "ID_Bmake",
+      "label": "Block, Make...",
+      "icon": true
+    },
+    {
+      "id": "ID_BodyChk",
+      "label": "Solid, Check",
+      "icon": false
+    },
+    {
+      "id": "ID_BodyCln",
+      "label": "Solid, Clean",
+      "icon": false
+    },
+    {
+      "id": "ID_Boundary",
+      "label": "Boundary...",
+      "icon": true
+    },
+    {
+      "id": "ID_Box",
+      "label": "Box",
+      "icon": false
+    },
+    {
+      "id": "ID_Break",
+      "label": "Break",
+      "icon": true
+    },
+    {
+      "id": "ID_BreakSele",
+      "label": "Break at Point",
+      "icon": true
+    },
+    {
+      "id": "ID_CHAMFER_EDGE",
+      "label": "Chamfer Edge",
+      "icon": false
+    },
+    {
+      "id": "ID_CHSPACE",
+      "label": "Change Space",
+      "icon": true
+    },
+    {
+      "id": "ID_CONV2SOLID",
+      "label": "Convert to Solid",
+      "icon": false
+    },
+    {
+      "id": "ID_CV_HIDE",
+      "label": "Surface CV - Hide",
+      "icon": false
+    },
+    {
+      "id": "ID_CV_SHOW",
+      "label": "Surface CV - Show",
+      "icon": false
+    },
+    {
+      "id": "ID_Centerline",
+      "label": "Centerline",
+      "icon": true
+    },
+    {
+      "id": "ID_Centermark",
+      "label": "Center Mark",
+      "icon": true
+    },
+    {
+      "id": "ID_Chamfer",
+      "label": "Chamfer",
+      "icon": true
+    },
+    {
+      "id": "ID_Circle2pt",
+      "label": "Circle, 2 Points",
+      "icon": true
+    },
+    {
+      "id": "ID_Circle3pt",
+      "label": "Circle, 3 Points",
+      "icon": true
+    },
+    {
+      "id": "ID_CircleDia",
+      "label": "Circle, Center, Diameter",
+      "icon": true
+    },
+    {
+      "id": "ID_CircleRad",
+      "label": "Circle, Center, Radius",
+      "icon": true
+    },
+    {
+      "id": "ID_CircleTTR",
+      "label": "Circle, Tan, Tan, Radius",
+      "icon": true
+    },
+    {
+      "id": "ID_CircleTTT",
+      "label": "Circle, Tan, Tan, Tan",
+      "icon": true
+    },
+    {
+      "id": "ID_CmdLine",
+      "label": "Command Line",
+      "icon": false
+    },
+    {
+      "id": "ID_Cone",
+      "label": "Cone",
+      "icon": false
+    },
+    {
+      "id": "ID_Constrained_Orbit",
+      "label": "3D Constrained Orbit",
+      "icon": false
+    },
+    {
+      "id": "ID_Content",
+      "label": "Blocks Palette",
+      "icon": false
+    },
+    {
+      "id": "ID_Conv2surface",
+      "label": "Convert to Surface",
+      "icon": false
+    },
+    {
+      "id": "ID_Copy",
+      "label": "Copy",
+      "icon": true
+    },
+    {
+      "id": "ID_Copybase",
+      "label": "Copy with Base Point",
+      "icon": true
+    },
+    {
+      "id": "ID_Copyclip",
+      "label": "Copy Clip",
+      "icon": true
+    },
+    {
+      "id": "ID_Count",
+      "label": "Count",
+      "icon": true
+    },
+    {
+      "id": "ID_CurScale",
+      "label": "View, CurrentScale",
+      "icon": false
+    },
+    {
+      "id": "ID_Cutbaseclip",
+      "label": "Cut with Base Point",
+      "icon": true
+    },
+    {
+      "id": "ID_Cutclip",
+      "label": "Cut",
+      "icon": true
+    },
+    {
+      "id": "ID_Cylinder",
+      "label": "Cylinder",
+      "icon": false
+    },
+    {
+      "id": "ID_DESKTOPANALYTICS",
+      "label": "Privacy Settings...",
+      "icon": false
+    },
+    {
+      "id": "ID_DWG_CLOSE",
+      "label": "Close",
+      "icon": false
+    },
+    {
+      "id": "ID_DataLink",
+      "label": "Data Link",
+      "icon": true
+    },
+    {
+      "id": "ID_DataLinkUpdate",
+      "label": "Update Data Link",
+      "icon": true
+    },
+    {
+      "id": "ID_DataLinkWrite",
+      "label": "Write Data Link",
+      "icon": true
+    },
+    {
+      "id": "ID_Ddcolor",
+      "label": "Color...",
+      "icon": false
+    },
+    {
+      "id": "ID_Ddcountlist",
+      "label": "Count...",
+      "icon": false
+    },
+    {
+      "id": "ID_Ddedit",
+      "label": "Text, Edit...",
+      "icon": false
+    },
+    {
+      "id": "ID_Ddim",
+      "label": "Dimension, Dimension Style...",
+      "icon": true
+    },
+    {
+      "id": "ID_Ddinsert",
+      "label": "Blocks Palette...",
+      "icon": true
+    },
+    {
+      "id": "ID_Ddptype",
+      "label": "Point Style...",
+      "icon": false
+    },
+    {
+      "id": "ID_Ddrename",
+      "label": "Rename...",
+      "icon": false
+    },
+    {
+      "id": "ID_Ddrmodes",
+      "label": "Drafting Settings...",
+      "icon": false
+    },
+    {
+      "id": "ID_Dducs",
+      "label": "UCS, Named UCS...",
+      "icon": false
+    },
+    {
+      "id": "ID_Detect",
+      "label": "Detect and Convert",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimaligne",
+      "label": "Dimension, Aligned",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimangula",
+      "label": "Dimension, Angular",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimarclen",
+      "label": "Dimension, Arc Length",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimbaseli",
+      "label": "Dimension, Baseline",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimbreak",
+      "label": "Dimension, Dimbreak",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimcontin",
+      "label": "Dimension, Continue",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimdiamet",
+      "label": "Dimension, Diameter",
+      "icon": true
+    },
+    {
+      "id": "ID_DimeditH",
+      "label": "Dimension, Align Text, lHome",
+      "icon": false
+    },
+    {
+      "id": "ID_Dimedito",
+      "label": "Dimension, Oblique",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimension",
+      "label": "Dimension",
+      "icon": true
+    },
+    {
+      "id": "ID_DimensionalConstraintConvert",
+      "label": "Dimensional Constraint, Convert",
+      "icon": true
+    },
+    {
+      "id": "ID_Diminspection",
+      "label": "Dimension, Diminspect",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimjogged",
+      "label": "Dimension, Jogged",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimjoglin",
+      "label": "Dimension, Dimjogline",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimlinear",
+      "label": "Dimension, Linear",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimordina",
+      "label": "Dimension, Ordinate",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimoverri",
+      "label": "Dimension, Override",
+      "icon": false
+    },
+    {
+      "id": "ID_Dimradius",
+      "label": "Dimension, Radius",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimreasso",
+      "label": "Dimension, Reassociate Dimensions",
+      "icon": true
+    },
+    {
+      "id": "ID_DimsOnly",
+      "label": "Draw Order, Dimension Objects Only",
+      "icon": true
+    },
+    {
+      "id": "ID_Dimspace",
+      "label": "Dimension, Dimspace",
+      "icon": true
+    },
+    {
+      "id": "ID_DimstyleA",
+      "label": "Dimension, Update",
+      "icon": false
+    },
+    {
+      "id": "ID_DimteditA",
+      "label": "Dimension, Align Text, Angle",
+      "icon": true
+    },
+    {
+      "id": "ID_DimteditC",
+      "label": "Dimension, Align Text, Center",
+      "icon": true
+    },
+    {
+      "id": "ID_DimteditL",
+      "label": "Dimension, Align Text, Left",
+      "icon": true
+    },
+    {
+      "id": "ID_DimteditR",
+      "label": "Dimension, Align Text, Right",
+      "icon": true
+    },
+    {
+      "id": "ID_Dist",
+      "label": "Measure Distance",
+      "icon": true
+    },
+    {
+      "id": "ID_DistantLight",
+      "label": "Light, New Distant Light",
+      "icon": false
+    },
+    {
+      "id": "ID_Divide",
+      "label": "Divide",
+      "icon": true
+    },
+    {
+      "id": "ID_Donut",
+      "label": "Donut",
+      "icon": true
+    },
+    {
+      "id": "ID_Download_OfflineHelp",
+      "label": "Download Offline Help",
+      "icon": false
+    },
+    {
+      "id": "ID_DrawordeA",
+      "label": "Draw Order, Bring Above Objects",
+      "icon": true
+    },
+    {
+      "id": "ID_DrawordeB",
+      "label": "Draw Order, Send to Back",
+      "icon": true
+    },
+    {
+      "id": "ID_DrawordeF",
+      "label": "Draw Order, Bring to Front",
+      "icon": true
+    },
+    {
+      "id": "ID_DrawordeU",
+      "label": "Draw Order, Send Under Objects",
+      "icon": true
+    },
+    {
+      "id": "ID_DwgCompare",
+      "label": "DWG Compare",
+      "icon": true
+    },
+    {
+      "id": "ID_Dxbin",
+      "label": "Drawing Exchange Binary...",
+      "icon": false
+    },
+    {
+      "id": "ID_EAttEdit",
+      "label": "Attribute, Single...",
+      "icon": true
+    },
+    {
+      "id": "ID_EXTRACTISOLINES",
+      "label": "Extract Isolines",
+      "icon": false
+    },
+    {
+      "id": "ID_EdgeColor",
+      "label": "Solid, Color edges",
+      "icon": false
+    },
+    {
+      "id": "ID_EdgeCopy",
+      "label": "Solid, Copy edges",
+      "icon": false
+    },
+    {
+      "id": "ID_Edgesurf",
+      "label": "Modeling, Meshes, Edge Surface",
+      "icon": false
+    },
+    {
+      "id": "ID_EditArray",
+      "label": "Edit Array",
+      "icon": true
+    },
+    {
+      "id": "ID_EllipseAr",
+      "label": "Ellipse, Arc",
+      "icon": true
+    },
+    {
+      "id": "ID_EllipseAx",
+      "label": "Ellipse, Axis, End",
+      "icon": true
+    },
+    {
+      "id": "ID_EllipseCe",
+      "label": "Ellipse, Center",
+      "icon": true
+    },
+    {
+      "id": "ID_Erase",
+      "label": "Erase",
+      "icon": true
+    },
+    {
+      "id": "ID_Explode",
+      "label": "Explode",
+      "icon": true
+    },
+    {
+      "id": "ID_Export",
+      "label": "Export...",
+      "icon": true
+    },
+    {
+      "id": "ID_ExportLayout",
+      "label": "Export Layout to Model...",
+      "icon": false
+    },
+    {
+      "id": "ID_ExportUserSettings",
+      "label": "Export Settings",
+      "icon": false
+    },
+    {
+      "id": "ID_ExtReferences",
+      "label": "External References",
+      "icon": false
+    },
+    {
+      "id": "ID_Extend",
+      "label": "Extend",
+      "icon": true
+    },
+    {
+      "id": "ID_ExtractEdges",
+      "label": "Extract Edges",
+      "icon": false
+    },
+    {
+      "id": "ID_Extrude",
+      "label": "Extrude",
+      "icon": false
+    },
+    {
+      "id": "ID_FILLET_EDGE",
+      "label": "Fillet Edge",
+      "icon": false
+    },
+    {
+      "id": "ID_FaceColor",
+      "label": "Solid, Color faces",
+      "icon": false
+    },
+    {
+      "id": "ID_FaceCopy",
+      "label": "Solid, Copy faces",
+      "icon": false
+    },
+    {
+      "id": "ID_FaceDel",
+      "label": "Solid, Delete faces",
+      "icon": false
+    },
+    {
+      "id": "ID_FaceExtru",
+      "label": "Solid, Extrude faces",
+      "icon": false
+    },
+    {
+      "id": "ID_FaceMove",
+      "label": "Solid, Move faces",
+      "icon": false
+    },
+    {
+      "id": "ID_FaceOffse",
+      "label": "Solid, Offset faces",
+      "icon": false
+    },
+    {
+      "id": "ID_FaceRotat",
+      "label": "Solid, Rotate faces",
+      "icon": false
+    },
+    {
+      "id": "ID_FaceTaper",
+      "label": "Solid, Taper faces",
+      "icon": false
+    },
+    {
+      "id": "ID_Field",
+      "label": "Field...",
+      "icon": true
+    },
+    {
+      "id": "ID_FileTab",
+      "label": "Show/Hide File Tab",
+      "icon": false
+    },
+    {
+      "id": "ID_Fillet",
+      "label": "Fillet",
+      "icon": true
+    },
+    {
+      "id": "ID_FlattenZ",
+      "label": "Flatten Objects",
+      "icon": true
+    },
+    {
+      "id": "ID_Free_Orbit",
+      "label": "3D Free Orbit",
+      "icon": false
+    },
+    {
+      "id": "ID_FullScreen",
+      "label": "Toggle Full Screen",
+      "icon": false
+    },
+    {
+      "id": "ID_GEOMETRYCLEANUP",
+      "label": "Geometry Cleanup",
+      "icon": true
+    },
+    {
+      "id": "ID_GROUP",
+      "label": "Group",
+      "icon": true
+    },
+    {
+      "id": "ID_Gradient",
+      "label": "Gradient...",
+      "icon": true
+    },
+    {
+      "id": "ID_HatchToBack",
+      "label": "Draw Order, Hatch to Back",
+      "icon": true
+    },
+    {
+      "id": "ID_Hatchedit",
+      "label": "Hatch Edit",
+      "icon": true
+    },
+    {
+      "id": "ID_Helix",
+      "label": "Helix",
+      "icon": true
+    },
+    {
+      "id": "ID_Help",
+      "label": "Help",
+      "icon": false
+    },
+    {
+      "id": "ID_Hide",
+      "label": "Hide",
+      "icon": false
+    },
+    {
+      "id": "ID_HideObjects",
+      "label": "Hide Objects",
+      "icon": false
+    },
+    {
+      "id": "ID_IMPORT",
+      "label": "Import...",
+      "icon": false
+    },
+    {
+      "id": "ID_INSERTVIEW",
+      "label": "Insert View",
+      "icon": true
+    },
+    {
+      "id": "ID_INSERT_ATTACH",
+      "label": "Attach...",
+      "icon": false
+    },
+    {
+      "id": "ID_INSERT_PDFSHXTEXT",
+      "label": "Recognize SHX Text",
+      "icon": true
+    },
+    {
+      "id": "ID_INSERT_PDFSHXTEXT_SETTINGS",
+      "label": "Recognition Settings",
+      "icon": true
+    },
+    {
+      "id": "ID_Id",
+      "label": "ID Point",
+      "icon": false
+    },
+    {
+      "id": "ID_ImageClip",
+      "label": "Clip, Image",
+      "icon": false
+    },
+    {
+      "id": "ID_Imageadju",
+      "label": "Image, Adjust...",
+      "icon": false
+    },
+    {
+      "id": "ID_Imageatta",
+      "label": "Raster Image Reference...",
+      "icon": false
+    },
+    {
+      "id": "ID_Imagefram",
+      "label": "Image, Frame",
+      "icon": false
+    },
+    {
+      "id": "ID_Imagequal",
+      "label": "Image, Quality",
+      "icon": false
+    },
+    {
+      "id": "ID_Import",
+      "label": "Import",
+      "icon": true
+    },
+    {
+      "id": "ID_ImportUserSettings",
+      "label": "Import Settings",
+      "icon": false
+    },
+    {
+      "id": "ID_Imprint",
+      "label": "Solid, Imprint",
+      "icon": false
+    },
+    {
+      "id": "ID_InsertField",
+      "label": "Insert Field",
+      "icon": true
+    },
+    {
+      "id": "ID_Interfere",
+      "label": "Interference Checking",
+      "icon": false
+    },
+    {
+      "id": "ID_Intersect",
+      "label": "Solid, Intersect",
+      "icon": false
+    },
+    {
+      "id": "ID_IsolateObjects",
+      "label": "Isolate Objects",
+      "icon": false
+    },
+    {
+      "id": "ID_Join",
+      "label": "Join",
+      "icon": true
+    },
+    {
+      "id": "ID_LAYCUR",
+      "label": "Layer, Change to Current Layer",
+      "icon": false
+    },
+    {
+      "id": "ID_LAYFRZ",
+      "label": "Layer, Layer Freeze",
+      "icon": false
+    },
+    {
+      "id": "ID_LAYISO",
+      "label": "Layer, Layer Isolate",
+      "icon": false
+    },
+    {
+      "id": "ID_LAYLCK",
+      "label": "Layer, Layer Lock",
+      "icon": false
+    },
+    {
+      "id": "ID_LAYMCH",
+      "label": "Layer, Layer Match",
+      "icon": false
+    },
+    {
+      "id": "ID_LAYOFF",
+      "label": "Layer, Layer Off",
+      "icon": false
+    },
+    {
+      "id": "ID_LAYULK",
+      "label": "Layer, Layer Unlock",
+      "icon": false
+    },
+    {
+      "id": "ID_Layer",
+      "label": "Layer Properties",
+      "icon": false
+    },
+    {
+      "id": "ID_LayerP",
+      "label": "Layer, Layer Previous",
+      "icon": false
+    },
+    {
+      "id": "ID_LayerStatesMgr",
+      "label": "Layer States Manager",
+      "icon": false
+    },
+    {
+      "id": "ID_Laymcur",
+      "label": "Layer, Make Object's Layer Current",
+      "icon": false
+    },
+    {
+      "id": "ID_Leader",
+      "label": "Dimension, Leader",
+      "icon": true
+    },
+    {
+      "id": "ID_LeaderOnly",
+      "label": "Draw Order, Leaders Only",
+      "icon": true
+    },
+    {
+      "id": "ID_Lengthen",
+      "label": "Lengthen",
+      "icon": true
+    },
+    {
+      "id": "ID_LightGlyphsShow",
+      "label": "Light Glyphs",
+      "icon": false
+    },
+    {
+      "id": "ID_Limits",
+      "label": "Drawing Limits",
+      "icon": false
+    },
+    {
+      "id": "ID_Line",
+      "label": "Line",
+      "icon": true
+    },
+    {
+      "id": "ID_Linetype",
+      "label": "Linetype...",
+      "icon": false
+    },
+    {
+      "id": "ID_Linewt",
+      "label": "Lineweight...",
+      "icon": false
+    },
+    {
+      "id": "ID_List",
+      "label": "List",
+      "icon": false
+    },
+    {
+      "id": "ID_Loft",
+      "label": "Loft",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_CLOSE_HOLE",
+      "label": "Close Hole",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_COLLAPSE_FACE_EDGE",
+      "label": "Collapse Face or Edge",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_CONVERT_TO_FACETED_SOLID",
+      "label": "Convert to Faceted Solid",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_CONVERT_TO_FACETED_SURFACE",
+      "label": "Convert to Faceted Surface",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_CONVERT_TO_SMOOTH_SOLID",
+      "label": "Convert to Smooth Solid",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_CONVERT_TO_SMOOTH_SURFACE",
+      "label": "Convert to Smooth Surface",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_EXTRUDE_FACE",
+      "label": "Extrude Face",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_MERGE_FACES",
+      "label": "Merge Face",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_PRIMITIVE_BOX",
+      "label": "Mesh Box",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_PRIMITIVE_CONE",
+      "label": "Mesh Cone",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_PRIMITIVE_CYLINDER",
+      "label": "Mesh Cylinder",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_PRIMITIVE_PYRAMID",
+      "label": "Mesh Pyramid",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_PRIMITIVE_SPHERE",
+      "label": "Mesh Sphere",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_PRIMITIVE_TORUS",
+      "label": "Mesh Torus",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_PRIMITIVE_WEDGE",
+      "label": "Mesh Wedge",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_SMOOTH",
+      "label": "Smooth Object",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_SMOOTH_CREASE",
+      "label": "Add Crease",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_SMOOTH_LESS",
+      "label": "Smooth Less",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_SMOOTH_MORE",
+      "label": "Smooth More",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_SMOOTH_REFINE",
+      "label": "Mesh Refine",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_SMOOTH_UNCREASE",
+      "label": "Remove Crease",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_SPIN_TRIANGE_FACES",
+      "label": "Spin Triangle Face",
+      "icon": false
+    },
+    {
+      "id": "ID_MESH_SPLIT_FACE",
+      "label": "Split Mesh Face",
+      "icon": false
+    },
+    {
+      "id": "ID_MOCORO",
+      "label": "Move/Copy/Rotate",
+      "icon": true
+    },
+    {
+      "id": "ID_MarkupImport",
+      "label": "Markup Import",
+      "icon": true
+    },
+    {
+      "id": "ID_Massprop",
+      "label": "Region/Mass Properties",
+      "icon": false
+    },
+    {
+      "id": "ID_Matchprop",
+      "label": "Match Properties",
+      "icon": true
+    },
+    {
+      "id": "ID_Materials",
+      "label": "Materials",
+      "icon": false
+    },
+    {
+      "id": "ID_Measure",
+      "label": "Measure",
+      "icon": true
+    },
+    {
+      "id": "ID_Menuload",
+      "label": "Customize, Interface...",
+      "icon": false
+    },
+    {
+      "id": "ID_Mirror",
+      "label": "Mirror",
+      "icon": true
+    },
+    {
+      "id": "ID_Mirror3d",
+      "label": "3D Mirror",
+      "icon": false
+    },
+    {
+      "id": "ID_Mleader",
+      "label": "Multileader",
+      "icon": true
+    },
+    {
+      "id": "ID_Mleader_Add",
+      "label": "Add Leader",
+      "icon": true
+    },
+    {
+      "id": "ID_Mleader_Align",
+      "label": "Multileader Align",
+      "icon": true
+    },
+    {
+      "id": "ID_Mleader_Collect",
+      "label": "Multileader Collect",
+      "icon": true
+    },
+    {
+      "id": "ID_Mleader_Remove",
+      "label": "Remove Leader",
+      "icon": true
+    },
+    {
+      "id": "ID_Mleader_Style",
+      "label": "Multileader Style Manager",
+      "icon": true
+    },
+    {
+      "id": "ID_Mledit",
+      "label": "Multiline Edit...",
+      "icon": false
+    },
+    {
+      "id": "ID_Mline",
+      "label": "Multiline",
+      "icon": true
+    },
+    {
+      "id": "ID_Move",
+      "label": "Move",
+      "icon": true
+    },
+    {
+      "id": "ID_Mtext",
+      "label": "Multiline Text...",
+      "icon": true
+    },
+    {
+      "id": "ID_NEWVIEW",
+      "label": "New View",
+      "icon": true
+    },
+    {
+      "id": "ID_New",
+      "label": "New Drawing...",
+      "icon": true
+    },
+    {
+      "id": "ID_NewLayout",
+      "label": "Layout, New Layout",
+      "icon": false
+    },
+    {
+      "id": "ID_NewSheet",
+      "label": "New Sheet Set...",
+      "icon": false
+    },
+    {
+      "id": "ID_OVERKILL",
+      "label": "Delete Duplicate Objects",
+      "icon": true
+    },
+    {
+      "id": "ID_Offset",
+      "label": "Offset",
+      "icon": true
+    },
+    {
+      "id": "ID_Open",
+      "label": "Open...",
+      "icon": true
+    },
+    {
+      "id": "ID_OpenDR",
+      "label": "Drawing Recovery Manager...",
+      "icon": false
+    },
+    {
+      "id": "ID_OpenSheet",
+      "label": "Open Sheet Set...",
+      "icon": false
+    },
+    {
+      "id": "ID_PACKAGEDRAWING",
+      "label": "Package drawing",
+      "icon": true
+    },
+    {
+      "id": "ID_PDFATTACH",
+      "label": "PDF Underlay...",
+      "icon": false
+    },
+    {
+      "id": "ID_PageSetupEdit",
+      "label": "Edit Page Setup...",
+      "icon": true
+    },
+    {
+      "id": "ID_Pan",
+      "label": "Pan, Realtime",
+      "icon": true
+    },
+    {
+      "id": "ID_PanDown",
+      "label": "Pan, Down",
+      "icon": false
+    },
+    {
+      "id": "ID_PanLeft",
+      "label": "Pan, Left",
+      "icon": false
+    },
+    {
+      "id": "ID_PanPick",
+      "label": "Pan, Point",
+      "icon": false
+    },
+    {
+      "id": "ID_PanRight",
+      "label": "Pan, Right",
+      "icon": false
+    },
+    {
+      "id": "ID_PanUp",
+      "label": "Pan, Up",
+      "icon": false
+    },
+    {
+      "id": "ID_Pastebloc",
+      "label": "Paste as Block",
+      "icon": false
+    },
+    {
+      "id": "ID_Pasteclip",
+      "label": "Paste",
+      "icon": true
+    },
+    {
+      "id": "ID_Pasteorig",
+      "label": "Paste to Original Coordinates",
+      "icon": true
+    },
+    {
+      "id": "ID_PathArray",
+      "label": "Path Array",
+      "icon": true
+    },
+    {
+      "id": "ID_Pedit",
+      "label": "Polyline Edit",
+      "icon": true
+    },
+    {
+      "id": "ID_PlanCurre",
+      "label": "Plan, Current UCS",
+      "icon": false
+    },
+    {
+      "id": "ID_PlanUCS",
+      "label": "Plan, Named UCS",
+      "icon": false
+    },
+    {
+      "id": "ID_PlanWorld",
+      "label": "Plan, World UCS",
+      "icon": false
+    },
+    {
+      "id": "ID_Planesurf",
+      "label": "Planar Surface",
+      "icon": false
+    },
+    {
+      "id": "ID_Pline",
+      "label": "Polyline",
+      "icon": true
+    },
+    {
+      "id": "ID_PlotSetup",
+      "label": "Page Setup Manager...",
+      "icon": true
+    },
+    {
+      "id": "ID_PlotStyMgr",
+      "label": "Plot Style Manager...",
+      "icon": false
+    },
+    {
+      "id": "ID_PlotStyle",
+      "label": "Plot Style...",
+      "icon": false
+    },
+    {
+      "id": "ID_PointLight",
+      "label": "Light, New Point Light",
+      "icon": false
+    },
+    {
+      "id": "ID_PointMult",
+      "label": "Point, Multiple Point",
+      "icon": true
+    },
+    {
+      "id": "ID_PointSing",
+      "label": "Point, Single Point",
+      "icon": true
+    },
+    {
+      "id": "ID_PolarArray",
+      "label": "Polar Array",
+      "icon": true
+    },
+    {
+      "id": "ID_Polygon",
+      "label": "Polygon",
+      "icon": true
+    },
+    {
+      "id": "ID_Polysolid",
+      "label": "Polysolid",
+      "icon": false
+    },
+    {
+      "id": "ID_Print",
+      "label": "Plot...",
+      "icon": true
+    },
+    {
+      "id": "ID_Properties",
+      "label": "Properties",
+      "icon": false
+    },
+    {
+      "id": "ID_Pub",
+      "label": "Publish...",
+      "icon": true
+    },
+    {
+      "id": "ID_Purge",
+      "label": "Purge...",
+      "icon": true
+    },
+    {
+      "id": "ID_Pyramid",
+      "label": "Pyramid",
+      "icon": false
+    },
+    {
+      "id": "ID_QDim",
+      "label": "Dimension, Quick Dimension",
+      "icon": true
+    },
+    {
+      "id": "ID_Qselect",
+      "label": "Quick Select...",
+      "icon": true
+    },
+    {
+      "id": "ID_QuickMeasure",
+      "label": "Quick Measure",
+      "icon": true
+    },
+    {
+      "id": "ID_Radius",
+      "label": "Measure Radius",
+      "icon": true
+    },
+    {
+      "id": "ID_Ray",
+      "label": "Ray",
+      "icon": true
+    },
+    {
+      "id": "ID_Rectang",
+      "label": "Rectangle",
+      "icon": true
+    },
+    {
+      "id": "ID_RectangularArray",
+      "label": "Rectangular Array",
+      "icon": true
+    },
+    {
+      "id": "ID_Redo",
+      "label": "Redo",
+      "icon": true
+    },
+    {
+      "id": "ID_Redrawall",
+      "label": "Redraw",
+      "icon": false
+    },
+    {
+      "id": "ID_RefEditor",
+      "label": "Xref and Block, Edit Reference In-Place",
+      "icon": false
+    },
+    {
+      "id": "ID_Regen",
+      "label": "Regen",
+      "icon": false
+    },
+    {
+      "id": "ID_Regenall",
+      "label": "Regen All",
+      "icon": false
+    },
+    {
+      "id": "ID_Region",
+      "label": "Region",
+      "icon": true
+    },
+    {
+      "id": "ID_ResetPalettes",
+      "label": "Reset Palettes",
+      "icon": false
+    },
+    {
+      "id": "ID_RevcloudFreehand",
+      "label": "Freehand Revision Cloud",
+      "icon": true
+    },
+    {
+      "id": "ID_RevcloudPolygonal",
+      "label": "Polygonal Revision Cloud",
+      "icon": true
+    },
+    {
+      "id": "ID_RevcloudRectangular",
+      "label": "Rectangular Revision Cloud",
+      "icon": true
+    },
+    {
+      "id": "ID_Reverse",
+      "label": "Reverse",
+      "icon": true
+    },
+    {
+      "id": "ID_Revolve",
+      "label": "Revolve",
+      "icon": false
+    },
+    {
+      "id": "ID_Revsurf",
+      "label": "Modeling, Meshes, Revolved Surface",
+      "icon": false
+    },
+    {
+      "id": "ID_Rotate",
+      "label": "Rotate",
+      "icon": true
+    },
+    {
+      "id": "ID_Rulesurf",
+      "label": "Modeling, Meshes, Ruled Surface",
+      "icon": false
+    },
+    {
+      "id": "ID_SHOWNEW",
+      "label": "Highlight New Features",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_BLEND",
+      "label": "Surface Blend",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_CONVTONURBS",
+      "label": "Convert to NURBS",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_CV_ADD",
+      "label": "Surface CV - Add",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_CV_REBUILD",
+      "label": "Surface CV - Rebuild",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_CV_REMOVE",
+      "label": "Surface CV - Remove",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_EXTEND",
+      "label": "Surface Extend",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_FILLET",
+      "label": "Surface Fillet",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_NETWORK",
+      "label": "Surface Network",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_OFFSET",
+      "label": "Surface Offset",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_PATCH",
+      "label": "Surface Patch",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_SCULPT",
+      "label": "Surface Sculpt",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_SPLINECV",
+      "label": "Spline",
+      "icon": true
+    },
+    {
+      "id": "ID_SURF_SPLINE_KNOT",
+      "label": "Spline Knot",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_TRIM",
+      "label": "Surface Trim",
+      "icon": false
+    },
+    {
+      "id": "ID_SURF_UNTRIM",
+      "label": "Surface Untrim",
+      "icon": false
+    },
+    {
+      "id": "ID_Save",
+      "label": "Save",
+      "icon": true
+    },
+    {
+      "id": "ID_Saveas",
+      "label": "Save As...",
+      "icon": true
+    },
+    {
+      "id": "ID_Scale",
+      "label": "Scale",
+      "icon": true
+    },
+    {
+      "id": "ID_ScaleList",
+      "label": "Scale List...",
+      "icon": false
+    },
+    {
+      "id": "ID_SelAll",
+      "label": "Select All",
+      "icon": false
+    },
+    {
+      "id": "ID_SelSimilar",
+      "label": "Select Similar",
+      "icon": true
+    },
+    {
+      "id": "ID_SendFeedback",
+      "label": "Send Feedback",
+      "icon": false
+    },
+    {
+      "id": "ID_Separate",
+      "label": "Solid, Separate",
+      "icon": false
+    },
+    {
+      "id": "ID_Setvar",
+      "label": "Set Variable",
+      "icon": false
+    },
+    {
+      "id": "ID_Share",
+      "label": "Share Drawing",
+      "icon": true
+    },
+    {
+      "id": "ID_SheetSetManager",
+      "label": "Sheet Set Manager",
+      "icon": false
+    },
+    {
+      "id": "ID_Shell",
+      "label": "Solid, Shell",
+      "icon": false
+    },
+    {
+      "id": "ID_Slice",
+      "label": "Slice",
+      "icon": false
+    },
+    {
+      "id": "ID_Soldraw",
+      "label": "Modeling, Setup, Drawing",
+      "icon": false
+    },
+    {
+      "id": "ID_Solprof",
+      "label": "Modeling, Setup, Profile",
+      "icon": false
+    },
+    {
+      "id": "ID_Solview",
+      "label": "Modeling, Setup, View",
+      "icon": false
+    },
+    {
+      "id": "ID_Spell",
+      "label": "Spell Check",
+      "icon": true
+    },
+    {
+      "id": "ID_Sphere",
+      "label": "Sphere",
+      "icon": false
+    },
+    {
+      "id": "ID_Spline",
+      "label": "Spline",
+      "icon": true
+    },
+    {
+      "id": "ID_Splinedit",
+      "label": "Spline Edit",
+      "icon": true
+    },
+    {
+      "id": "ID_SpotLight",
+      "label": "Light, New Spotlight",
+      "icon": false
+    },
+    {
+      "id": "ID_Status",
+      "label": "Status",
+      "icon": false
+    },
+    {
+      "id": "ID_StatusBar",
+      "label": "Status Bar",
+      "icon": false
+    },
+    {
+      "id": "ID_Stretch",
+      "label": "Stretch",
+      "icon": true
+    },
+    {
+      "id": "ID_Style",
+      "label": "Text Style...",
+      "icon": true
+    },
+    {
+      "id": "ID_Subtract",
+      "label": "Solid, Subtract",
+      "icon": false
+    },
+    {
+      "id": "ID_Sweep",
+      "label": "Sweep",
+      "icon": false
+    },
+    {
+      "id": "ID_Table",
+      "label": "Table...",
+      "icon": true
+    },
+    {
+      "id": "ID_Tabsurf",
+      "label": "Modeling, Meshes, Tabulated Surface",
+      "icon": false
+    },
+    {
+      "id": "ID_TblStyle",
+      "label": "Table Style...",
+      "icon": true
+    },
+    {
+      "id": "ID_Text",
+      "label": "Single Line Text",
+      "icon": true
+    },
+    {
+      "id": "ID_TextFind",
+      "label": "Find...",
+      "icon": true
+    },
+    {
+      "id": "ID_TextOnly",
+      "label": "Draw Order, Text Objects Only",
+      "icon": true
+    },
+    {
+      "id": "ID_Thicken",
+      "label": "Thicken",
+      "icon": false
+    },
+    {
+      "id": "ID_Thickness",
+      "label": "Thickness",
+      "icon": false
+    },
+    {
+      "id": "ID_Time",
+      "label": "Time",
+      "icon": false
+    },
+    {
+      "id": "ID_TmplLayou",
+      "label": "Layout, Layout from Template...",
+      "icon": false
+    },
+    {
+      "id": "ID_Tolerance",
+      "label": "Dimension, Tolerance...",
+      "icon": true
+    },
+    {
+      "id": "ID_ToolSets",
+      "label": "Tool Sets",
+      "icon": false
+    },
+    {
+      "id": "ID_Toolbar",
+      "label": "Show/Hide Toolbar",
+      "icon": false
+    },
+    {
+      "id": "ID_Torus",
+      "label": "Torus",
+      "icon": false
+    },
+    {
+      "id": "ID_TracePalette",
+      "label": "Traces...",
+      "icon": true
+    },
+    {
+      "id": "ID_Transpare",
+      "label": "Image, Transparency",
+      "icon": false
+    },
+    {
+      "id": "ID_Transparency",
+      "label": "Transparency",
+      "icon": false
+    },
+    {
+      "id": "ID_Trim",
+      "label": "Trim",
+      "icon": true
+    },
+    {
+      "id": "ID_TxtAllAnno",
+      "label": "Draw Order, All Annotation Objects",
+      "icon": true
+    },
+    {
+      "id": "ID_U",
+      "label": "Undo",
+      "icon": true
+    },
+    {
+      "id": "ID_Ucs3point",
+      "label": "UCS, 3 Point",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsFace",
+      "label": "UCS, Face",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsObject",
+      "label": "UCS, Object",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsOrigin",
+      "label": "UCS, Origin",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsPrevio",
+      "label": "UCS, Previous",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsView",
+      "label": "UCS, View",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsWorld",
+      "label": "UCS, World",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsXAxRot",
+      "label": "UCS, X",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsYAxRot",
+      "label": "UCS, Y",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsZAxRot",
+      "label": "UCS, Z",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsZAxVec",
+      "label": "UCS, Z Axis Vector",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsiconOn",
+      "label": "UCS Icon, On",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsiconOr",
+      "label": "UCS Icon, Origin",
+      "icon": false
+    },
+    {
+      "id": "ID_UcsiconPr",
+      "label": "UCS Icon, Properties...",
+      "icon": false
+    },
+    {
+      "id": "ID_UnIsolateObjects",
+      "label": "End Object Isolation",
+      "icon": false
+    },
+    {
+      "id": "ID_Ungroup",
+      "label": "Ungroup",
+      "icon": true
+    },
+    {
+      "id": "ID_Union",
+      "label": "Solid, Union",
+      "icon": false
+    },
+    {
+      "id": "ID_Units",
+      "label": "Units...",
+      "icon": false
+    },
+    {
+      "id": "ID_UpdField",
+      "label": "Update Fields",
+      "icon": true
+    },
+    {
+      "id": "ID_ViewcubeOn",
+      "label": "ViewCube Display",
+      "icon": false
+    },
+    {
+      "id": "ID_ViewcubePr",
+      "label": "Viewcube, Settings...",
+      "icon": false
+    },
+    {
+      "id": "ID_Volume",
+      "label": "Measure Volume",
+      "icon": false
+    },
+    {
+      "id": "ID_VpPoly",
+      "label": "Viewports, Polygonal Viewport",
+      "icon": true
+    },
+    {
+      "id": "ID_VpSingle",
+      "label": "Viewports, Single Viewport",
+      "icon": true
+    },
+    {
+      "id": "ID_VpointBac",
+      "label": "View, Back",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointBot",
+      "label": "View, Bottom",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointFro",
+      "label": "View, Front",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointLef",
+      "label": "View, Left",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointNE",
+      "label": "View, NE Isometric",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointNW",
+      "label": "View, NW Isometric",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointRig",
+      "label": "View, Right",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointSE",
+      "label": "View, SE Isometric",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointSW",
+      "label": "View, SW Isometric",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointTop",
+      "label": "View, Top",
+      "icon": false
+    },
+    {
+      "id": "ID_VpointTri",
+      "label": "View, Viewpoint",
+      "icon": false
+    },
+    {
+      "id": "ID_VportClip",
+      "label": "Clip, Viewport",
+      "icon": false
+    },
+    {
+      "id": "ID_Vports2",
+      "label": "Viewports, 2 Viewports",
+      "icon": false
+    },
+    {
+      "id": "ID_Vports3",
+      "label": "Viewports, 3 Viewports",
+      "icon": false
+    },
+    {
+      "id": "ID_Vports4",
+      "label": "Viewports, 4 Viewports",
+      "icon": false
+    },
+    {
+      "id": "ID_VportsDel",
+      "label": "Viewports, Object",
+      "icon": true
+    },
+    {
+      "id": "ID_VportsJoi",
+      "label": "Viewports, Join",
+      "icon": false
+    },
+    {
+      "id": "ID_VportsRes",
+      "label": "Viewports, Polygonal Viewport",
+      "icon": false
+    },
+    {
+      "id": "ID_VportsSav",
+      "label": "Viewports, New Viewports...",
+      "icon": true
+    },
+    {
+      "id": "ID_VportsSin",
+      "label": "Viewports, 1 Viewport",
+      "icon": false
+    },
+    {
+      "id": "ID_Wedge",
+      "label": "Wedge",
+      "icon": false
+    },
+    {
+      "id": "ID_Wipeout",
+      "label": "Wipeout",
+      "icon": true
+    },
+    {
+      "id": "ID_XOpen",
+      "label": "Xref and Block, Open Reference",
+      "icon": false
+    },
+    {
+      "id": "ID_Xattach",
+      "label": "DWG Reference...",
+      "icon": false
+    },
+    {
+      "id": "ID_Xbind",
+      "label": "Xref, Bind...",
+      "icon": false
+    },
+    {
+      "id": "ID_Xclipfram",
+      "label": "Xref, Frame",
+      "icon": false
+    },
+    {
+      "id": "ID_Xline",
+      "label": "Construction Line",
+      "icon": true
+    },
+    {
+      "id": "ID_XrefClip",
+      "label": "Clip, Xref",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomAll",
+      "label": "Zoom, All",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomCente",
+      "label": "Zoom, Center",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomDynam",
+      "label": "Zoom, Dynamic",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomExten",
+      "label": "Zoom Extents",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomIn",
+      "label": "Zoom, In",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomObjec",
+      "label": "Zoom, Object",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomOut",
+      "label": "Zoom, Out",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomPrevi",
+      "label": "Zoom, Previous",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomRealt",
+      "label": "Zoom Realtime",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomScale",
+      "label": "Zoom, Scale",
+      "icon": false
+    },
+    {
+      "id": "ID_ZoomWindo",
+      "label": "Zoom Window",
+      "icon": true
+    },
+    {
+      "id": "MMU_0031",
+      "label": "Dimensional Constraint, Linear",
+      "icon": true
+    },
+    {
+      "id": "MM_1561",
+      "label": "Delete",
+      "icon": false
+    },
+    {
+      "id": "MM_1589",
+      "label": "Block Description...",
+      "icon": false
+    },
+    {
+      "id": "MM_1719",
+      "label": "Modeling, Section Plane",
+      "icon": false
+    },
+    {
+      "id": "MM_1721",
+      "label": "Visual Styles, Realistic",
+      "icon": false
+    },
+    {
+      "id": "MM_1722",
+      "label": "Visual Styles, Wireframe",
+      "icon": false
+    },
+    {
+      "id": "MM_1723",
+      "label": "Visual Styles, Hidden",
+      "icon": false
+    },
+    {
+      "id": "MM_1725",
+      "label": "Visual Styles, 2D Wireframe",
+      "icon": false
+    },
+    {
+      "id": "MM_1726",
+      "label": "Visual Styles, Conceptual",
+      "icon": false
+    },
+    {
+      "id": "MM_1735",
+      "label": "Add/Delete Scales...",
+      "icon": false
+    },
+    {
+      "id": "MM_1736",
+      "label": "Synchronize Multiple-scale Positions",
+      "icon": false
+    },
+    {
+      "id": "MM_1740",
+      "label": "Visual Styles, Shades of Gray",
+      "icon": false
+    },
+    {
+      "id": "MM_1741",
+      "label": "Visual Styles, Sketchy",
+      "icon": false
+    },
+    {
+      "id": "MM_1742",
+      "label": "Visual Styles, X-Ray",
+      "icon": false
+    },
+    {
+      "id": "MM_1743",
+      "label": "Visual Styles, Shaded with Edges",
+      "icon": false
+    },
+    {
+      "id": "MM_1744",
+      "label": "Visual Styles, Shaded",
+      "icon": false
+    },
+    {
+      "id": "MM_1900",
+      "label": "Add Current Scale",
+      "icon": false
+    },
+    {
+      "id": "MM_1901",
+      "label": "Delete Current Scale",
+      "icon": false
+    },
+    {
+      "id": "MM_1904",
+      "label": "Toggle Palette's State",
+      "icon": false
+    },
+    {
+      "id": "MM_1934",
+      "label": "Write Block...",
+      "icon": true
+    },
+    {
+      "id": "MM_AutoConstrain",
+      "label": "AutoConstrain",
+      "icon": true
+    },
+    {
+      "id": "MM_ConstraintBarSettings",
+      "label": "Constraint Settings...",
+      "icon": true
+    },
+    {
+      "id": "MM_Del_Constraint",
+      "label": "Delete Constraints",
+      "icon": true
+    },
+    {
+      "id": "MM_DimConstraint_Aligned",
+      "label": "Dimensional Constraint, Aligned",
+      "icon": true
+    },
+    {
+      "id": "MM_DimConstraint_Angular",
+      "label": "Dimensional Constraint, Angular",
+      "icon": true
+    },
+    {
+      "id": "MM_DimConstraint_Diameter",
+      "label": "Dimensional Constraint, Diameter",
+      "icon": true
+    },
+    {
+      "id": "MM_DimConstraint_Horizontal",
+      "label": "Dimensional Constraint, Horizontal",
+      "icon": true
+    },
+    {
+      "id": "MM_DimConstraint_Radius",
+      "label": "Dimensional Constraint, Radius",
+      "icon": true
+    },
+    {
+      "id": "MM_DimConstraint_Vertical",
+      "label": "Dimensional Constraint, Vertical",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Coincident",
+      "label": "Geometric Constraint, Coincident",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Colinear",
+      "label": "Geometric Constraint, Collinear",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Concentric",
+      "label": "Geometric Constraint, Concentric",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Equal",
+      "label": "Geometric Constraint, Equal",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Fix",
+      "label": "Geometric Constraint, Fix",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Horizontal",
+      "label": "Geometric Constraint, Horizontal",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Parallel",
+      "label": "Geometric Constraint, Parallel",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Perpendicular",
+      "label": "Geometric Constraint, Perpendicular",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Symmetric",
+      "label": "Geometric Constraint, Symmetric",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Tangent",
+      "label": "Geometric Constraint, Tangent",
+      "icon": true
+    },
+    {
+      "id": "MM_GeomConstraint_Vertical",
+      "label": "Geometric Constraint, Vertical",
+      "icon": true
+    },
+    {
+      "id": "MM_Geomconstraint_smooth",
+      "label": "Geometric Constraint, Smooth",
+      "icon": true
+    },
+    {
+      "id": "MM_Hide_All",
+      "label": "Hide All Geometric Constraints",
+      "icon": true
+    },
+    {
+      "id": "MM_Hide_All_Dyn",
+      "label": "Hide All Dynamic Constriants",
+      "icon": true
+    },
+    {
+      "id": "MM_Hide_All_Dyn_Constr",
+      "label": "Hide All Dynamic Constraints",
+      "icon": false
+    },
+    {
+      "id": "MM_LAYUNISO",
+      "label": "Layer, Layer Unisolate",
+      "icon": false
+    },
+    {
+      "id": "MM_SelectObject",
+      "label": "Show Constraints",
+      "icon": true
+    },
+    {
+      "id": "MM_Show_All",
+      "label": "Show All Geometric Constraints",
+      "icon": true
+    },
+    {
+      "id": "MM_Show_All_Dyn",
+      "label": "Show All Dynamic Constraints",
+      "icon": true
+    },
+    {
+      "id": "MM_Show_All_Dyn_Constr",
+      "label": "Show All Dynamic Constraints",
+      "icon": false
+    },
+    {
+      "id": "MM_Show_Dyn_Constr",
+      "label": "Show Dynamic Constraints",
+      "icon": true
+    },
+    {
+      "id": "MM_WhatsNew",
+      "label": "What's new",
+      "icon": false
+    },
+    {
+      "id": "UI_Layer_freeze",
+      "label": "Freeze object layer",
+      "icon": true
+    },
+    {
+      "id": "UI_Layer_isolate",
+      "label": "Isolate layers",
+      "icon": true
+    },
+    {
+      "id": "UI_Layer_lock",
+      "label": "Lock object layer",
+      "icon": true
+    },
+    {
+      "id": "UI_Layer_makeCurrent",
+      "label": "Make current",
+      "icon": true
+    },
+    {
+      "id": "UI_Layer_off",
+      "label": "Turn object layer off",
+      "icon": true
+    },
+    {
+      "id": "UI_Layer_previous",
+      "label": "Previous layer",
+      "icon": true
+    },
+    {
+      "id": "UI_Layer_unisolate",
+      "label": "Unisolate layers",
+      "icon": true
+    },
+    {
+      "id": "UI_Palette_blocks",
+      "label": "Blocks palette",
+      "icon": true
+    },
+    {
+      "id": "UI_Palette_content",
+      "label": "Content palette",
+      "icon": true
+    },
+    {
+      "id": "UI_Palette_layers",
+      "label": "Layers palette",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_AnnotationScaleSync_off",
+      "label": "Annotation scale sync",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_AnnotationScale_off",
+      "label": "Annotation scale",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_AnnotationVisibility_off",
+      "label": "Annotation visibility",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_AnnotationVisibility_on",
+      "label": "Annotation visibility",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_AutoScale_off",
+      "label": "Annotation auto scale",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_AutoScale_on",
+      "label": "Annotation auto scale",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_DynamicInput_off",
+      "label": "Dynamic input",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_DynamicInput_on",
+      "label": "Dynamic input",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_GridMode_off",
+      "label": "Grid display",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_GridMode_on",
+      "label": "Grid display",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_GroupSelection_off",
+      "label": "Group selection",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_GroupSelection_on",
+      "label": "Group selection",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_IsolateObjects_off",
+      "label": "Isolate objects",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_LineWeight_off",
+      "label": "Lineweight display",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_LineWeight_on",
+      "label": "Lineweight display",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_LockViewport_off",
+      "label": "Lock viewport",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_LockViewport_on",
+      "label": "Lock viewport",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_ObjectSnapTracking_off",
+      "label": "Object snap tracking",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_ObjectSnapTracking_on",
+      "label": "Object snap tracking",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_ObjectSnap_off",
+      "label": "Object snap",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_ObjectSnap_on",
+      "label": "Object snap",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_OrthoMode_off",
+      "label": "Ortho mode",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_OrthoMode_on",
+      "label": "Ortho mode",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_PolarTracking_off",
+      "label": "Polar tracking",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_PolarTracking_on",
+      "label": "Polar tracking",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_SnapMode_off",
+      "label": "Snap mode",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_SnapMode_on",
+      "label": "Snap mode",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_Transparency_off",
+      "label": "Transparency display",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_Transparency_on",
+      "label": "Transparency display",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_VPMax_off",
+      "label": "Viewport maximize",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_VPMax_on",
+      "label": "Viewport maximize",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_ViewportScale_off",
+      "label": "Viewport scale",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_grid_off",
+      "label": "grid",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_grid_on",
+      "label": "grid",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_objectSnap_off",
+      "label": "objectSnap",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_objectSnap_on",
+      "label": "objectSnap",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_ortho_off",
+      "label": "ortho",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_ortho_on",
+      "label": "ortho",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_snap_off",
+      "label": "snap",
+      "icon": true
+    },
+    {
+      "id": "UI_Status_snap_on",
+      "label": "snap",
+      "icon": true
+    },
+    {
+      "id": "UI_Toolset_collapse",
+      "label": "Collapse toolsets",
+      "icon": true
+    },
+    {
+      "id": "UI_Toolset_drafting",
+      "label": "Drafting",
+      "icon": true
+    },
+    {
+      "id": "UI_Toolset_expand",
+      "label": "Expand toolsets",
+      "icon": true
+    },
+    {
+      "id": "UI_Toolset_modeling",
+      "label": "Modeling",
+      "icon": true
+    }
+  ]
+}

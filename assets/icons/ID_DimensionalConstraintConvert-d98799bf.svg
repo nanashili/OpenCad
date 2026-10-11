@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<title>Dimensional Constraint, Convert</title>
+<line x1="4" y1="5" x2="4" y2="21" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="20" y1="5" x2="20" y2="21" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="12" y1="12" x2="4" y2="12" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="4" y1="12" x2="6.47601" y2="10.3061" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="4" y1="12" x2="6.47601" y2="13.6939" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="12" y1="12" x2="20" y2="12" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="20" y1="12" x2="17.524" y2="13.6939" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="20" y1="12" x2="17.524" y2="10.3061" stroke="#81c9ec" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="8" y1="3" x2="16" y2="3" stroke="#e7b76c" stroke-width="1.35" stroke-linecap="round"/>
+</svg>

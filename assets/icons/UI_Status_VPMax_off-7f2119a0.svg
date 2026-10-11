@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<title>Viewport maximize</title>
+<line x1="3" y1="5" x2="21" y2="5" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="21" y1="5" x2="21" y2="19" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="21" y1="19" x2="3" y2="19" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="3" y1="19" x2="3" y2="5" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<circle cx="3" cy="5" r="1.2" fill="#81c9ec" stroke="#81c9ec" stroke-width="1.35"/>
+<circle cx="21" cy="19" r="1.2" fill="#81c9ec" stroke="#81c9ec" stroke-width="1.35"/>
+</svg>

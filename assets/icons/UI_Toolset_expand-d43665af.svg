@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+<title>Expand toolsets</title>
+<line x1="12" y1="5" x2="8" y2="12" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="8" y1="12" x2="12" y2="19" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="18" y1="5" x2="14" y2="12" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+<line x1="14" y1="12" x2="18" y2="19" stroke="#d8dee7" stroke-width="1.35" stroke-linecap="round"/>
+</svg>

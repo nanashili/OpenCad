@@ -1,0 +1,11 @@
+/target/
+/dist/
+/work/
+/assets/autocad-ui/
+/React/
+.DS_Store
+*.dwl
+*.dwl2
+*.log
+__pycache__/
+*.pyc
