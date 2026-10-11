@@ -319,7 +319,9 @@ impl OpenCadApp {
 
     fn prompt(&self) -> &'static str {
         if self.tool == Tool::Polyline
-            && let Some(prompt) = self.pline_width_prompt()
+            && let Some(prompt) = self
+                .pline_width_prompt()
+                .or_else(|| self.pline_arc_prompt())
         {
             return prompt;
         }
@@ -331,7 +333,7 @@ impl OpenCadApp {
             (Tool::Line, _) => "LINE · Next point, U to undo, C to close, or Enter to finish.",
             (Tool::Polyline, 0) => "PLINE · Specify first point: x,y[,z]",
             (Tool::Polyline, _) => {
-                "PLINE · Next vertex, Width / Halfwidth, U to undo, C to close, or Enter to finish."
+                "PLINE · Next vertex, Arc / Width / Halfwidth, U to undo, C to close, or Enter to finish."
             }
             (Tool::Circle, 0) => "CIRCLE · Specify center: x,y[,z]",
             (Tool::Circle, _) => "CIRCLE · Specify radius or a point on the circle.",
@@ -410,6 +412,9 @@ impl OpenCadApp {
     fn finish_polyline(&mut self, closed: bool) -> Result<(), String> {
         if self.pline_width_prompt().is_some() {
             return Err("Complete or cancel the PLINE width values before finishing.".into());
+        }
+        if self.pline_arc_pending() {
+            return Err("Complete or cancel the PLINE arc construction before finishing.".into());
         }
         let polyline = self.pline_candidate(None, closed)?;
         self.add_entities(vec![Entity::Polyline(polyline)])?;
@@ -794,10 +799,22 @@ impl OpenCadApp {
             }
         }
         if self.tool == Tool::Polyline {
-            for (key, option) in [(Key::W, "Width"), (Key::H, "Halfwidth")] {
+            for (key, option) in [
+                (Key::W, "Width"),
+                (Key::H, "Halfwidth"),
+                (Key::A, "A"),
+                (Key::L, "Line"),
+                (Key::D, "Direction"),
+                (Key::S, "Second pt"),
+            ] {
                 if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, key)) {
                     self.execute(option);
                 }
+            }
+            if self.pline_arc_prompt().is_some()
+                && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::R))
+            {
+                self.execute("Radius");
             }
         }
         if self.tool == Tool::Mirror && self.points.len() == 2 {

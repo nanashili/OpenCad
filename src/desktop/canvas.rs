@@ -848,8 +848,14 @@ impl OpenCadApp {
         };
         match self.tool {
             Tool::Polyline => {
-                if let Ok(polyline) = self.pline_candidate(Some(cursor), false) {
+                if let Ok(polyline) = self
+                    .pline_candidate(Some(cursor), false)
+                    .or_else(|_| self.pline_candidate(None, false))
+                {
                     self.draw_entity(painter, &Entity::Polyline(polyline), rect, stroke);
+                }
+                if let Some(guide) = self.pline_arc_guide(cursor) {
+                    self.draw_entity(painter, &Entity::Line(guide), rect, stroke);
                 }
             }
             Tool::Line => self.draw_entity(

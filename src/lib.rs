@@ -15,6 +15,7 @@ mod line;
 mod linetype;
 mod offset;
 mod polyline;
+mod polyline_arc;
 mod svg;
 mod transform;
 mod trim;

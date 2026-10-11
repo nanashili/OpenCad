@@ -265,3 +265,159 @@ fn svg_bounds_arc_flags_and_clockwise_patterns_follow_curved_segments() {
         Err(SvgError::Linetype(LinetypeError::TooDense))
     );
 }
+
+// Creation constructions need ordered tangents and a through-point solution;
+// DXF import tests alone only check already supplied bulges.
+#[test]
+fn tangent_arc_construction_preserves_signed_minor_major_and_straight_solutions() {
+    let start = point(0.0, 0.0, 7.0);
+    let quarter = (PI / 8.0).tan();
+    let major = (3.0 * PI / 8.0).tan();
+    for (end, bulge, midpoint, tangent) in [
+        (
+            point(10.0, 10.0, 7.0),
+            quarter,
+            point(50.0_f64.sqrt(), 10.0 - 50.0_f64.sqrt(), 7.0),
+            (0.0, 1.0),
+        ),
+        (
+            point(10.0, -10.0, 7.0),
+            -quarter,
+            point(50.0_f64.sqrt(), -10.0 + 50.0_f64.sqrt(), 7.0),
+            (0.0, -1.0),
+        ),
+        (
+            point(-10.0, 10.0, 7.0),
+            major,
+            point(50.0_f64.sqrt(), 10.0 + 50.0_f64.sqrt(), 7.0),
+            (0.0, -1.0),
+        ),
+        (
+            point(-10.0, -10.0, 7.0),
+            -major,
+            point(50.0_f64.sqrt(), -10.0 - 50.0_f64.sqrt(), 7.0),
+            (0.0, 1.0),
+        ),
+        (
+            point(0.0, 20.0, 7.0),
+            1.0,
+            point(10.0, 10.0, 7.0),
+            (-1.0, 0.0),
+        ),
+    ] {
+        let segment = PolylineSegment::arc_from_tangent(start, end, (5.0, 0.0)).unwrap();
+        near(segment.bulge(), bulge);
+        near_point(segment.point_at_fraction(0.0).unwrap(), start);
+        near_point(segment.point_at_fraction(1.0).unwrap(), end);
+        near_point(segment.point_at_fraction(0.5).unwrap(), midpoint);
+        let actual = segment.end_tangent_xy().unwrap();
+        near(actual.0, tangent.0);
+        near(actual.1, tangent.1);
+        let restored =
+            Polyline2::with_bulges(vec![start, end], vec![segment.bulge(), 0.0], false).unwrap();
+        near(restored.length().unwrap(), segment.length().unwrap());
+        let continued = PolylineSegment::arc_from_tangent(end, point(20.0, 20.0, 7.0), actual);
+        // All except the collinear backward chord admit a finite continuation.
+        if end == point(0.0, 20.0, 7.0) {
+            assert!(continued.is_err());
+        } else {
+            let continued = continued.unwrap();
+            let ahead = continued.point_at_fraction(1e-7).unwrap();
+            let dx = ahead.x() - end.x();
+            let dy = ahead.y() - end.y();
+            let length = dx.hypot(dy);
+            assert!((dx / length - actual.0).abs() < 1e-6);
+            assert!((dy / length - actual.1).abs() < 1e-6);
+        }
+    }
+    let straight =
+        PolylineSegment::arc_from_tangent(start, point(10.0, 0.0, 7.0), (1.0, 0.0)).unwrap();
+    assert!(matches!(straight, PolylineSegment::Line(_)));
+    assert_eq!(straight.bulge(), 0.0);
+    assert_eq!(straight.end_tangent_xy().unwrap(), (1.0, 0.0));
+    let semicircle_end = point(0.0, 20.0, 7.0);
+    let semicircle = PolylineSegment::arc_from_tangent(start, semicircle_end, (1.0, 0.0)).unwrap();
+    assert!(matches!(
+        PolylineSegment::arc_from_tangent(
+            semicircle_end,
+            point(-10.0, 20.0, 7.0),
+            semicircle.end_tangent_xy().unwrap()
+        )
+        .unwrap(),
+        PolylineSegment::Line(_)
+    ));
+    for magnitude in [1e-320, 1.0, f64::MAX] {
+        let diagonal =
+            PolylineSegment::arc_from_tangent(start, point(0.0, 20.0, 7.0), (magnitude, magnitude))
+                .unwrap();
+        near(diagonal.bulge(), quarter);
+    }
+}
+
+#[test]
+fn three_point_arcs_choose_the_locus_through_the_middle_pick_at_varied_scales() {
+    let quarter = (PI / 8.0).tan();
+    let major = (3.0 * PI / 8.0).tan();
+    for scale in [1e-150, 1.0, 1e150] {
+        let p = |x, y| point(x * scale, y * scale, 7.0);
+        for (through, end, bulge, fraction) in [
+            (p(0.0, 1.0), p(-1.0, 0.0), 1.0, 0.5),
+            (p(0.0, -1.0), p(-1.0, 0.0), -1.0, 0.5),
+            (p(-1.0, 0.0), p(0.0, -1.0), major, 2.0 / 3.0),
+            (p(-1.0, 0.0), p(0.0, 1.0), -major, 2.0 / 3.0),
+            (p((PI / 6.0).cos(), 0.5), p(0.0, 1.0), quarter, 1.0 / 3.0),
+        ] {
+            let start = p(1.0, 0.0);
+            let segment = PolylineSegment::arc_through(start, through, end).unwrap();
+            near(segment.bulge(), bulge);
+            let actual = segment.point_at_fraction(fraction).unwrap();
+            near(actual.x() / scale, through.x() / scale);
+            near(actual.y() / scale, through.y() / scale);
+            assert_eq!(actual.z(), 7.0);
+            near(segment.length().unwrap() / scale, 4.0 * bulge.abs().atan());
+            let reversed = PolylineSegment::arc_through(end, through, start).unwrap();
+            near(reversed.bulge(), -bulge);
+            near(
+                reversed.length().unwrap() / scale,
+                segment.length().unwrap() / scale,
+            );
+        }
+    }
+}
+
+#[test]
+fn arc_creation_rejects_incomplete_degenerate_nonplanar_and_unrepresentable_geometry() {
+    let start = point(0.0, 0.0, 7.0);
+    let end = point(10.0, 0.0, 7.0);
+    for through in [
+        start,
+        end,
+        point(5.0, 0.0, 7.0),
+        point(5.0, 1e-16, 7.0),
+        point(5.0, 1.0, 8.0),
+    ] {
+        assert!(PolylineSegment::arc_through(start, through, end).is_err());
+    }
+    assert!(PolylineSegment::arc_through(start, point(5.0, 2.0, 7.0), start).is_err());
+    for tangent in [
+        (0.0, 0.0),
+        (f64::NAN, 1.0),
+        (f64::INFINITY, 0.0),
+        (-1.0, 0.0),
+    ] {
+        assert!(PolylineSegment::arc_from_tangent(start, end, tangent).is_err());
+    }
+    assert!(PolylineSegment::arc_from_tangent(start, start, (1.0, 0.0)).is_err());
+    assert!(PolylineSegment::arc_from_tangent(start, point(1.0, 1.0, 8.0), (1.0, 0.0)).is_err());
+    assert!(
+        PolylineSegment::arc_from_tangent(start, point(-10.0, 1e-300, 7.0), (1.0, 0.0)).is_err()
+    );
+    let huge = point(-f64::MAX, 0.0, 7.0);
+    assert!(
+        PolylineSegment::arc_from_tangent(huge, point(f64::MAX, 1.0, 7.0), (1.0, 0.0)).is_err()
+    );
+    assert!(
+        PolylineSegment::arc_through(huge, point(0.0, 1.0, 7.0), point(f64::MAX, 0.0, 7.0))
+            .is_err()
+    );
+}

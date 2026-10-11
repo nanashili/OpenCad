@@ -513,7 +513,11 @@ impl Entity {
     }
 }
 
-fn segment(start: Point3, end: Point3, bulge: f64) -> Result<PolylineSegment, GeometryError> {
+pub(super) fn segment(
+    start: Point3,
+    end: Point3,
+    bulge: f64,
+) -> Result<PolylineSegment, GeometryError> {
     let line = Line3::new(start, end);
     if bulge == 0.0 || start == end {
         // Coincident endpoints do not determine a unique circular locus.

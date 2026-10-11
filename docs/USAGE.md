@@ -72,8 +72,53 @@ on a closing edge, and restores the removed edge's pair on draft U/Undo. Duplica
 points are accepted; their zero-length edges have no filled area. In-command
 width choices leave PLINEWID unchanged; setting PLINEWID during a draft affects
 later PLINE commands. These details are OpenCad policies whose native parity is
-unverified. PLINE currently creates straight segments; its arc mode remains
-unfinished. Curved segments can be set through the bulge properties afterward.
+unverified. Width and Halfwidth also apply to interactive arc segments.
+
+## Polyline arc creation
+
+After the first interactive PLINE point, **Arc** (`A`) enters arc mode.
+An endpoint creates an arc tangent to the preceding line or arc. A first arc
+has no preceding tangent: use **Direction** or **Second pt** to define it.
+
+- **Direction** (`D`): pick a point defining the starting tangent, then the arc endpoint.
+- **Second pt** (`S`, `SE`): pick a point on the arc, then its endpoint. The arc
+  passes through all three points in order, including clockwise and major arcs.
+- **Line** (`L`): return to straight segments within the same polyline.
+- **Width** / **Halfwidth**: set the next segment's taper, with the same carry
+  behavior as straight segments. The preview shows the curved fill.
+
+```text
+PLINE
+0,0
+10,0
+Arc
+20,10
+10,20
+Line
+0,20
+Close
+```
+
+Direction and Second pt collect auxiliary picks without adding vertices. Exit
+cancels a construction option; Arc or Line also discards its unfinished picks.
+Enter and Close require the pending construction to be completed or canceled.
+U/Undo removes an accepted segment, restores its width pair, and keeps the current
+line/arc mode. Removing the starting vertex resets to line mode. Escape discards
+the entire draft. Save writes only committed entities. Finishing creates one
+polyline with one document Undo action, retaining its bulges and widths in DXF.
+
+OpenCad's Close/C in arc mode continues the previous end tangent to the first
+vertex; it does not impose a tangent at the first segment. In line mode it adds
+a straight closing edge. Forward near-collinear tangent chords use a straight
+segment; backward ones are rejected because a finite circle cannot satisfy them.
+Coincident arc endpoints, invalid direction picks, near-collinear three-point
+constructions, nonplanar points and unrepresentable results are rejected without
+changing the accepted draft. These closure, tolerance and cancellation details
+are OpenCad policies whose native parity is unverified.
+
+Angle, Center, Radius and Length construction options remain unfinished and report
+that limitation. Direct point-list `PLINE ...` commands create straight segments.
+Bulge properties can still edit individual segments after creation.
 
 ## Rotate, scale and mirror
 

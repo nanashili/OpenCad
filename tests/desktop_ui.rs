@@ -6494,3 +6494,242 @@ fn pline_width_defaults_follow_open_drawings_and_canvas_input() {
             .all(|width| *width == PolylineWidth::default())
     );
 }
+
+// Creation must attach bulges to outgoing vertices while retaining one atomic
+// document edit. Pre-existing bulge property tests do not enter these prompts.
+#[test]
+fn pline_arc_creation_tracks_tangents_widths_and_one_undo() {
+    use opencad::{PolylineSegment, PolylineWidth};
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-arcs.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("PLINEWID 1");
+    ui.command("ELEVATION 7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    for command in [
+        "PLINE",
+        "0,0",
+        "10,0",
+        "Arc",
+        "Width 2 4",
+        "20,10",
+        "10,20",
+        "U",
+        "10,20",
+        "Line",
+        "0,20",
+        "Arc",
+        "-10,10",
+        "Line",
+    ] {
+        ui.command(command);
+    }
+    ui.step(vec![Event::PointerMoved(egui::pos2(950.0, 450.0))]);
+    ui.snapshot("pline-mixed-arc-draft");
+    ui.command("Close");
+    ui.command("ZOOM EXTENTS");
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    assert_eq!(document.pline_width(), 1.0);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert!(polyline.is_closed());
+    assert_eq!(
+        polyline.vertices(),
+        &[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (20.0, 10.0),
+            (10.0, 20.0),
+            (0.0, 20.0),
+            (-10.0, 10.0)
+        ]
+        .map(|(x, y)| Point3::new(x, y, 7.0).unwrap())
+    );
+    let quarter = (std::f64::consts::PI / 8.0).tan();
+    for (actual, expected) in polyline
+        .bulges()
+        .iter()
+        .zip([0.0, quarter, quarter, 0.0, quarter, 0.0])
+    {
+        assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+    assert_eq!(
+        polyline.widths(),
+        &[
+            (1.0, 1.0),
+            (2.0, 4.0),
+            (4.0, 4.0),
+            (4.0, 4.0),
+            (4.0, 4.0),
+            (4.0, 4.0)
+        ]
+        .map(|(start, end)| PolylineWidth::new(start, end).unwrap())
+    );
+    let segments = polyline.segments().collect::<Result<Vec<_>, _>>().unwrap();
+    assert!(matches!(segments[0], PolylineSegment::Line(_)));
+    let tangent = segments[1].end_tangent_xy().unwrap();
+    assert!(tangent.0.abs() < 1e-12 && (tangent.1 - 1.0).abs() < 1e-12);
+    let tangent = segments[2].end_tangent_xy().unwrap();
+    assert!((tangent.0 + 1.0).abs() < 1e-12 && tangent.1.abs() < 1e-12);
+    ui.snapshot("pline-mixed-arc-closed");
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_arc_direction_second_point_errors_and_cancel_keep_drafts_atomic() {
+    use opencad::PolylineWidth;
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-arc-constructions.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("ELEVATION 7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let baseline = fs::read_to_string(&path).unwrap();
+    ui.command("PLINE");
+    ui.command("Arc"); // needs a starting vertex
+    assert!(ui.has_text("Specify the PLINE starting point before choosing Arc"));
+    ui.command("1,0");
+    ui.command("Arc");
+    ui.command("0,1"); // no implicit tangent is invented for the first arc
+    assert!(ui.has_text("The first arc needs Direction or Second pt"));
+    for option in ["Angle", "Center", "Radius"] {
+        ui.command(option);
+        assert!(ui.has_text("construction are not supported yet"));
+    }
+    ui.command("Direction");
+    ui.command("1,0"); // coincident tangent pick
+    ui.command("1,1,8"); // nonplanar tangent pick
+    ui.command("@0,1"); // based at the arc start, not a staged auxiliary pick
+    ui.command("Width 2 4");
+    ui.command("");
+    ui.command("Close");
+    ui.command("U");
+    assert!(ui.has_text("Complete or cancel the PLINE arc construction before finishing"));
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("0,1");
+    ui.command("Second pt");
+    ui.command("-1,0");
+    ui.command("-2,-1"); // collinear three-point circle is undefined
+    ui.command("-2,-1,8");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("0,-1");
+    ui.command("Second pt");
+    ui.command("1,0");
+    ui.command("Exit"); // discard both staged picks without losing accepted arcs
+    ui.command("Halfwidth 1 2");
+    ui.command("Line");
+    ui.command("Length");
+    assert!(ui.has_text("PLINE Length construction is not supported yet"));
+    ui.command("1,-1");
+    ui.command("");
+    ui.command("SAVE");
+    let saved = fs::read_to_string(&path).unwrap();
+    let document = DxfDocument::parse(&saved).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert!(!polyline.is_closed());
+    assert_eq!(
+        polyline.vertices(),
+        &[(1.0, 0.0), (0.0, 1.0), (0.0, -1.0), (1.0, -1.0)]
+            .map(|(x, y)| Point3::new(x, y, 7.0).unwrap())
+    );
+    let quarter = (std::f64::consts::PI / 8.0).tan();
+    for (actual, expected) in polyline.bulges().iter().zip([quarter, 1.0, 0.0, 0.0]) {
+        assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+    }
+    assert_eq!(polyline.widths()[2], PolylineWidth::new(2.0, 4.0).unwrap());
+    assert_eq!(polyline.widths()[3], PolylineWidth::new(4.0, 4.0).unwrap());
+    ui.command("UNDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), baseline);
+    ui.command("REDO");
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+    for command in ["PLINE", "0,0", "Arc", "Second pt", "0,1"] {
+        ui.command(command);
+    }
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, true)]);
+    ui.step(vec![key(egui::Key::Escape, egui::Modifiers::NONE, false)]);
+    ui.command("SAVE");
+    assert_eq!(fs::read_to_string(&path).unwrap(), saved);
+}
+
+#[test]
+fn pline_canvas_arc_shortcuts_and_closing_arc_match_saved_geometry() {
+    let scratch = Scratch::new();
+    let path = scratch.0.join("pline-canvas-arcs.dxf");
+    let mut ui = DrawingUi::new();
+    ui.click("New");
+    ui.command("OSNAP OFF");
+    ui.command("SNAP OFF");
+    ui.command("ELEVATION 7");
+    ui.command(&format!("SAVEAS {}", path.display()));
+    let press = |ui: &mut DrawingUi, value| {
+        ui.step(vec![key(value, egui::Modifiers::NONE, true)]);
+        ui.step(vec![key(value, egui::Modifiers::NONE, false)]);
+    };
+    ui.command("PLINE");
+    ui.canvas_click(0.35, 0.6);
+    ui.canvas_click(0.5, 0.6);
+    press(&mut ui, egui::Key::A);
+    assert!(ui.has_text("PLINE Arc · Tangent endpoint"));
+    ui.canvas_click(0.6, 0.45);
+    press(&mut ui, egui::Key::U);
+    ui.canvas_click(0.6, 0.45);
+    press(&mut ui, egui::Key::R); // unsupported Radius must retain the draft
+    assert!(ui.has_text("construction are not supported yet"));
+    press(&mut ui, egui::Key::D);
+    ui.canvas_click(0.6, 0.3);
+    press(&mut ui, egui::Key::Enter); // unfinished direction+endpoint construction
+    ui.canvas_click(0.5, 0.3);
+    press(&mut ui, egui::Key::S);
+    ui.canvas_click(0.4, 0.3);
+    ui.canvas_click(0.35, 0.45);
+    press(&mut ui, egui::Key::L);
+    ui.canvas_click(0.4, 0.6);
+    press(&mut ui, egui::Key::A);
+    press(&mut ui, egui::Key::C);
+    ui.command("SAVE");
+    let document = DxfDocument::parse(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(document.entities().len(), 1);
+    let Entity::Polyline(polyline) = &document.entities()[0] else {
+        panic!("polyline")
+    };
+    assert!(polyline.is_closed());
+    assert_eq!(polyline.vertices().len(), 6);
+    assert!(polyline.vertices().iter().all(|point| point.z() == 7.0));
+    assert_eq!(polyline.bulges()[0], 0.0);
+    assert_eq!(polyline.bulges()[4], 0.0);
+    for index in [1, 2, 3, 5] {
+        assert!(polyline.bulges()[index] != 0.0);
+    }
+    // Closing uses the previous segment's end tangent and ends at the first vertex.
+    let segments = polyline.segments().collect::<Result<Vec<_>, _>>().unwrap();
+    let closing_start = segments[5].point_at_fraction(0.0).unwrap();
+    let closing_end = segments[5].point_at_fraction(1.0).unwrap();
+    assert!((closing_start.x() - polyline.vertices()[5].x()).abs() < 1e-10);
+    assert!((closing_end.x() - polyline.vertices()[0].x()).abs() < 1e-10);
+    assert!((closing_end.y() - polyline.vertices()[0].y()).abs() < 1e-10);
+    let tangent = segments[4].end_tangent_xy().unwrap();
+    let ahead = segments[5].point_at_fraction(1e-7).unwrap();
+    let dx = ahead.x() - closing_start.x();
+    let dy = ahead.y() - closing_start.y();
+    let length = dx.hypot(dy);
+    assert!((dx / length - tangent.0).abs() < 1e-6);
+    assert!((dy / length - tangent.1).abs() < 1e-6);
+}
