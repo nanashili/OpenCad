@@ -14,8 +14,8 @@ use crate::{
 };
 use crate::{DataLink, FieldExpression, NamedField};
 use crate::{
-    DynamicAction, DynamicBlockDefinition, DynamicParameter, DynamicParameterType, DynamicValue,
-    DynamicVisibilityState,
+    DynamicAction, DynamicBlockDefinition, DynamicBlockOverrides, DynamicParameter,
+    DynamicParameterType, DynamicValue, DynamicVisibilityState, LookupAssignment, LookupRow,
 };
 use crate::{NamedUcs, NamedUcsCatalog, NamedView, NamedViewCatalog};
 use std::collections::hash_map::DefaultHasher;
@@ -7654,6 +7654,99 @@ fn dynamic_parse_type(kind: &str, spec: &str) -> Option<DynamicParameterType> {
                 max: [values[2], values[3]],
             })
         }
+        "O" => {
+            let values = spec
+                .split(',')
+                .map(str::parse::<f64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            if values.len() != 4 || values.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            Some(DynamicParameterType::Polar {
+                distance_min: values[0],
+                distance_max: values[1],
+                angle_min: values[2],
+                angle_max: values[3],
+            })
+        }
+        "L" => {
+            let mut parts = spec.splitn(3, ';');
+            let reverse = parts.next()?;
+            let input_parameters = parts
+                .next()?
+                .split(',')
+                .filter(|name| !name.is_empty())
+                .map(dynamic_decode)
+                .collect::<Option<Vec<_>>>()?;
+            let rows = parts.next()?;
+            let reverse = match reverse {
+                "0" => false,
+                "1" => true,
+                _ => return None,
+            };
+            let rows = rows
+                .split('~')
+                .map(|row| {
+                    let mut parts = row.splitn(3, ':');
+                    let input = parts.next()?;
+                    let label = parts.next()?;
+                    let assignments = parts.next()?;
+                    let input = input.parse::<f64>().ok()?;
+                    let label = dynamic_decode(label)?;
+                    let assignments = assignments
+                        .split(',')
+                        .filter(|assignment| !assignment.is_empty())
+                        .map(|assignment| {
+                            let (name, value) = assignment.split_once('=')?;
+                            Some(LookupAssignment::new(
+                                dynamic_decode(name)?,
+                                dynamic_value_parse(&dynamic_decode(value)?)?,
+                            ))
+                        })
+                        .collect::<Option<Vec<_>>>()?;
+                    LookupRow::new(input, label)
+                        .ok()?
+                        .with_assignments(assignments)
+                        .ok()
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(DynamicParameterType::Lookup {
+                rows,
+                reverse,
+                input_parameters,
+            })
+        }
+        "G" => {
+            let values = spec
+                .split(',')
+                .map(str::parse::<f64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            if values.len() != 8 || values.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            Some(DynamicParameterType::Alignment {
+                point_min: [values[0], values[1], values[2]],
+                point_max: [values[3], values[4], values[5]],
+                angle_min: values[6],
+                angle_max: values[7],
+            })
+        }
+        "Q" => {
+            let values = spec
+                .split(',')
+                .map(str::parse::<f64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            if values.len() != 6 || values.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            Some(DynamicParameterType::BasePoint {
+                min: [values[0], values[1], values[2]],
+                max: [values[3], values[4], values[5]],
+            })
+        }
         "F" => Some(DynamicParameterType::Flip),
         "V" => Some(DynamicParameterType::Visibility {
             states: spec
@@ -7691,6 +7784,13 @@ fn dynamic_parse_action(kind: &str, fields: &[&str]) -> Option<DynamicAction> {
             min: dynamic_point_parse(fields.get(1)?)?,
             max: dynamic_point_parse(fields.get(2)?)?,
             direction: dynamic_point_parse(fields.get(3)?)?,
+        }),
+        "POLARSTRETCH" if fields.len() == 5 => Some(DynamicAction::PolarStretch {
+            parameter: decode_parameter(fields.first()?)?,
+            center: dynamic_point_parse(fields.get(1)?)?,
+            min: dynamic_point_parse(fields.get(2)?)?,
+            max: dynamic_point_parse(fields.get(3)?)?,
+            rotate_only_targets: dynamic_ids_parse(fields.get(4)?)?,
         }),
         "ARRAY" => Some(DynamicAction::Array {
             parameter: match *fields.first()? {
@@ -7852,6 +7952,7 @@ fn parse_dynamic_payload(
                 Some("SCALE") | Some("ROTATE") => 6,
                 Some("STRETCH") => 8,
                 Some("ARRAY") => 9,
+                Some("POLARSTRETCH") => 9,
                 _ => return Err(dynamic_error()),
             };
             if fields.len() != expected_len {
@@ -7947,6 +8048,27 @@ fn apply_dynamic_overrides(
     records: &[Option<EntityRecord>],
     overrides: Vec<DynamicOverrideRecord>,
 ) -> Result<(), DxfError> {
+    let aggregated = collect_dynamic_overrides(overrides)?;
+    apply_entity_dynamic_overrides(
+        input,
+        blocks,
+        entities,
+        records,
+        aggregated.entity_overrides,
+    )?;
+    apply_block_dynamic_overrides(blocks, aggregated.block_overrides)
+}
+
+struct AggregatedDynamicOverrides {
+    entity_overrides: HashMap<u64, DynamicBlockOverrides>,
+    block_overrides: HashMap<(String, u64), DynamicBlockOverrides>,
+}
+
+fn collect_dynamic_overrides(
+    overrides: Vec<DynamicOverrideRecord>,
+) -> Result<AggregatedDynamicOverrides, DxfError> {
+    let mut entity_overrides: HashMap<u64, DynamicBlockOverrides> = HashMap::new();
+    let mut block_overrides: HashMap<(String, u64), DynamicBlockOverrides> = HashMap::new();
     for record in overrides {
         match record {
             DynamicOverrideRecord::Entity {
@@ -7954,36 +8076,8 @@ fn apply_dynamic_overrides(
                 value,
                 visibility,
             } => {
-                let index = records
-                    .iter()
-                    .position(|record| {
-                        record
-                            .as_ref()
-                            .and_then(|record| record_handle_at(input, record.start))
-                            .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
-                            == Some(handle)
-                    })
-                    .ok_or_else(dynamic_error)?;
-                let Entity::Insert(insert) = &mut entities[index] else {
-                    return Err(dynamic_error());
-                };
-                let mut dynamic = insert.dynamic_overrides().clone();
-                if let Some((name, value)) = value {
-                    dynamic.set(name, value);
-                }
-                if let Some(name) = visibility {
-                    dynamic.set_visibility(name);
-                }
-                let block_name = insert.block_name().to_owned();
-                let definition = blocks
-                    .iter()
-                    .find(|block| block.name() == block_name)
-                    .and_then(BlockDefinition::dynamic_definition)
-                    .ok_or_else(dynamic_error)?;
-                definition
-                    .validate_overrides(&dynamic)
-                    .map_err(|_| dynamic_error())?;
-                insert.set_dynamic_overrides(dynamic);
+                let target = entity_overrides.entry(handle).or_default();
+                merge_dynamic_override(target, value, visibility)?;
             }
             DynamicOverrideRecord::Block {
                 block,
@@ -7991,41 +8085,116 @@ fn apply_dynamic_overrides(
                 value,
                 visibility,
             } => {
-                let target_index = blocks
-                    .iter()
-                    .find(|item| item.name() == block)
-                    .and_then(|item| item.entity_ids().iter().position(|id| *id == entity_id))
-                    .ok_or_else(dynamic_error)?;
-                let block_index = blocks
-                    .iter()
-                    .position(|item| item.name() == block)
-                    .ok_or_else(dynamic_error)?;
-                let mut entities = blocks[block_index].entities().to_vec();
-                let Entity::Insert(insert) = &mut entities[target_index] else {
-                    return Err(dynamic_error());
-                };
-                let mut dynamic = insert.dynamic_overrides().clone();
-                if let Some((name, value)) = value {
-                    dynamic.set(name, value);
-                }
-                if let Some(name) = visibility {
-                    dynamic.set_visibility(name);
-                }
-                let nested_definition = blocks
-                    .iter()
-                    .find(|item| item.name() == insert.block_name())
-                    .and_then(BlockDefinition::dynamic_definition)
-                    .ok_or_else(dynamic_error)?;
-                nested_definition
-                    .validate_overrides(&dynamic)
-                    .map_err(|_| dynamic_error())?;
-                insert.set_dynamic_overrides(dynamic);
-                let ids = blocks[block_index].entity_ids().to_vec();
-                blocks[block_index]
-                    .set_entities_with_ids(entities, ids)
-                    .map_err(|_| dynamic_error())?;
+                let target = block_overrides.entry((block, entity_id)).or_default();
+                merge_dynamic_override(target, value, visibility)?;
             }
         }
+    }
+    Ok(AggregatedDynamicOverrides {
+        entity_overrides,
+        block_overrides,
+    })
+}
+
+fn apply_entity_dynamic_overrides(
+    input: &str,
+    blocks: &[BlockDefinition],
+    entities: &mut [Entity],
+    records: &[Option<EntityRecord>],
+    overrides: HashMap<u64, DynamicBlockOverrides>,
+) -> Result<(), DxfError> {
+    for (handle, override_values) in overrides {
+        let index = records
+            .iter()
+            .position(|record| {
+                record
+                    .as_ref()
+                    .and_then(|record| record_handle_at(input, record.start))
+                    .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+                    == Some(handle)
+            })
+            .ok_or_else(dynamic_error)?;
+        let Entity::Insert(insert) = &mut entities[index] else {
+            return Err(dynamic_error());
+        };
+        let mut dynamic = insert.dynamic_overrides().clone();
+        merge_dynamic_values(&mut dynamic, &override_values);
+        let block_name = insert.block_name().to_owned();
+        let definition = blocks
+            .iter()
+            .find(|block| block.name() == block_name)
+            .and_then(BlockDefinition::dynamic_definition)
+            .ok_or_else(dynamic_error)?;
+        definition
+            .validate_overrides(&dynamic)
+            .map_err(|_| dynamic_error())?;
+        insert.set_dynamic_overrides(dynamic);
+    }
+    Ok(())
+}
+
+fn apply_block_dynamic_overrides(
+    blocks: &mut [BlockDefinition],
+    overrides: HashMap<(String, u64), DynamicBlockOverrides>,
+) -> Result<(), DxfError> {
+    for ((block, entity_id), override_values) in overrides {
+        let target_index = blocks
+            .iter()
+            .find(|item| item.name() == block)
+            .and_then(|item| item.entity_ids().iter().position(|id| *id == entity_id))
+            .ok_or_else(dynamic_error)?;
+        let block_index = blocks
+            .iter()
+            .position(|item| item.name() == block)
+            .ok_or_else(dynamic_error)?;
+        let mut entities = blocks[block_index].entities().to_vec();
+        let Entity::Insert(insert) = &mut entities[target_index] else {
+            return Err(dynamic_error());
+        };
+        let mut dynamic = insert.dynamic_overrides().clone();
+        merge_dynamic_values(&mut dynamic, &override_values);
+        let nested_definition = blocks
+            .iter()
+            .find(|item| item.name() == insert.block_name())
+            .and_then(BlockDefinition::dynamic_definition)
+            .ok_or_else(dynamic_error)?;
+        nested_definition
+            .validate_overrides(&dynamic)
+            .map_err(|_| dynamic_error())?;
+        insert.set_dynamic_overrides(dynamic);
+        let ids = blocks[block_index].entity_ids().to_vec();
+        blocks[block_index]
+            .set_entities_with_ids(entities, ids)
+            .map_err(|_| dynamic_error())?;
+    }
+    Ok(())
+}
+
+fn merge_dynamic_values(target: &mut DynamicBlockOverrides, source: &DynamicBlockOverrides) {
+    for (name, value) in source.values() {
+        target.set(name.clone(), value.clone());
+    }
+    if let Some(name) = source.visibility() {
+        target.set_visibility(name);
+    }
+}
+
+fn merge_dynamic_override(
+    target: &mut DynamicBlockOverrides,
+    value: Option<(String, DynamicValue)>,
+    visibility: Option<String>,
+) -> Result<(), DxfError> {
+    if let Some((name, value)) = value {
+        if target.values().contains_key(&name) {
+            return Err(dynamic_error());
+        }
+        target.set(name, value);
+    }
+    if let Some(name) = visibility {
+        if target.visibility().is_some() {
+            return Err(dynamic_error());
+        }
+        target.set_visibility(name);
     }
     Ok(())
 }
@@ -8076,6 +8245,11 @@ fn dynamic_value(value: &DynamicValue) -> String {
         DynamicValue::Number(value) => format!("N:{value}"),
         DynamicValue::Point(point) => format!("P:{}", dynamic_point(*point)),
         DynamicValue::XY { x, y } => format!("X:{x},{y}"),
+        DynamicValue::Polar { distance, angle } => format!("R:{distance},{angle}"),
+        DynamicValue::Lookup(value) => format!("L:{}", dynamic_encode(value)),
+        DynamicValue::Alignment { point, angle } => {
+            format!("A:{},{},{},{}", point.x(), point.y(), point.z(), angle)
+        }
         DynamicValue::Flip(value) => format!("B:{}", u8::from(*value)),
         DynamicValue::Visibility(name) => format!("S:{}", dynamic_encode(name)),
     }
@@ -8101,6 +8275,35 @@ fn dynamic_value_parse(value: &str) -> Option<DynamicValue> {
             Some(DynamicValue::XY {
                 x: values[0],
                 y: values[1],
+            })
+        }
+        "R" => {
+            let values = payload
+                .split(',')
+                .map(str::parse::<f64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            if values.len() != 2 || values.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            Some(DynamicValue::Polar {
+                distance: values[0],
+                angle: values[1],
+            })
+        }
+        "L" => Some(DynamicValue::Lookup(dynamic_decode(payload)?)),
+        "A" => {
+            let values = payload
+                .split(',')
+                .map(str::parse::<f64>)
+                .collect::<Result<Vec<_>, _>>()
+                .ok()?;
+            if values.len() != 4 || values.iter().any(|value| !value.is_finite()) {
+                return None;
+            }
+            Some(DynamicValue::Alignment {
+                point: Point3::new(values[0], values[1], values[2]).ok()?,
+                angle: values[3],
             })
         }
         "B" => Some(DynamicValue::Flip(match payload {
@@ -8142,6 +8345,73 @@ fn dynamic_parameter_type(value: &DynamicParameterType) -> (String, String) {
         DynamicParameterType::XY { min, max } => (
             "X".into(),
             format!("{},{};{},{}", min[0], min[1], max[0], max[1]),
+        ),
+        DynamicParameterType::Polar {
+            distance_min,
+            distance_max,
+            angle_min,
+            angle_max,
+        } => (
+            "O".into(),
+            format!("{distance_min},{distance_max},{angle_min},{angle_max}"),
+        ),
+        DynamicParameterType::Lookup {
+            rows,
+            reverse,
+            input_parameters,
+        } => (
+            "L".into(),
+            format!(
+                "{};{};{}",
+                u8::from(*reverse),
+                input_parameters
+                    .iter()
+                    .map(|name| dynamic_encode(name))
+                    .collect::<Vec<_>>()
+                    .join(","),
+                rows.iter()
+                    .map(|row| {
+                        let assignments = row
+                            .assignments()
+                            .iter()
+                            .map(|assignment| {
+                                format!(
+                                    "{}={}",
+                                    dynamic_encode(assignment.parameter()),
+                                    dynamic_encode(&dynamic_value(assignment.value()))
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!(
+                            "{}:{}:{}",
+                            row.input(),
+                            dynamic_encode(row.label()),
+                            assignments
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join("~")
+            ),
+        ),
+        DynamicParameterType::Alignment {
+            point_min,
+            point_max,
+            angle_min,
+            angle_max,
+        } => (
+            "G".into(),
+            format!(
+                "{},{},{},{},{},{},{angle_min},{angle_max}",
+                point_min[0], point_min[1], point_min[2], point_max[0], point_max[1], point_max[2]
+            ),
+        ),
+        DynamicParameterType::BasePoint { min, max } => (
+            "Q".into(),
+            format!(
+                "{},{},{},{},{},{}",
+                min[0], min[1], min[2], max[0], max[1], max[2]
+            ),
         ),
         DynamicParameterType::Flip => ("F".into(), String::new()),
         DynamicParameterType::Visibility { states } => (
@@ -8201,6 +8471,22 @@ fn dynamic_action_fields(action: &DynamicAction) -> (String, Vec<String>) {
                 dynamic_point(*min),
                 dynamic_point(*max),
                 dynamic_point(*direction),
+            ],
+        ),
+        DynamicAction::PolarStretch {
+            parameter,
+            center,
+            min,
+            max,
+            rotate_only_targets,
+        } => (
+            "POLARSTRETCH".into(),
+            vec![
+                dynamic_encode(parameter),
+                dynamic_point(*center),
+                dynamic_point(*min),
+                dynamic_point(*max),
+                dynamic_ids(rotate_only_targets),
             ],
         ),
         DynamicAction::Array {

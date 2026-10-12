@@ -12,15 +12,110 @@ const MAX_PARAMETERS: usize = 256;
 const MAX_ACTIONS: usize = 512;
 const MAX_VISIBILITY_STATES: usize = 256;
 const MAX_ARRAY_ITEMS: usize = 10_000;
+const MAX_LOOKUP_ROWS: usize = 256;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LookupRow {
+    input: f64,
+    label: String,
+    assignments: Vec<LookupAssignment>,
+}
+
+impl LookupRow {
+    pub fn new(input: f64, label: impl Into<String>) -> Result<Self, DynamicBlockError> {
+        let label = label.into();
+        if !input.is_finite() || label.trim().is_empty() || label.len() > 256 {
+            return Err(DynamicBlockError::InvalidParameter("lookup row".into()));
+        }
+        Ok(Self {
+            input,
+            label,
+            assignments: Vec::new(),
+        })
+    }
+    pub fn input(&self) -> f64 {
+        self.input
+    }
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+    pub fn with_assignments(
+        mut self,
+        assignments: Vec<LookupAssignment>,
+    ) -> Result<Self, DynamicBlockError> {
+        validate_assignments(&assignments)?;
+        self.assignments = assignments;
+        Ok(self)
+    }
+    pub fn assignments(&self) -> &[LookupAssignment] {
+        &self.assignments
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LookupAssignment {
+    parameter: String,
+    value: DynamicValue,
+}
+
+impl LookupAssignment {
+    pub fn new(parameter: impl Into<String>, value: DynamicValue) -> Self {
+        Self {
+            parameter: parameter.into(),
+            value,
+        }
+    }
+    pub fn parameter(&self) -> &str {
+        &self.parameter
+    }
+    pub fn value(&self) -> &DynamicValue {
+        &self.value
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum DynamicParameterType {
-    Distance { min: f64, max: f64 },
-    Angle { min: f64, max: f64 },
-    Point { min: [f64; 3], max: [f64; 3] },
-    XY { min: [f64; 2], max: [f64; 2] },
+    Distance {
+        min: f64,
+        max: f64,
+    },
+    Angle {
+        min: f64,
+        max: f64,
+    },
+    Point {
+        min: [f64; 3],
+        max: [f64; 3],
+    },
+    XY {
+        min: [f64; 2],
+        max: [f64; 2],
+    },
+    Polar {
+        distance_min: f64,
+        distance_max: f64,
+        angle_min: f64,
+        angle_max: f64,
+    },
+    Lookup {
+        rows: Vec<LookupRow>,
+        reverse: bool,
+        input_parameters: Vec<String>,
+    },
+    Alignment {
+        point_min: [f64; 3],
+        point_max: [f64; 3],
+        angle_min: f64,
+        angle_max: f64,
+    },
+    BasePoint {
+        min: [f64; 3],
+        max: [f64; 3],
+    },
     Flip,
-    Visibility { states: Vec<String> },
+    Visibility {
+        states: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -28,6 +123,9 @@ pub enum DynamicValue {
     Number(f64),
     Point(Point3),
     XY { x: f64, y: f64 },
+    Polar { distance: f64, angle: f64 },
+    Lookup(String),
+    Alignment { point: Point3, angle: f64 },
     Flip(bool),
     Visibility(String),
 }
@@ -99,6 +197,13 @@ pub enum DynamicAction {
         max: Point3,
         direction: Point3,
     },
+    PolarStretch {
+        parameter: String,
+        center: Point3,
+        min: Point3,
+        max: Point3,
+        rotate_only_targets: Vec<u64>,
+    },
     Array {
         parameter: Option<String>,
         rows: usize,
@@ -106,6 +211,24 @@ pub enum DynamicAction {
         row_spacing: f64,
         column_spacing: f64,
     },
+}
+
+impl DynamicAction {
+    pub fn polar_stretch(
+        parameter: impl Into<String>,
+        center: Point3,
+        min: Point3,
+        max: Point3,
+        rotate_only_targets: Vec<u64>,
+    ) -> Self {
+        Self::PolarStretch {
+            parameter: parameter.into(),
+            center,
+            min,
+            max,
+            rotate_only_targets,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -179,6 +302,14 @@ impl DynamicBlockDefinition {
             ));
         }
         parameter.validate_definition()?;
+        if let DynamicParameterType::Lookup {
+            rows,
+            reverse,
+            input_parameters,
+        } = &parameter.parameter_type
+        {
+            self.validate_lookup_rows(&parameter.name, rows, *reverse, input_parameters)?;
+        }
         self.parameters.push(parameter);
         Ok(())
     }
@@ -210,6 +341,37 @@ impl DynamicBlockDefinition {
         Ok(())
     }
 
+    pub fn set_polar_rotate_only_targets(
+        &mut self,
+        action_index: usize,
+        entity_ids: Vec<u64>,
+    ) -> Result<(), DynamicBlockError> {
+        if entity_ids.contains(&0)
+            || entity_ids
+                .iter()
+                .enumerate()
+                .any(|(index, id)| entity_ids[..index].contains(id))
+        {
+            return Err(DynamicBlockError::InvalidAction(
+                "polar rotate-only target IDs".into(),
+            ));
+        }
+        let Some(action) = self.actions.get_mut(action_index) else {
+            return Err(DynamicBlockError::InvalidAction("action index".into()));
+        };
+        let DynamicAction::PolarStretch {
+            rotate_only_targets,
+            ..
+        } = action
+        else {
+            return Err(DynamicBlockError::InvalidAction(
+                "action is not polar stretch".into(),
+            ));
+        };
+        *rotate_only_targets = entity_ids;
+        Ok(())
+    }
+
     pub fn parameter(&self, name: &str) -> Option<&DynamicParameter> {
         self.parameters
             .iter()
@@ -232,7 +394,322 @@ impl DynamicBlockDefinition {
         name: &str,
         overrides: &DynamicBlockOverrides,
     ) -> Result<DynamicValue, DynamicBlockError> {
+        if let Some(parameter) = self.parameter(name)
+            && let DynamicParameterType::Lookup {
+                input_parameters, ..
+            } = &parameter.parameter_type
+            && !input_parameters.is_empty()
+            && !overrides.values.contains_key(name)
+        {
+            return Ok(DynamicValue::Lookup(
+                self.lookup_label_for_overrides(name, overrides)?
+                    .unwrap_or("<unmatched>")
+                    .to_owned(),
+            ));
+        }
         self.parameter_value(name, overrides)
+    }
+
+    pub fn lookup_label(&self, name: &str, input: f64) -> Result<&str, DynamicBlockError> {
+        let parameter = self
+            .parameter(name)
+            .ok_or_else(|| DynamicBlockError::UnknownParameter(name.into()))?;
+        let DynamicParameterType::Lookup {
+            rows,
+            input_parameters,
+            ..
+        } = &parameter.parameter_type
+        else {
+            return Err(DynamicBlockError::InvalidValue(
+                "not a lookup parameter".into(),
+            ));
+        };
+        if !input_parameters.is_empty() {
+            return Err(DynamicBlockError::InvalidValue(
+                "multi-property lookup needs named inputs".into(),
+            ));
+        }
+        rows.iter()
+            .find(|row| row.input.total_cmp(&input).is_eq())
+            .map(|row| row.label.as_str())
+            .ok_or_else(|| DynamicBlockError::InvalidValue("lookup input has no row".into()))
+    }
+
+    pub fn lookup_label_for_overrides(
+        &self,
+        name: &str,
+        overrides: &DynamicBlockOverrides,
+    ) -> Result<Option<&str>, DynamicBlockError> {
+        let parameter = self
+            .parameter(name)
+            .ok_or_else(|| DynamicBlockError::UnknownParameter(name.into()))?;
+        let DynamicParameterType::Lookup {
+            rows,
+            input_parameters,
+            ..
+        } = &parameter.parameter_type
+        else {
+            return Err(DynamicBlockError::InvalidValue(
+                "not a lookup parameter".into(),
+            ));
+        };
+        for row in rows {
+            let mut matches = true;
+            for input_name in input_parameters {
+                let Some(assignment) = row
+                    .assignments
+                    .iter()
+                    .find(|assignment| assignment.parameter == *input_name)
+                else {
+                    matches = false;
+                    break;
+                };
+                let current = self.parameter_value(input_name, overrides)?;
+                if current != assignment.value {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                return Ok(Some(row.label.as_str()));
+            }
+        }
+        Ok(None)
+    }
+
+    pub fn lookup_assignments(
+        &self,
+        name: &str,
+        label: &str,
+    ) -> Result<&[LookupAssignment], DynamicBlockError> {
+        let parameter = self
+            .parameter(name)
+            .ok_or_else(|| DynamicBlockError::UnknownParameter(name.into()))?;
+        let DynamicParameterType::Lookup { rows, reverse, .. } = &parameter.parameter_type else {
+            return Err(DynamicBlockError::InvalidValue(
+                "not a lookup parameter".into(),
+            ));
+        };
+        if !reverse {
+            return Err(DynamicBlockError::InvalidValue(
+                "reverse lookup is disabled".into(),
+            ));
+        }
+        rows.iter()
+            .find(|row| row.label == label)
+            .map(|row| row.assignments.as_slice())
+            .ok_or_else(|| DynamicBlockError::InvalidValue("unknown lookup label".into()))
+    }
+
+    pub fn add_lookup_row(&mut self, name: &str, row: LookupRow) -> Result<(), DynamicBlockError> {
+        let (mut rows, reverse, input_parameters) = self.lookup_rows(name)?;
+        rows.push(row);
+        self.validate_lookup_rows(name, &rows, reverse, &input_parameters)?;
+        self.replace_lookup_rows(name, rows)
+    }
+
+    pub fn replace_lookup_row(
+        &mut self,
+        name: &str,
+        index: usize,
+        row: LookupRow,
+    ) -> Result<(), DynamicBlockError> {
+        let (mut rows, reverse, input_parameters) = self.lookup_rows(name)?;
+        let Some(existing) = rows.get_mut(index) else {
+            return Err(DynamicBlockError::InvalidParameter(
+                "lookup row index".into(),
+            ));
+        };
+        *existing = row;
+        self.validate_lookup_rows(name, &rows, reverse, &input_parameters)?;
+        self.replace_lookup_rows(name, rows)
+    }
+
+    fn lookup_rows(
+        &self,
+        name: &str,
+    ) -> Result<(Vec<LookupRow>, bool, Vec<String>), DynamicBlockError> {
+        let parameter = self
+            .parameter(name)
+            .ok_or_else(|| DynamicBlockError::UnknownParameter(name.into()))?;
+        let DynamicParameterType::Lookup {
+            rows,
+            reverse,
+            input_parameters,
+        } = &parameter.parameter_type
+        else {
+            return Err(DynamicBlockError::InvalidValue(
+                "not a lookup parameter".into(),
+            ));
+        };
+        Ok((rows.clone(), *reverse, input_parameters.clone()))
+    }
+
+    fn replace_lookup_rows(
+        &mut self,
+        name: &str,
+        rows: Vec<LookupRow>,
+    ) -> Result<(), DynamicBlockError> {
+        let Some(parameter) = self.parameters.iter_mut().find(|item| item.name == name) else {
+            return Err(DynamicBlockError::UnknownParameter(name.into()));
+        };
+        let DynamicParameterType::Lookup {
+            rows: parameter_rows,
+            ..
+        } = &mut parameter.parameter_type
+        else {
+            return Err(DynamicBlockError::InvalidValue(
+                "not a lookup parameter".into(),
+            ));
+        };
+        *parameter_rows = rows;
+        Ok(())
+    }
+
+    fn validate_lookup_rows(
+        &self,
+        parameter_name: &str,
+        rows: &[LookupRow],
+        reverse: bool,
+        input_parameters: &[String],
+    ) -> Result<(), DynamicBlockError> {
+        let lookup_type = DynamicParameterType::Lookup {
+            rows: rows.to_vec(),
+            reverse,
+            input_parameters: input_parameters.to_vec(),
+        };
+        validate_parameter_type(&lookup_type)?;
+        if input_parameters.is_empty() {
+            if rows.iter().any(|row| !row.assignments.is_empty()) {
+                return Err(DynamicBlockError::InvalidParameter(
+                    "legacy lookup assignments".into(),
+                ));
+            }
+            return Ok(());
+        }
+        for input_name in input_parameters {
+            let input = self
+                .parameter(input_name)
+                .ok_or_else(|| DynamicBlockError::UnknownParameter(input_name.clone()))?;
+            if input_name == parameter_name
+                || matches!(input.parameter_type, DynamicParameterType::Lookup { .. })
+            {
+                return Err(DynamicBlockError::InvalidParameter(
+                    "lookup dependency cycle".into(),
+                ));
+            }
+        }
+        for row in rows {
+            if row.assignments.len() != input_parameters.len()
+                || input_parameters.iter().any(|input_name| {
+                    row.assignments
+                        .iter()
+                        .filter(|assignment| assignment.parameter == *input_name)
+                        .count()
+                        != 1
+                })
+            {
+                return Err(DynamicBlockError::InvalidParameter(
+                    "lookup row assignments".into(),
+                ));
+            }
+            for assignment in &row.assignments {
+                self.validate_value(&assignment.parameter, &assignment.value)?;
+            }
+        }
+        for (index, left) in rows.iter().enumerate() {
+            for right in rows.iter().skip(index + 1) {
+                let same_inputs = input_parameters.iter().all(|input_name| {
+                    assignment_value(left, input_name) == assignment_value(right, input_name)
+                });
+                if same_inputs {
+                    return Err(DynamicBlockError::InvalidParameter(
+                        "duplicate lookup input row".into(),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn lookup_input(&self, name: &str, label: &str) -> Result<f64, DynamicBlockError> {
+        let parameter = self
+            .parameter(name)
+            .ok_or_else(|| DynamicBlockError::UnknownParameter(name.into()))?;
+        let DynamicParameterType::Lookup { rows, reverse, .. } = &parameter.parameter_type else {
+            return Err(DynamicBlockError::InvalidValue(
+                "not a lookup parameter".into(),
+            ));
+        };
+        if !reverse {
+            return Err(DynamicBlockError::InvalidValue(
+                "reverse lookup is disabled".into(),
+            ));
+        }
+        rows.iter()
+            .find(|row| row.label == label)
+            .map(|row| row.input)
+            .ok_or_else(|| DynamicBlockError::InvalidValue("unknown lookup label".into()))
+    }
+
+    pub fn apply_property(
+        &self,
+        overrides: &mut DynamicBlockOverrides,
+        name: &str,
+        value: DynamicValue,
+    ) -> Result<(), DynamicBlockError> {
+        self.validate_value(name, &value)?;
+        let mut candidate = overrides.clone();
+        if let DynamicValue::Lookup(label) = &value {
+            self.apply_lookup_assignments(&mut candidate, name, label)?;
+            candidate.set(name, value);
+        } else {
+            candidate.set(name, value);
+        }
+        self.refresh_lookup_values(&mut candidate, name)?;
+        self.validate_overrides(&candidate)?;
+        *overrides = candidate;
+        Ok(())
+    }
+
+    fn apply_lookup_assignments(
+        &self,
+        candidate: &mut DynamicBlockOverrides,
+        name: &str,
+        label: &str,
+    ) -> Result<(), DynamicBlockError> {
+        for assignment in self.lookup_assignments(name, label)? {
+            self.validate_value(&assignment.parameter, &assignment.value)?;
+            candidate.set(assignment.parameter.clone(), assignment.value.clone());
+        }
+        Ok(())
+    }
+
+    fn refresh_lookup_values(
+        &self,
+        candidate: &mut DynamicBlockOverrides,
+        edited_name: &str,
+    ) -> Result<(), DynamicBlockError> {
+        for parameter in &self.parameters {
+            let DynamicParameterType::Lookup {
+                input_parameters, ..
+            } = &parameter.parameter_type
+            else {
+                continue;
+            };
+            if input_parameters.is_empty() || edited_name == parameter.name {
+                continue;
+            }
+            if let Some(label) = self.lookup_label_for_overrides(&parameter.name, candidate)? {
+                candidate.set(
+                    parameter.name.clone(),
+                    DynamicValue::Lookup(label.to_owned()),
+                );
+            } else {
+                candidate.reset(&parameter.name);
+            }
+        }
+        Ok(())
     }
 
     pub fn validate_overrides(
@@ -241,6 +718,28 @@ impl DynamicBlockDefinition {
     ) -> Result<(), DynamicBlockError> {
         for (name, value) in &overrides.values {
             self.validate_value(name, value)?;
+        }
+        for parameter in &self.parameters {
+            let DynamicParameterType::Lookup {
+                input_parameters, ..
+            } = &parameter.parameter_type
+            else {
+                continue;
+            };
+            if input_parameters.is_empty() {
+                continue;
+            }
+            let Some(DynamicValue::Lookup(label)) = overrides.values.get(&parameter.name) else {
+                continue;
+            };
+            match self.lookup_label_for_overrides(&parameter.name, overrides)? {
+                Some(expected) if expected == label => {}
+                _ => {
+                    return Err(DynamicBlockError::InvalidValue(
+                        "lookup label does not match input properties".into(),
+                    ));
+                }
+            }
         }
         if let Some(name) = overrides.visibility.as_deref() {
             if !self
@@ -344,6 +843,15 @@ impl DynamicBlockDefinition {
                     "parameter state is not defined".into(),
                 ));
             }
+            if let DynamicParameterType::Lookup {
+                rows,
+                input_parameters,
+                reverse,
+                ..
+            } = &parameter.parameter_type
+            {
+                self.validate_lookup_rows(&parameter.name, rows, *reverse, input_parameters)?;
+            }
         }
         for state in &self.visibility_states {
             if state.entity_ids.iter().any(|id| !entity_ids.contains(id)) {
@@ -360,6 +868,34 @@ impl DynamicBlockDefinition {
             }
         }
         for action in &self.actions {
+            if let DynamicAction::PolarStretch {
+                rotate_only_targets,
+                ..
+            } = action
+                && rotate_only_targets
+                    .iter()
+                    .any(|id| !entity_ids.contains(id))
+            {
+                return Err(DynamicBlockError::InvalidAction(
+                    "polar rotate-only target ID out of range".into(),
+                ));
+            }
+        }
+        for (action_index, action) in self.actions.iter().enumerate() {
+            if let DynamicAction::PolarStretch {
+                rotate_only_targets,
+                ..
+            } = action
+                && let Some(action_targets) = self.action_targets.get(action_index)
+                && !action_targets.is_empty()
+                && rotate_only_targets
+                    .iter()
+                    .any(|id| !action_targets.contains(id))
+            {
+                return Err(DynamicBlockError::InvalidAction(
+                    "polar rotate-only target is outside action targets".into(),
+                ));
+            }
             self.validate_action(action)?;
         }
         Ok(())
@@ -378,6 +914,7 @@ impl DynamicBlockDefinition {
                     DynamicParameterType::Distance { .. }
                         | DynamicParameterType::Point { .. }
                         | DynamicParameterType::XY { .. }
+                        | DynamicParameterType::Polar { .. }
                 ) {
                     return Err(DynamicBlockError::InvalidAction(
                         "move requires distance or point".into(),
@@ -393,7 +930,7 @@ impl DynamicBlockDefinition {
             DynamicAction::Scale { parameter, center } => {
                 if !matches!(
                     self.parameter_type(parameter)?,
-                    DynamicParameterType::Distance { .. }
+                    DynamicParameterType::Distance { .. } | DynamicParameterType::Polar { .. }
                 ) || !finite_point(*center)
                 {
                     return Err(DynamicBlockError::InvalidAction(
@@ -438,6 +975,7 @@ impl DynamicBlockDefinition {
                     DynamicParameterType::Distance { .. }
                         | DynamicParameterType::Point { .. }
                         | DynamicParameterType::XY { .. }
+                        | DynamicParameterType::Polar { .. }
                 ) || !finite_point(*min)
                     || !finite_point(*max)
                     || !finite_point(*direction)
@@ -445,6 +983,38 @@ impl DynamicBlockDefinition {
                     || min.y() > max.y()
                 {
                     return Err(DynamicBlockError::InvalidAction("stretch window".into()));
+                }
+            }
+            DynamicAction::PolarStretch {
+                parameter,
+                center,
+                min,
+                max,
+                rotate_only_targets,
+                ..
+            } => {
+                if !matches!(
+                    self.parameter_type(parameter)?,
+                    DynamicParameterType::Polar { .. }
+                ) || !finite_point(*center)
+                    || !finite_point(*min)
+                    || !finite_point(*max)
+                    || min.x() > max.x()
+                    || min.y() > max.y()
+                {
+                    return Err(DynamicBlockError::InvalidAction(
+                        "polar stretch parameters".into(),
+                    ));
+                }
+                if rotate_only_targets.contains(&0)
+                    || rotate_only_targets
+                        .iter()
+                        .enumerate()
+                        .any(|(index, id)| rotate_only_targets[..index].contains(id))
+                {
+                    return Err(DynamicBlockError::InvalidAction(
+                        "polar rotate-only targets".into(),
+                    ));
                 }
             }
             DynamicAction::Array {
@@ -457,7 +1027,9 @@ impl DynamicBlockDefinition {
                 if let Some(parameter) = parameter
                     && !matches!(
                         self.parameter_type(parameter)?,
-                        DynamicParameterType::Distance { .. } | DynamicParameterType::XY { .. }
+                        DynamicParameterType::Distance { .. }
+                            | DynamicParameterType::XY { .. }
+                            | DynamicParameterType::Polar { .. }
                     )
                 {
                     return Err(DynamicBlockError::InvalidAction(
@@ -626,7 +1198,63 @@ pub fn evaluate_local_entities(
             .map(Vec::as_slice);
         apply_action(&mut entities, action, targets, dynamic, overrides)?;
     }
+    apply_block_parameters(&mut entities, dynamic, overrides)?;
     Ok(entities.into_iter().map(|(_, entity)| entity).collect())
+}
+
+fn apply_block_parameters(
+    entities: &mut [(u64, Entity)],
+    dynamic: &DynamicBlockDefinition,
+    overrides: &DynamicBlockOverrides,
+) -> Result<(), DynamicBlockError> {
+    for parameter in &dynamic.parameters {
+        let (value, default) = dynamic.parameter_values(&parameter.name, overrides)?;
+        match (&parameter.parameter_type, value, default) {
+            (
+                DynamicParameterType::Alignment { .. },
+                DynamicValue::Alignment { point, angle },
+                DynamicValue::Alignment {
+                    point: default_point,
+                    angle: default_angle,
+                },
+            ) => {
+                let delta = delta_value(
+                    DynamicValue::Point(point),
+                    DynamicValue::Point(default_point),
+                )?;
+                let DynamicValue::Point(delta) = delta else {
+                    unreachable!()
+                };
+                transform_entities(
+                    entities,
+                    None,
+                    Transform::rotate_xy(default_point, angle - default_angle)?,
+                )?;
+                transform_entities(
+                    entities,
+                    None,
+                    Transform::translation(delta.x(), delta.y(), delta.z()),
+                )?;
+            }
+            (
+                DynamicParameterType::BasePoint { .. },
+                DynamicValue::Point(point),
+                DynamicValue::Point(default_point),
+            ) => {
+                transform_entities(
+                    entities,
+                    None,
+                    Transform::translation(
+                        default_point.x() - point.x(),
+                        default_point.y() - point.y(),
+                        default_point.z() - point.z(),
+                    ),
+                )?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Evaluate an INSERT using the overrides stored on that INSERT.
@@ -699,21 +1327,29 @@ fn apply_action(
             direction,
         } => {
             let (value, default) = dynamic.parameter_values(parameter, overrides)?;
-            let value = delta_value(value, default)?;
-            let (dx, dy) = move_delta_value(value, *direction)?;
+            let (dx, dy) = if matches!(value, DynamicValue::Polar { .. }) {
+                polar_vector_delta(value, default)?
+            } else {
+                let value = delta_value(value, default)?;
+                move_delta_value(value, *direction)?
+            };
             let transform = Transform::translation(dx, dy, 0.0);
             transform_entities(entities, targets, transform)
         }
         DynamicAction::Scale { parameter, center } => {
             let (value, default) = dynamic.parameter_values(parameter, overrides)?;
-            let (DynamicValue::Number(value), DynamicValue::Number(default)) = (value, default)
-            else {
-                return Err(DynamicBlockError::InvalidValue("scale value".into()));
+            let factor = if matches!(value, DynamicValue::Polar { .. }) {
+                polar_distance_ratio(value, default)?
+            } else {
+                let (DynamicValue::Number(value), DynamicValue::Number(default)) = (value, default)
+                else {
+                    return Err(DynamicBlockError::InvalidValue("scale value".into()));
+                };
+                if default <= 0.0 {
+                    return Err(DynamicBlockError::InvalidValue("scale default".into()));
+                }
+                value / default
             };
-            if default <= 0.0 {
-                return Err(DynamicBlockError::InvalidValue("scale default".into()));
-            }
-            let factor = value / default;
             transform_entities(entities, targets, Transform::scale(*center, factor)?)
         }
         DynamicAction::Rotate { parameter, center } => {
@@ -757,6 +1393,39 @@ fn apply_action(
             dynamic,
             overrides,
         ),
+        DynamicAction::PolarStretch {
+            parameter,
+            center,
+            min,
+            max,
+            rotate_only_targets,
+        } => {
+            let (sx, sy, angle) = polar_action_delta(dynamic, parameter, overrides)?;
+            let selected: Vec<u64> = match targets {
+                Some(targets) => targets.to_vec(),
+                None => entities.iter().map(|(id, _)| *id).collect(),
+            };
+            let rotate_ids: Vec<u64> = selected
+                .iter()
+                .copied()
+                .filter(|id| rotate_only_targets.contains(id))
+                .collect();
+            if !rotate_ids.is_empty() {
+                transform_entities(
+                    entities,
+                    Some(&rotate_ids),
+                    Transform::rotate_xy(*center, angle)?,
+                )?;
+            }
+            let stretch_ids: Vec<u64> = selected
+                .into_iter()
+                .filter(|id| !rotate_ids.contains(id))
+                .collect();
+            if stretch_ids.is_empty() {
+                return Ok(());
+            }
+            apply_stretch_offset(entities, Some(&stretch_ids), *min, *max, sx, sy)
+        }
         DynamicAction::Array {
             parameter,
             rows,
@@ -825,6 +1494,9 @@ fn resolve_array_dimensions(
     };
     match value {
         DynamicValue::Number(extent) => Ok((base_rows, count_from_extent(extent, column_spacing)?)),
+        DynamicValue::Polar { distance, .. } => {
+            Ok((base_rows, count_from_extent(distance, column_spacing)?))
+        }
         DynamicValue::XY { x, y } => {
             let rows = count_from_extent(y, row_spacing)?;
             let columns = count_from_extent(x, column_spacing)?;
@@ -856,6 +1528,68 @@ fn move_delta_value(
         DynamicValue::XY { x, y } => Ok((x, y)),
         _ => Err(DynamicBlockError::InvalidValue("move value".into())),
     }
+}
+
+fn polar_vector_delta(
+    value: DynamicValue,
+    default: DynamicValue,
+) -> Result<(f64, f64), DynamicBlockError> {
+    let (
+        DynamicValue::Polar { distance, angle },
+        DynamicValue::Polar {
+            distance: default_distance,
+            angle: default_angle,
+        },
+    ) = (value, default)
+    else {
+        return Err(DynamicBlockError::InvalidValue("polar value".into()));
+    };
+    Ok((
+        distance * angle.cos() - default_distance * default_angle.cos(),
+        distance * angle.sin() - default_distance * default_angle.sin(),
+    ))
+}
+
+fn polar_action_delta(
+    dynamic: &DynamicBlockDefinition,
+    parameter: &str,
+    overrides: &DynamicBlockOverrides,
+) -> Result<(f64, f64, f64), DynamicBlockError> {
+    let (value, default) = dynamic.parameter_values(parameter, overrides)?;
+    let (sx, sy) = polar_vector_delta(value.clone(), default.clone())?;
+    let (
+        DynamicValue::Polar { angle, .. },
+        DynamicValue::Polar {
+            angle: default_angle,
+            ..
+        },
+    ) = (value, default)
+    else {
+        return Err(DynamicBlockError::InvalidValue("polar value".into()));
+    };
+    Ok((sx, sy, angle - default_angle))
+}
+
+fn polar_distance_ratio(
+    value: DynamicValue,
+    default: DynamicValue,
+) -> Result<f64, DynamicBlockError> {
+    let (
+        DynamicValue::Polar { distance, .. },
+        DynamicValue::Polar {
+            distance: default_distance,
+            ..
+        },
+    ) = (value, default)
+    else {
+        return Err(DynamicBlockError::InvalidValue("polar value".into()));
+    };
+    if default_distance <= 0.0 {
+        return Err(DynamicBlockError::InvalidValue(
+            "polar default distance".into(),
+        ));
+    }
+    Ok(distance / default_distance)
 }
 
 fn delta_value(
@@ -939,13 +1673,28 @@ fn apply_stretch(
     overrides: &DynamicBlockOverrides,
 ) -> Result<(), DynamicBlockError> {
     let (value, default) = dynamic.parameter_values(context.parameter, overrides)?;
-    let value = delta_value(value, default)?;
-    let (sx, sy) = move_delta_value(value, context.direction)?;
+    let (sx, sy) = if matches!(value, DynamicValue::Polar { .. }) {
+        polar_vector_delta(value, default)?
+    } else {
+        let value = delta_value(value, default)?;
+        move_delta_value(value, context.direction)?
+    };
+    apply_stretch_offset(entities, targets, context.min, context.max, sx, sy)
+}
+
+fn apply_stretch_offset(
+    entities: &mut [(u64, Entity)],
+    targets: Option<&[u64]>,
+    min: Point3,
+    max: Point3,
+    sx: f64,
+    sy: f64,
+) -> Result<(), DynamicBlockError> {
     for (id, entity) in entities.iter_mut() {
         if !targets.is_none_or(|target_ids| target_ids.contains(id)) {
             continue;
         }
-        stretch_entity(entity, context.min, context.max, sx, sy)?;
+        stretch_entity(entity, min, max, sx, sy)?;
     }
     Ok(())
 }
@@ -1037,6 +1786,45 @@ fn validate_parameter_type(parameter_type: &DynamicParameterType) -> Result<(), 
         }
         DynamicParameterType::Point { min, max } if valid_pair(min, max) => Ok(()),
         DynamicParameterType::XY { min, max } if valid_pair(min, max) => Ok(()),
+        DynamicParameterType::Polar {
+            distance_min,
+            distance_max,
+            angle_min,
+            angle_max,
+        } if valid_range(*distance_min, *distance_max) && valid_range(*angle_min, *angle_max) => {
+            Ok(())
+        }
+        DynamicParameterType::Lookup {
+            rows,
+            input_parameters,
+            reverse,
+        } if !rows.is_empty()
+            && rows.len() <= MAX_LOOKUP_ROWS
+            && input_parameters
+                .iter()
+                .all(|name| !name.trim().is_empty() && name.len() <= 128)
+            && input_parameters.iter().enumerate().all(|(index, name)| {
+                !input_parameters[..index].iter().any(|prior| prior == name)
+            })
+            && (!input_parameters.is_empty()
+                || rows.windows(2).all(|pair| pair[0].input < pair[1].input))
+            && (!*reverse
+                || rows.iter().enumerate().all(|(index, row)| {
+                    !rows[..index].iter().any(|prior| prior.label == row.label)
+                }))
+            && rows
+                .iter()
+                .all(|row| validate_assignments(&row.assignments).is_ok()) =>
+        {
+            Ok(())
+        }
+        DynamicParameterType::Alignment {
+            point_min,
+            point_max,
+            angle_min,
+            angle_max,
+        } if valid_pair(point_min, point_max) && valid_range(*angle_min, *angle_max) => Ok(()),
+        DynamicParameterType::BasePoint { min, max } if valid_pair(min, max) => Ok(()),
         DynamicParameterType::Flip => Ok(()),
         DynamicParameterType::Visibility { states }
             if !states.is_empty() && states.iter().all(|state| !state.trim().is_empty()) =>
@@ -1046,6 +1834,49 @@ fn validate_parameter_type(parameter_type: &DynamicParameterType) -> Result<(), 
         _ => Err(DynamicBlockError::InvalidParameter(
             "range or visibility states".into(),
         )),
+    }
+}
+
+fn validate_assignments(assignments: &[LookupAssignment]) -> Result<(), DynamicBlockError> {
+    if assignments.len() > MAX_PARAMETERS {
+        return Err(DynamicBlockError::TooComplex);
+    }
+    for (index, assignment) in assignments.iter().enumerate() {
+        if assignment.parameter.trim().is_empty()
+            || assignment.parameter.len() > 128
+            || assignments[..index]
+                .iter()
+                .any(|prior| prior.parameter == assignment.parameter)
+        {
+            return Err(DynamicBlockError::InvalidParameter(
+                "lookup assignment parameter".into(),
+            ));
+        }
+        if !dynamic_value_finite(&assignment.value) {
+            return Err(DynamicBlockError::InvalidValue(
+                "lookup assignment value".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn assignment_value<'a>(row: &'a LookupRow, parameter: &str) -> Option<&'a DynamicValue> {
+    row.assignments
+        .iter()
+        .find(|assignment| assignment.parameter == parameter)
+        .map(|assignment| &assignment.value)
+}
+
+fn dynamic_value_finite(value: &DynamicValue) -> bool {
+    match value {
+        DynamicValue::Number(number) => number.is_finite(),
+        DynamicValue::Point(point) => finite_point(*point),
+        DynamicValue::XY { x, y } => x.is_finite() && y.is_finite(),
+        DynamicValue::Polar { distance, angle } => distance.is_finite() && angle.is_finite(),
+        DynamicValue::Alignment { point, angle } => finite_point(*point) && angle.is_finite(),
+        DynamicValue::Flip(_) | DynamicValue::Visibility(_) => true,
+        DynamicValue::Lookup(_) => false,
     }
 }
 
@@ -1067,6 +1898,46 @@ fn validate_value(
         }
         (DynamicParameterType::XY { min, max }, DynamicValue::XY { x, y }) => {
             in_range(*x, min[0], max[0]) && in_range(*y, min[1], max[1])
+        }
+        (
+            DynamicParameterType::Polar {
+                distance_min,
+                distance_max,
+                angle_min,
+                angle_max,
+            },
+            DynamicValue::Polar { distance, angle },
+        ) => {
+            in_range(*distance, *distance_min, *distance_max)
+                && in_range(*angle, *angle_min, *angle_max)
+        }
+        (
+            DynamicParameterType::Lookup {
+                input_parameters, ..
+            },
+            DynamicValue::Number(value),
+        ) => input_parameters.is_empty() && value.is_finite(),
+        (DynamicParameterType::Lookup { rows, .. }, DynamicValue::Lookup(label)) => {
+            rows.iter().any(|row| row.label == *label)
+        }
+        (
+            DynamicParameterType::Alignment {
+                point_min,
+                point_max,
+                angle_min,
+                angle_max,
+            },
+            DynamicValue::Alignment { point, angle },
+        ) => {
+            in_range(point.x(), point_min[0], point_max[0])
+                && in_range(point.y(), point_min[1], point_max[1])
+                && in_range(point.z(), point_min[2], point_max[2])
+                && in_range(*angle, *angle_min, *angle_max)
+        }
+        (DynamicParameterType::BasePoint { min, max }, DynamicValue::Point(point)) => {
+            in_range(point.x(), min[0], max[0])
+                && in_range(point.y(), min[1], max[1])
+                && in_range(point.z(), min[2], max[2])
         }
         (DynamicParameterType::Flip, DynamicValue::Flip(_)) => true,
         (DynamicParameterType::Visibility { states }, DynamicValue::Visibility(value)) => {
