@@ -129,6 +129,7 @@ pub struct Camera3 {
     orientation: ViewOrientation,
     yaw: f64,
     pitch: f64,
+    custom_basis: Option<(Point3, Point3, Point3)>,
 }
 
 impl Camera3 {
@@ -146,7 +147,41 @@ impl Camera3 {
             orientation,
             yaw: 0.0,
             pitch: 0.0,
+            custom_basis: None,
         })
+    }
+    pub fn from_basis(
+        target: Point3,
+        distance: f64,
+        direction: Point3,
+        up: Point3,
+    ) -> Result<Self, GeometryError> {
+        if !distance.is_finite() || distance <= 0.0 {
+            return Err(GeometryError::NonPositiveScale);
+        }
+        let f = normalize(direction)?;
+        let up = normalize(up)?;
+        if dot(f, up).abs() > 1.0e-9 {
+            return Err(GeometryError::DegenerateLine);
+        }
+        let r = normalize(cross(up, f)?)?;
+        let u = normalize(cross(f, r)?)?;
+        Ok(Self {
+            target,
+            distance,
+            orientation: ViewOrientation::Front,
+            yaw: 0.0,
+            pitch: 0.0,
+            custom_basis: Some((r, u, f)),
+        })
+    }
+    pub fn from_direction(
+        target: Point3,
+        distance: f64,
+        direction: Point3,
+        up: Point3,
+    ) -> Result<Self, GeometryError> {
+        Self::from_basis(target, distance, direction, up)
     }
     pub fn target(self) -> Point3 {
         self.target
@@ -156,6 +191,24 @@ impl Camera3 {
     }
     pub fn orientation(self) -> ViewOrientation {
         self.orientation
+    }
+    pub fn yaw(self) -> f64 {
+        self.yaw
+    }
+    pub fn pitch(self) -> f64 {
+        self.pitch
+    }
+    pub fn direction(self) -> Result<Point3, GeometryError> {
+        Ok(self.basis()?.2)
+    }
+    pub fn up(self) -> Result<Point3, GeometryError> {
+        Ok(self.basis()?.1)
+    }
+    pub fn right(self) -> Result<Point3, GeometryError> {
+        Ok(self.basis()?.0)
+    }
+    pub fn basis_vectors(self) -> Result<(Point3, Point3, Point3), GeometryError> {
+        self.basis()
     }
     pub fn set_target(&mut self, target: Point3) {
         self.target = target;
@@ -171,13 +224,24 @@ impl Camera3 {
         self.orientation = orientation;
         self.yaw = 0.0;
         self.pitch = 0.0;
+        self.custom_basis = None;
     }
     pub fn orbit(&mut self, yaw_delta: f64, pitch_delta: f64) -> Result<(), GeometryError> {
         if !yaw_delta.is_finite() || !pitch_delta.is_finite() {
             return Err(GeometryError::NonFiniteAngle);
         }
+        let next_pitch = (self.pitch + pitch_delta).clamp(-FRAC_PI_2 + 1e-9, FRAC_PI_2 - 1e-9);
+        let applied_pitch = next_pitch - self.pitch;
+        if let Some((r, u, f)) = self.custom_basis {
+            let r1 = rotate_vector(r, u, yaw_delta)?;
+            let f1 = rotate_vector(f, u, yaw_delta)?;
+            let f2 = rotate_vector(f1, r1, applied_pitch)?;
+            let u2 = normalize(cross(f2, r1)?)?;
+            let r2 = normalize(cross(u2, f2)?)?;
+            self.custom_basis = Some((r2, u2, normalize(f2)?));
+        }
         self.yaw = (self.yaw + yaw_delta).rem_euclid(2.0 * PI);
-        self.pitch = (self.pitch + pitch_delta).clamp(-FRAC_PI_2 + 1e-9, FRAC_PI_2 - 1e-9);
+        self.pitch = next_pitch;
         Ok(())
     }
     pub fn project(self, point: Point3) -> Result<Point3, GeometryError> {
@@ -217,6 +281,9 @@ impl Camera3 {
         add(origin, mul(direction, t)?)
     }
     fn basis(self) -> Result<(Point3, Point3, Point3), GeometryError> {
+        if let Some(basis) = self.custom_basis {
+            return Ok(basis);
+        }
         let base = self.orientation.ucs();
         let (sy, cy) = self.yaw.sin_cos();
         let (sp, cp) = self.pitch.sin_cos();
@@ -264,4 +331,15 @@ fn normalize(v: Point3) -> Result<Point3, GeometryError> {
         return Err(GeometryError::DegenerateLine);
     }
     mul(v, 1.0 / n)
+}
+
+fn rotate_vector(vector: Point3, axis: Point3, angle: f64) -> Result<Point3, GeometryError> {
+    let axis = normalize(axis)?;
+    let (sin, cos) = angle.sin_cos();
+    let cross = cross(axis, vector)?;
+    let projection = dot(axis, vector);
+    add(
+        add(mul(vector, cos)?, mul(cross, sin)?)?,
+        mul(axis, projection * (1.0 - cos))?,
+    )
 }

@@ -5,13 +5,15 @@
 use crate::group::EntityGroup;
 use crate::{Anchor, ConstraintError, ConstraintKind, ConstraintRecord, ConstraintSet, LinePair};
 use crate::{
-    Arc3, BlockDefinition, Circle3, CornerParameter, Dimension, DimensionKind, DimensionStyle,
-    Entity, EntityStyle, EntityStyleError, Face3, GeometryError, Hatch, HatchPattern, Insert,
-    Layer, LayerError, Leader, Line3, Linetype, LinetypeError, MLeader, MLeaderBranch,
-    MLeaderContent, MLeaderStyle, MLine2, MLineElement, MLineJustification, MLineStyle, MText,
-    Mesh3, Point3, Polyline2, Polyline3, PolylineWidth, RasterImage, Ray3, Spline3, Table, Text,
-    TextStyle, XLine3,
+    Arc3, BlockDefinition, Camera3, Circle3, CornerParameter, Dimension, DimensionKind,
+    DimensionStyle, Entity, EntityStyle, EntityStyleError, Face3, GeometryError, Hatch,
+    HatchPattern, Insert, Layer, LayerError, Leader, Line3, Linetype, LinetypeError, MLeader,
+    MLeaderBranch, MLeaderContent, MLeaderStyle, MLine2, MLineElement, MLineJustification,
+    MLineStyle, MText, Mesh3, Point3, Polyline2, Polyline3, PolylineWidth, RasterImage, Ray3,
+    Spline3, Table, Text, TextStyle, XLine3,
 };
+use crate::{DataLink, FieldExpression, NamedField};
+use crate::{NamedUcs, NamedUcsCatalog, NamedView, NamedViewCatalog};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::error::Error;
@@ -297,6 +299,14 @@ pub struct DxfDocument {
     current_text_style: String,
     current_dimension_style: String,
     current_mleader_style: String,
+    named_views: NamedViewCatalog,
+    named_ucs: NamedUcsCatalog,
+    current_ucs_name: String,
+    current_ucs: crate::Ucs3,
+    active_view: Option<NamedView>,
+    entity_handles: Vec<u64>,
+    data_links: Vec<DataLink>,
+    named_fields: Vec<NamedField>,
 }
 
 impl DxfDocument {
@@ -309,6 +319,11 @@ impl DxfDocument {
         let (mleader_styles, mleader_style_handles) = read_mleader_styles(input);
         let current_styles = read_current_style_names(input);
         let block_definitions = read_block_definitions(input)?;
+        let named_views = read_named_views(input);
+        let named_ucs = read_named_ucs(input);
+        let (current_ucs_name, current_ucs) = read_current_ucs(input);
+        let active_view = read_active_view(input);
+        let (data_links, named_fields) = read_data_metadata(input);
         let mut seen = [false; 5];
         let mut previous_section = 0;
         let mut handles = HashSet::new();
@@ -373,6 +388,26 @@ impl DxfDocument {
                         }
                     }
                 }
+                let mut used_handles = HashSet::new();
+                let mut next_entity_handle = next_handle(input);
+                let mut stable_entity_handles = Vec::with_capacity(records.len());
+                for record in &records {
+                    let handle = record
+                        .as_ref()
+                        .and_then(|record| record_handle_at(input, record.start))
+                        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok());
+                    if let Some(handle) = handle {
+                        used_handles.insert(handle);
+                        stable_entity_handles.push(handle);
+                    } else {
+                        while used_handles.contains(&next_entity_handle) {
+                            next_entity_handle = next_entity_handle.saturating_add(1);
+                        }
+                        stable_entity_handles.push(next_entity_handle);
+                        used_handles.insert(next_entity_handle);
+                        next_entity_handle = next_entity_handle.saturating_add(1);
+                    }
+                }
                 return Ok(Self {
                     source: input.to_owned(),
                     entities,
@@ -399,6 +434,14 @@ impl DxfDocument {
                     current_text_style: current_styles.0,
                     current_dimension_style: current_styles.1,
                     current_mleader_style: current_styles.2,
+                    named_views,
+                    named_ucs,
+                    current_ucs_name,
+                    current_ucs,
+                    active_view,
+                    entity_handles: stable_entity_handles,
+                    data_links,
+                    named_fields,
                 });
             }
             if (marker.code, marker.value) != (0, "SECTION") {
@@ -698,6 +741,79 @@ impl DxfDocument {
         self.current_mleader_style = name;
         Ok(())
     }
+    pub fn named_views(&self) -> &NamedViewCatalog {
+        &self.named_views
+    }
+    pub fn set_named_views(&mut self, views: NamedViewCatalog) {
+        self.named_views = views;
+    }
+    pub fn named_ucs(&self) -> &NamedUcsCatalog {
+        &self.named_ucs
+    }
+    pub fn set_named_ucs(&mut self, ucs: NamedUcsCatalog) {
+        self.named_ucs = ucs;
+    }
+    pub fn current_ucs_name(&self) -> &str {
+        &self.current_ucs_name
+    }
+    pub fn current_ucs(&self) -> crate::Ucs3 {
+        self.current_ucs
+    }
+    pub fn set_current_ucs(
+        &mut self,
+        name: impl Into<String>,
+        ucs: crate::Ucs3,
+    ) -> Result<(), DxfError> {
+        let name = name.into();
+        if !name.is_empty()
+            && !name.eq_ignore_ascii_case("World")
+            && self.named_ucs.get(&name).is_err()
+        {
+            return Err(group_error(2));
+        }
+        self.current_ucs_name = name;
+        self.current_ucs = ucs;
+        Ok(())
+    }
+    pub fn set_current_ucs_name(&mut self, name: impl Into<String>) -> Result<(), DxfError> {
+        let name = name.into();
+        if !name.is_empty()
+            && self.named_ucs.get(&name).is_err()
+            && !name.eq_ignore_ascii_case("World")
+        {
+            return Err(group_error(2));
+        }
+        self.current_ucs_name = name;
+        Ok(())
+    }
+    pub fn active_view(&self) -> Option<&NamedView> {
+        self.active_view.as_ref()
+    }
+    pub fn set_active_view(&mut self, view: Option<NamedView>) {
+        self.active_view = view;
+    }
+    /// Return the stable native handle assigned to an entity.
+    pub fn entity_handle(&self, index: usize) -> Option<u64> {
+        self.entity_handles.get(index).copied()
+    }
+    /// Find an entity by its native DXF handle.
+    pub fn entity_index_by_handle(&self, handle: u64) -> Option<usize> {
+        self.entity_handles
+            .iter()
+            .position(|value| *value == handle)
+    }
+    pub fn data_links(&self) -> &[DataLink] {
+        &self.data_links
+    }
+    pub fn set_data_links(&mut self, links: Vec<DataLink>) {
+        self.data_links = links;
+    }
+    pub fn named_fields(&self) -> &[NamedField] {
+        &self.named_fields
+    }
+    pub fn set_named_fields(&mut self, fields: Vec<NamedField>) {
+        self.named_fields = fields;
+    }
     pub fn create_group(
         &mut self,
         name: impl Into<String>,
@@ -796,6 +912,10 @@ impl DxfDocument {
         self.records = records;
         self.entity_layers = layers;
         self.entity_styles = styles;
+        self.entity_handles = order
+            .iter()
+            .map(|index| self.entity_handles[*index])
+            .collect();
         self.groups = old_groups
             .into_iter()
             .map(|mut group| {
@@ -1219,6 +1339,15 @@ impl DxfDocument {
         self.records.push(None);
         self.entity_layers.push(name);
         self.entity_styles.push(style);
+        let next = self
+            .entity_handles
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_else(|| next_handle(&self.source).saturating_sub(1))
+            .saturating_add(1)
+            .max(next_handle(&self.source));
+        self.entity_handles.push(next);
         Ok(())
     }
 
@@ -1231,7 +1360,14 @@ impl DxfDocument {
         }
         self.entity_layers.remove(index);
         self.entity_styles.remove(index);
+        let removed_handle = self.entity_handles.remove(index);
         let removed = self.entities.remove(index);
+        self.data_links
+            .retain(|link| link.target_entity_handle() != Some(removed_handle));
+        self.named_fields.retain(|field| {
+            field.source_handle() != Some(removed_handle)
+                && field.target_handle() != Some(removed_handle)
+        });
         for group in &mut self.groups {
             group.set_members(
                 group
@@ -1271,7 +1407,14 @@ impl DxfDocument {
             .map(|&(start, end)| (start, end, String::new()))
             .collect();
         let mut added = String::new();
-        let mut object_handle = next_handle(&self.source);
+        let mut object_handle = next_handle(&self.source).max(
+            self.entity_handles
+                .iter()
+                .copied()
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1),
+        );
         let mut generated_handles = HashMap::new();
         for (entity_index, (((entity, record), layer), style)) in self
             .entities
@@ -1281,16 +1424,42 @@ impl DxfDocument {
             .zip(&self.entity_styles)
             .enumerate()
         {
+            if let Some(handle) = self.entity_handles.get(entity_index) {
+                generated_handles.insert(entity_index, format!("{handle:X}"));
+            }
             let Some(record) = record else {
                 let mut serialized = String::new();
                 write_entity(&mut serialized, entity, layer, style);
-                let handle = format!("{:X}", object_handle);
+                let handle = generated_handles
+                    .get(&entity_index)
+                    .cloned()
+                    .unwrap_or_else(|| format!("{:X}", object_handle));
                 insert_entity_handle(&mut serialized, &handle);
                 added.push_str(&serialized);
                 generated_handles.insert(entity_index, handle);
-                object_handle = object_handle.saturating_add(1);
+                if let Ok(value) = u64::from_str_radix(
+                    generated_handles
+                        .get(&entity_index)
+                        .map(String::as_str)
+                        .unwrap_or("0"),
+                    16,
+                ) {
+                    object_handle = object_handle.max(value.saturating_add(1));
+                }
                 continue;
             };
+            if record_handle_at(&self.source, record.start).is_none()
+                && entity == &record.original
+                && let Some(handle) = self.entity_handles.get(entity_index)
+            {
+                let newline = if self.source.contains("\r\n") {
+                    "\r\n"
+                } else {
+                    "\n"
+                };
+                let at = entity_handle_insertion_offset(&self.source, record.start);
+                changes.push((at, at, format!("5{newline}{handle:X}{newline}")));
+            }
             if entity != &record.original
                 && matches!(
                     entity,
@@ -1313,8 +1482,8 @@ impl DxfDocument {
             {
                 let mut replacement = String::new();
                 write_entity(&mut replacement, entity, layer, style);
-                if let Some(handle) = record_handle_at(&self.source, record.start) {
-                    insert_entity_handle(&mut replacement, &handle);
+                if let Some(handle) = self.entity_handles.get(entity_index) {
+                    insert_entity_handle(&mut replacement, &format!("{handle:X}"));
                 }
                 changes.push((record.start, record.end, replacement));
                 continue;
@@ -1509,6 +1678,36 @@ impl DxfDocument {
             &self.current_mleader_style,
             &self.source,
         );
+        append_header_ucs(&mut header, &self.current_ucs_name, &self.source);
+        append_header_point(
+            &mut header,
+            "$UCSORG",
+            self.current_ucs.origin(),
+            &self.source,
+        );
+        append_header_point(
+            &mut header,
+            "$UCSXDIR",
+            self.current_ucs.x_axis(),
+            &self.source,
+        );
+        append_header_point(
+            &mut header,
+            "$UCSYDIR",
+            self.current_ucs.y_axis(),
+            &self.source,
+        );
+        if let Some(view) = &self.active_view {
+            let camera = view.camera();
+            let target = camera.target();
+            let direction = camera
+                .direction()
+                .unwrap_or_else(|_| Point3::new(0.0, 0.0, 1.0).expect("finite"));
+            append_header_point(&mut header, "$VIEWDIR", direction, &self.source);
+            append_header_point(&mut header, "$TARGET", target, &self.source);
+            append_header_pair(&mut header, "$VIEWCTR", view.center(), &self.source);
+            append_header_scalar(&mut header, "$VIEWSIZE", view.view_height(), &self.source);
+        }
         if !header.is_empty() {
             if let Some(at) = self.linetype_data.header_end {
                 changes.push((at, at, header));
@@ -1544,6 +1743,11 @@ impl DxfDocument {
             &self.dimension_styles,
             "\n",
         ));
+        tables.push_str(&serialize_named_views(&self.named_views, "\n"));
+        tables.push_str(&serialize_named_ucs(&self.named_ucs, "\n"));
+        if let Some(view) = &self.active_view {
+            tables.push_str(&serialize_active_vport(view, "\n"));
+        }
         if !tables.is_empty() {
             if let Some(at) = self.layer_data.tables_end {
                 changes.push((at, at, tables));
@@ -1653,6 +1857,8 @@ impl DxfDocument {
             &generated_handles,
             &mut object_handle,
         );
+        let data_objects =
+            serialize_data_metadata(&self.data_links, &self.named_fields, &mut object_handle);
         let constraint_spans = constraint_spans(&self.source);
         let mut constraint_objects = constraint_objects;
         let mut mleader_style_objects =
@@ -1701,9 +1907,10 @@ impl DxfDocument {
             || !group_objects.is_empty()
             || !constraint_objects.is_empty()
             || !mleader_style_objects.is_empty()
+            || !data_objects.is_empty()
         {
             let objects = format!(
-                "{}{}{}{}{}",
+                "{}{}{}{}{}{}",
                 images
                     .iter()
                     .map(|image| serialize_image_def(image))
@@ -1711,7 +1918,8 @@ impl DxfDocument {
                 group_objects,
                 layout_objects,
                 constraint_objects,
-                mleader_style_objects
+                mleader_style_objects,
+                data_objects
             );
             let marker = if output.contains("\r\n0\r\nEOF") {
                 "\r\n0\r\nEOF"
@@ -1733,10 +1941,15 @@ impl DxfDocument {
                     output.insert_str(at, &objects.replace('\n', newline));
                 }
             } else if let Some(at) = output.find(marker) {
+                let separator = if at > 0 && !output[..at].ends_with('\n') {
+                    newline
+                } else {
+                    ""
+                };
                 output.insert_str(
                     at,
                     &format!(
-                        "0{newline}SECTION{newline}2{newline}OBJECTS{newline}{}0{newline}ENDSEC{newline}",
+                        "{separator}0{newline}SECTION{newline}2{newline}OBJECTS{newline}{}0{newline}ENDSEC",
                         objects.replace('\n', newline)
                     ),
                 );
@@ -1745,6 +1958,23 @@ impl DxfDocument {
         replace_header_style(&mut output, "$TEXTSTYLE", &self.current_text_style);
         replace_header_style(&mut output, "$DIMSTYLE", &self.current_dimension_style);
         replace_header_style(&mut output, "$CMLEADERSTYLE", &self.current_mleader_style);
+        replace_header_value(&mut output, "$UCSNAME", &self.current_ucs_name, "2");
+        replace_header_point(&mut output, "$UCSORG", self.current_ucs.origin());
+        replace_header_point(&mut output, "$UCSXDIR", self.current_ucs.x_axis());
+        replace_header_point(&mut output, "$UCSYDIR", self.current_ucs.y_axis());
+        if let Some(view) = &self.active_view {
+            let camera = view.camera();
+            replace_header_point(
+                &mut output,
+                "$VIEWDIR",
+                camera
+                    .direction()
+                    .unwrap_or_else(|_| Point3::new(0.0, 0.0, 1.0).expect("finite")),
+            );
+            replace_header_point(&mut output, "$TARGET", camera.target());
+            replace_header_pair(&mut output, "$VIEWCTR", view.center());
+            replace_header_scalar(&mut output, "$VIEWSIZE", view.view_height());
+        }
         if self.entities.iter().any(|entity| {
             matches!(
                 entity,
@@ -3049,6 +3279,175 @@ fn serialize_constraints(
     output
 }
 
+fn serialize_data_metadata(links: &[DataLink], fields: &[NamedField], handle: &mut u64) -> String {
+    if links.is_empty() && fields.is_empty() {
+        return String::new();
+    }
+    let mut records = String::new();
+    for link in links {
+        records.push_str(&format!(
+            "1000\nOpenCadData|v1|DATALINK|{}\n",
+            data_encode(link.to_metadata())
+        ));
+    }
+    for field in fields {
+        records.push_str(&format!(
+            "1000\nOpenCadData|v1|FIELD|{}\n",
+            data_encode(field_metadata(field))
+        ));
+    }
+    let output = format!(
+        "0\nXRECORD\n5\n{:X}\n100\nAcDbXrecord\n{}",
+        *handle, records
+    );
+    *handle = handle.saturating_add(1);
+    output
+}
+
+fn read_data_metadata(input: &str) -> (Vec<DataLink>, Vec<NamedField>) {
+    let mut links = Vec::new();
+    let mut fields = Vec::new();
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "XRECORD" {
+            continue;
+        }
+        let Ok(values) = record_fields(&mut groups) else {
+            break;
+        };
+        for value in values.iter().filter(|field| field.code == 1000) {
+            let Some(payload) = value.value.strip_prefix("OpenCadData|v1|") else {
+                continue;
+            };
+            let Some((kind, encoded)) = payload.split_once('|') else {
+                continue;
+            };
+            let Ok(metadata) = data_decode(encoded) else {
+                continue;
+            };
+            match kind {
+                "DATALINK" => {
+                    if let Ok(link) = DataLink::from_metadata(&metadata) {
+                        links.push(link);
+                    }
+                }
+                "FIELD" => {
+                    if let Some(field) = field_from_metadata(&metadata) {
+                        fields.push(field);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    (links, fields)
+}
+
+fn field_metadata(field: &NamedField) -> String {
+    let source = field
+        .source_handle()
+        .map_or_else(String::new, |value| value.to_string());
+    let target = field
+        .target_handle()
+        .map_or_else(String::new, |value| value.to_string());
+    let cell = field
+        .table_cell()
+        .map_or_else(String::new, |(row, column)| format!("{row},{column}"));
+    format!(
+        "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        data_encode(field.name()),
+        source,
+        target,
+        cell,
+        data_encode(field_expression_metadata(field.expression())),
+        field.precision(),
+        field.scale()
+    )
+}
+
+fn field_from_metadata(value: &str) -> Option<NamedField> {
+    let values: Vec<_> = value.split('\t').collect();
+    if values.len() != 7 {
+        return None;
+    }
+    let name = data_decode(values[0]).ok()?;
+    let source = (!values[1].is_empty())
+        .then(|| values[1].parse().ok())
+        .flatten();
+    let target = (!values[2].is_empty())
+        .then(|| values[2].parse().ok())
+        .flatten();
+    let cell = if values[3].is_empty() {
+        None
+    } else {
+        let (row, column) = values[3].split_once(',')?;
+        Some((row.parse().ok()?, column.parse().ok()?))
+    };
+    let expression = field_expression_from_metadata(&data_decode(values[4]).ok()?)?;
+    let precision = values[5].parse().ok()?;
+    let scale = values[6].parse().ok()?;
+    NamedField::new(name, source, target, cell, expression, precision, scale).ok()
+}
+
+fn field_expression_metadata(expression: &FieldExpression) -> String {
+    match expression {
+        FieldExpression::EntityHandle => "entityhandle".to_owned(),
+        FieldExpression::Type => "type".to_owned(),
+        FieldExpression::Layer => "layer".to_owned(),
+        FieldExpression::Color => "color".to_owned(),
+        FieldExpression::Linetype => "linetype".to_owned(),
+        FieldExpression::Length => "length".to_owned(),
+        FieldExpression::Area => "area".to_owned(),
+        FieldExpression::Volume => "volume".to_owned(),
+        FieldExpression::DrawingEntityCount => "drawingentitycount".to_owned(),
+        FieldExpression::BlockAttribute(name) => format!("blockattr/{name}"),
+    }
+}
+
+fn field_expression_from_metadata(value: &str) -> Option<FieldExpression> {
+    FieldExpression::parse(value).ok()
+}
+
+fn data_encode(value: impl AsRef<str>) -> String {
+    value
+        .as_ref()
+        .replace('%', "%25")
+        .replace('\t', "%09")
+        .replace('\n', "%0A")
+        .replace('\r', "%0D")
+}
+
+fn data_decode(value: &str) -> Result<String, ()> {
+    let mut output = String::new();
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'%' {
+            output.push(bytes[index] as char);
+            index += 1;
+            continue;
+        }
+        if index + 2 >= bytes.len() {
+            return Err(());
+        }
+        let byte = u8::from_str_radix(&value[index + 1..index + 3], 16).map_err(|_| ())?;
+        output.push(byte as char);
+        index += 3;
+    }
+    Ok(output)
+}
+
 fn insert_entity_handle(output: &mut String, handle: &str) {
     let Some(first_end) = output.find('\n') else {
         return;
@@ -3841,6 +4240,413 @@ fn read_current_style_names(input: &str) -> (String, String, String) {
     (text, dimension, mleader)
 }
 
+fn read_named_views(input: &str) -> NamedViewCatalog {
+    let mut catalog = NamedViewCatalog::new();
+    let mut groups = Groups::new(input);
+    let mut tables = false;
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "TABLES" {
+            tables = true;
+            continue;
+        }
+        if !tables {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "VIEW" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let Some(name) = fields.iter().find(|f| f.code == 2).map(|f| f.value) else {
+            continue;
+        };
+        let Some(target) = named_point(&fields, 12, 22, 32) else {
+            continue;
+        };
+        let Some(direction) = named_point(&fields, 11, 21, 31) else {
+            continue;
+        };
+        if fields
+            .iter()
+            .find(|f| f.code == 71)
+            .and_then(|f| f.value.parse::<i32>().ok())
+            .unwrap_or(0)
+            != 0
+        {
+            continue;
+        }
+        let twist = named_number(&fields, 50).unwrap_or(0.0);
+        let up = camera_up_for_twist(direction, twist)
+            .unwrap_or_else(|| Point3::new(0.0, 1.0, 0.0).expect("finite"));
+        let camera = Camera3::from_direction(target, 1.0, direction, up);
+        let Ok(camera) = camera else {
+            continue;
+        };
+        let center = [
+            named_number(&fields, 10).unwrap_or(0.0),
+            named_number(&fields, 20).unwrap_or(0.0),
+        ];
+        let height = named_number(&fields, 40)
+            .filter(|v| *v > 0.0)
+            .unwrap_or(1.0);
+        let width = named_number(&fields, 41)
+            .filter(|v| *v > 0.0)
+            .unwrap_or(height);
+        if let Ok(mut view) = NamedView::with_viewport(name, camera, center, height, width) {
+            let associated = fields
+                .iter()
+                .find(|field| field.code == 72)
+                .and_then(|field| field.value.parse::<i32>().ok())
+                .is_some_and(|value| value != 0);
+            if associated
+                && let (Some(origin), Some(x), Some(y)) = (
+                    named_point(&fields, 110, 120, 130),
+                    named_point(&fields, 111, 121, 131),
+                    named_point(&fields, 112, 122, 132),
+                )
+                && let Ok(ucs) = crate::Ucs3::from_points(origin, x, y)
+            {
+                let _ = view.set_associated_ucs(Some(ucs), None::<String>);
+            }
+            let _ = catalog.upsert(view);
+        }
+    }
+    catalog
+}
+
+fn read_named_ucs(input: &str) -> NamedUcsCatalog {
+    let mut catalog = NamedUcsCatalog::new();
+    let mut groups = Groups::new(input);
+    let mut tables = false;
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "TABLES" {
+            tables = true;
+            continue;
+        }
+        if !tables {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "UCS" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let Some(name) = fields.iter().find(|f| f.code == 2).map(|f| f.value) else {
+            continue;
+        };
+        let (Some(origin), Some(x), Some(y)) = (
+            named_point(&fields, 10, 20, 30),
+            named_point(&fields, 11, 21, 31),
+            named_point(&fields, 12, 22, 32),
+        ) else {
+            continue;
+        };
+        if let Ok(ucs) = crate::Ucs3::from_points(origin, x, y)
+            && let Ok(value) = NamedUcs::new(name, ucs)
+        {
+            let _ = catalog.upsert(value);
+        }
+    }
+    catalog
+}
+
+fn read_current_ucs(input: &str) -> (String, crate::Ucs3) {
+    let mut groups = Groups::new(input);
+    let mut header = false;
+    let mut name = "World".to_owned();
+    let mut origin = Point3::default();
+    let mut x_point = Point3::new(1.0, 0.0, 0.0).expect("finite");
+    let mut y_point = Point3::new(0.0, 1.0, 0.0).expect("finite");
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "HEADER" {
+            header = true;
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            header = false;
+        }
+        if !header || marker.code != 9 {
+            continue;
+        }
+        match marker.value {
+            "$UCSNAME" => {
+                if let Ok(Some(value)) = groups.next()
+                    && value.code == 2
+                {
+                    name = value.value.to_owned();
+                }
+            }
+            "$UCSORG" | "$UCSXDIR" | "$UCSYDIR" => {
+                let Ok(Some(x)) = groups.next() else { continue };
+                let Ok(Some(y)) = groups.next() else { continue };
+                let Ok(Some(z)) = groups.next() else { continue };
+                if x.code != 10 || y.code != 20 || z.code != 30 {
+                    continue;
+                }
+                let Ok(point) = Point3::new(
+                    x.value.parse().unwrap_or(f64::NAN),
+                    y.value.parse().unwrap_or(f64::NAN),
+                    z.value.parse().unwrap_or(f64::NAN),
+                ) else {
+                    continue;
+                };
+                match marker.value {
+                    "$UCSORG" => origin = point,
+                    "$UCSXDIR" => x_point = point,
+                    "$UCSYDIR" => y_point = point,
+                    _ => unreachable!(),
+                }
+            }
+            _ => {
+                let _ = groups.next();
+            }
+        }
+    }
+    let ucs =
+        crate::Ucs3::from_points(origin, x_point, y_point).unwrap_or_else(|_| crate::Ucs3::world());
+    (name, ucs)
+}
+
+fn read_active_view(input: &str) -> Option<NamedView> {
+    if let Some(view) = read_active_vport(input) {
+        return Some(view);
+    }
+    let mut groups = Groups::new(input);
+    let mut header = false;
+    let mut center = [0.0, 0.0];
+    let mut size: f64 = 1.0;
+    let mut direction = Point3::new(0.0, 0.0, 1.0).expect("finite");
+    let mut target = Point3::default();
+    let mut saw_view = false;
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "HEADER" {
+            header = true;
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if !header || marker.code != 9 {
+            continue;
+        }
+        match marker.value {
+            "$VIEWCTR" => {
+                let (Ok(Some(x)), Ok(Some(y))) = (groups.next(), groups.next()) else {
+                    continue;
+                };
+                if x.code == 10 && y.code == 20 {
+                    center = [
+                        x.value.parse().unwrap_or(0.0),
+                        y.value.parse().unwrap_or(0.0),
+                    ];
+                    saw_view = true;
+                }
+            }
+            "$VIEWSIZE" => {
+                if let Ok(Some(value)) = groups.next() {
+                    size = value.value.parse().unwrap_or(1.0);
+                    saw_view = true;
+                }
+            }
+            "$VIEWDIR" | "$TARGET" | "$VIEWTARGET" => {
+                let (Ok(Some(x)), Ok(Some(y)), Ok(Some(z))) =
+                    (groups.next(), groups.next(), groups.next())
+                else {
+                    continue;
+                };
+                if x.code == 10
+                    && y.code == 20
+                    && z.code == 30
+                    && let Ok(point) = Point3::new(
+                        x.value.parse().unwrap_or(f64::NAN),
+                        y.value.parse().unwrap_or(f64::NAN),
+                        z.value.parse().unwrap_or(f64::NAN),
+                    )
+                {
+                    if marker.value == "$VIEWDIR" {
+                        direction = point;
+                    } else {
+                        target = point;
+                    }
+                    saw_view = true;
+                }
+            }
+            _ => {
+                let _ = groups.next();
+            }
+        }
+    }
+    if !saw_view {
+        return None;
+    }
+    let camera = Camera3::from_basis(
+        target,
+        1.0,
+        direction,
+        Point3::new(0.0, 1.0, 0.0).expect("finite"),
+    )
+    .ok()?;
+    NamedView::with_viewport(
+        "ActiveView",
+        camera,
+        center,
+        size.max(f64::EPSILON),
+        size.max(f64::EPSILON),
+    )
+    .ok()
+}
+
+fn read_active_vport(input: &str) -> Option<NamedView> {
+    let mut groups = Groups::new(input);
+    let mut tables = false;
+    let mut active = None;
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "TABLES" {
+            tables = true;
+            continue;
+        }
+        if !tables {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "VPORT" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        if fields
+            .iter()
+            .find(|field| field.code == 2)
+            .is_none_or(|field| field.value != "*ACTIVE")
+        {
+            continue;
+        }
+        let number = |code| {
+            fields
+                .iter()
+                .find(|field| field.code == code)
+                .and_then(|field| field.value.parse::<f64>().ok())
+                .filter(|value| value.is_finite())
+        };
+        let (Some(cx), Some(cy), Some(height), Some(direction), Some(target)) = (
+            Some(number(12).unwrap_or(0.0)),
+            Some(number(22).unwrap_or(0.0)),
+            number(45).or_else(|| number(41)),
+            named_point(&fields, 16, 26, 36),
+            named_point(&fields, 17, 27, 37),
+        ) else {
+            continue;
+        };
+        if height <= 0.0 {
+            continue;
+        }
+        let aspect = number(40).filter(|value| *value > 0.0).unwrap_or(1.0);
+        let twist = number(51).unwrap_or(0.0);
+        let up = camera_up_for_twist(direction, twist)?;
+        let camera = Camera3::from_direction(target, 1.0, direction, up).ok()?;
+        active = NamedView::with_viewport(
+            "*ACTIVE",
+            camera,
+            [cx, cy],
+            height,
+            (height * aspect).max(f64::EPSILON),
+        )
+        .ok();
+    }
+    active
+}
+
+fn named_number(fields: &[Group<'_>], code: u16) -> Option<f64> {
+    fields
+        .iter()
+        .find(|f| f.code == code)
+        .and_then(|f| f.value.parse().ok())
+}
+
+fn named_point(fields: &[Group<'_>], x: u16, y: u16, z: u16) -> Option<Point3> {
+    Point3::new(
+        named_number(fields, x)?,
+        named_number(fields, y)?,
+        named_number(fields, z).unwrap_or(0.0),
+    )
+    .ok()
+}
+
+fn camera_up_for_twist(direction: Point3, twist: f64) -> Option<Point3> {
+    if !twist.is_finite() {
+        return None;
+    }
+    let (dx, dy, dz) = (direction.x(), direction.y(), direction.z());
+    let length = (dx * dx + dy * dy + dz * dz).sqrt();
+    if !length.is_finite() || length <= f64::EPSILON {
+        return None;
+    }
+    let f = [dx / length, dy / length, dz / length];
+    let reference = if f[2].abs() < 0.999 {
+        [0.0, 0.0, 1.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let right = [
+        reference[1] * f[2] - reference[2] * f[1],
+        reference[2] * f[0] - reference[0] * f[2],
+        reference[0] * f[1] - reference[1] * f[0],
+    ];
+    let right_length = (right[0] * right[0] + right[1] * right[1] + right[2] * right[2]).sqrt();
+    if !right_length.is_finite() || right_length <= f64::EPSILON {
+        return None;
+    }
+    let r = [
+        right[0] / right_length,
+        right[1] / right_length,
+        right[2] / right_length,
+    ];
+    let up = [
+        f[1] * r[2] - f[2] * r[1],
+        f[2] * r[0] - f[0] * r[2],
+        f[0] * r[1] - f[1] * r[0],
+    ];
+    let (sin, cos) = twist.sin_cos();
+    Point3::new(
+        up[0] * cos + r[0] * sin,
+        up[1] * cos + r[1] * sin,
+        up[2] * cos + r[2] * sin,
+    )
+    .ok()
+}
+
+fn camera_twist(camera: Camera3) -> f64 {
+    let Ok(direction) = camera.direction() else {
+        return 0.0;
+    };
+    let Ok(up) = camera.up() else {
+        return 0.0;
+    };
+    let Some(reference) = camera_up_for_twist(direction, 0.0) else {
+        return 0.0;
+    };
+    let (dx, dy, dz) = (direction.x(), direction.y(), direction.z());
+    let (ux, uy, uz) = (up.x(), up.y(), up.z());
+    let (rx, ry, rz) = (
+        reference.y() * dz - reference.z() * dy,
+        reference.z() * dx - reference.x() * dz,
+        reference.x() * dy - reference.y() * dx,
+    );
+    (ux * rx + uy * ry + uz * rz)
+        .atan2(ux * reference.x() + uy * reference.y() + uz * reference.z())
+}
+
 fn serialize_mline_styles(styles: &[MLineStyle], newline: &str) -> String {
     if styles.is_empty() {
         return String::new();
@@ -3894,11 +4700,141 @@ fn serialize_annotation_tables(
     output
 }
 
+fn serialize_named_views(catalog: &NamedViewCatalog, newline: &str) -> String {
+    if catalog.views().is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "0{newline}TABLE{newline}2{newline}VIEW{newline}70{newline}{}{newline}",
+        catalog.views().len()
+    );
+    for view in catalog.views() {
+        let target = view.camera().target();
+        let direction = view
+            .camera()
+            .direction()
+            .unwrap_or_else(|_| Point3::new(0.0, 0.0, 1.0).expect("finite"));
+        let twist = camera_twist(view.camera());
+        let associated = view.associated_ucs();
+        output.push_str(&format!(
+            "0{newline}VIEW{newline}2{newline}{}{newline}40{newline}{}{newline}41{newline}{}{newline}10{newline}{}{newline}20{newline}{}{newline}11{newline}{}{newline}21{newline}{}{newline}31{newline}{}{newline}12{newline}{}{newline}22{newline}{}{newline}32{newline}{}{newline}50{newline}{twist}{newline}71{newline}0{newline}72{newline}{}{newline}",
+            view.name(),
+            view.view_height(),
+            view.view_width(),
+            view.center()[0],
+            view.center()[1],
+            direction.x(),
+            direction.y(),
+            direction.z(),
+            target.x(),
+            target.y(),
+            target.z(),
+            u8::from(associated.is_some())
+        ));
+        if let Some(ucs) = associated {
+            let origin = ucs.origin();
+            let x = ucs
+                .local_to_world(Point3::new(1.0, 0.0, 0.0).expect("finite"))
+                .unwrap_or(origin);
+            let y = ucs
+                .local_to_world(Point3::new(0.0, 1.0, 0.0).expect("finite"))
+                .unwrap_or(origin);
+            output.push_str(&format!(
+                "110{newline}{}{newline}120{newline}{}{newline}130{newline}{}{newline}111{newline}{}{newline}121{newline}{}{newline}131{newline}{}{newline}112{newline}{}{newline}122{newline}{}{newline}132{newline}{}{newline}",
+                origin.x(), origin.y(), origin.z(), x.x(), x.y(), x.z(), y.x(), y.y(), y.z()
+            ));
+        }
+    }
+    output.push_str(&format!("0{newline}ENDTAB{newline}"));
+    output
+}
+
+fn serialize_named_ucs(catalog: &NamedUcsCatalog, newline: &str) -> String {
+    if catalog.ucs().is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "0{newline}TABLE{newline}2{newline}UCS{newline}70{newline}{}{newline}",
+        catalog.ucs().len()
+    );
+    for named in catalog.ucs() {
+        let ucs = named.ucs();
+        let origin = ucs.origin();
+        let x = ucs
+            .local_to_world(Point3::new(1.0, 0.0, 0.0).expect("finite"))
+            .unwrap_or(origin);
+        let y = ucs
+            .local_to_world(Point3::new(0.0, 1.0, 0.0).expect("finite"))
+            .unwrap_or(origin);
+        output.push_str(&format!("0{newline}UCS{newline}2{newline}{}{newline}10{newline}{}{newline}20{newline}{}{newline}30{newline}{}{newline}11{newline}{}{newline}21{newline}{}{newline}31{newline}{}{newline}12{newline}{}{newline}22{newline}{}{newline}32{newline}{}{newline}79{newline}0{newline}", named.name(), origin.x(), origin.y(), origin.z(), x.x(), x.y(), x.z(), y.x(), y.y(), y.z()));
+    }
+    output.push_str(&format!("0{newline}ENDTAB{newline}"));
+    output
+}
+
+fn serialize_active_vport(view: &NamedView, newline: &str) -> String {
+    let camera = view.camera();
+    let direction = camera
+        .direction()
+        .unwrap_or_else(|_| Point3::new(0.0, 0.0, 1.0).expect("finite"));
+    let target = camera.target();
+    let height = view.view_height();
+    let aspect = (view.view_width() / height).max(f64::EPSILON);
+    format!(
+        "0{newline}TABLE{newline}2{newline}VPORT{newline}70{newline}1{newline}0{newline}VPORT{newline}2{newline}*ACTIVE{newline}40{newline}{aspect}{newline}45{newline}{height}{newline}12{newline}{}{newline}22{newline}{}{newline}16{newline}{}{newline}26{newline}{}{newline}36{newline}{}{newline}17{newline}{}{newline}27{newline}{}{newline}37{newline}{}{newline}51{newline}{}{newline}0{newline}ENDTAB{newline}",
+        view.center()[0],
+        view.center()[1],
+        direction.x(),
+        direction.y(),
+        direction.z(),
+        target.x(),
+        target.y(),
+        target.z(),
+        camera_twist(camera)
+    )
+}
+
 fn append_header_style(header: &mut String, variable: &str, value: &str, source: &str) {
     if source.contains(variable) || header.contains(variable) {
         return;
     }
     header.push_str(&format!("9\n{variable}\n1\n{value}\n"));
+}
+
+fn append_header_ucs(header: &mut String, value: &str, source: &str) {
+    if source.contains("$UCSNAME") || header.contains("$UCSNAME") {
+        return;
+    }
+    header.push_str(&format!("9\n$UCSNAME\n2\n{value}\n"));
+}
+
+fn append_header_scalar(header: &mut String, variable: &str, value: f64, source: &str) {
+    if source.contains(variable) || header.contains(variable) {
+        return;
+    }
+    header.push_str(&format!("9\n{variable}\n40\n{value}\n"));
+}
+
+fn append_header_pair(header: &mut String, variable: &str, value: [f64; 2], source: &str) {
+    if source.contains(variable) || header.contains(variable) {
+        return;
+    }
+    header.push_str(&format!(
+        "9\n{variable}\n10\n{}\n20\n{}\n",
+        value[0], value[1]
+    ));
+}
+
+fn append_header_point(header: &mut String, variable: &str, value: Point3, source: &str) {
+    if source.contains(variable) || header.contains(variable) {
+        return;
+    }
+    header.push_str(&format!(
+        "9\n{variable}\n10\n{}\n20\n{}\n30\n{}\n",
+        value.x(),
+        value.y(),
+        value.z()
+    ));
 }
 
 fn validate_style_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<(), DxfError> {
@@ -3912,8 +4848,12 @@ fn validate_style_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<
 }
 
 fn replace_header_style(output: &mut String, variable: &str, value: &str) {
+    replace_header_value(output, variable, value, "1");
+}
+
+fn replace_header_value(output: &mut String, variable: &str, value: &str, code: &str) {
     for ending in ["\r\n", "\n"] {
-        let marker = format!("{ending}{variable}{ending}1{ending}");
+        let marker = format!("{ending}{variable}{ending}{code}{ending}");
         let Some(start) = output.find(&marker) else {
             continue;
         };
@@ -3922,6 +4862,40 @@ fn replace_header_style(output: &mut String, variable: &str, value: &str) {
             .find(ending)
             .map_or(output.len(), |offset| value_start + offset);
         output.replace_range(value_start..value_end, value);
+        return;
+    }
+}
+
+fn replace_header_scalar(output: &mut String, variable: &str, value: f64) {
+    replace_header_value(output, variable, &value.to_string(), "40");
+}
+
+fn replace_header_pair(output: &mut String, variable: &str, value: [f64; 2]) {
+    replace_header_component(output, variable, "10", &value[0].to_string());
+    replace_header_component(output, variable, "20", &value[1].to_string());
+}
+
+fn replace_header_point(output: &mut String, variable: &str, value: Point3) {
+    replace_header_component(output, variable, "10", &value.x().to_string());
+    replace_header_component(output, variable, "20", &value.y().to_string());
+    replace_header_component(output, variable, "30", &value.z().to_string());
+}
+
+fn replace_header_component(output: &mut String, variable: &str, code: &str, value: &str) {
+    for ending in ["\r\n", "\n"] {
+        let prefix = format!("{ending}{variable}{ending}");
+        let Some(variable_start) = output.find(&prefix) else {
+            continue;
+        };
+        let search_start = variable_start + prefix.len();
+        let Some(code_start_rel) = output[search_start..].find(&format!("{code}{ending}")) else {
+            continue;
+        };
+        let code_start = search_start + code_start_rel + code.len() + ending.len();
+        let value_end = output[code_start..]
+            .find(ending)
+            .map_or(output.len(), |offset| code_start + offset);
+        output.replace_range(code_start..value_end, value);
         return;
     }
 }
@@ -4407,6 +5381,20 @@ fn record_handle_at(input: &str, start: usize) -> Option<String> {
         .iter()
         .find(|field| field.code == 5)
         .map(|field| field.value.to_owned())
+}
+
+fn entity_handle_insertion_offset(input: &str, start: usize) -> usize {
+    let Some(rest) = input.get(start..) else {
+        return start;
+    };
+    let Some(first_end) = rest.find('\n') else {
+        return start;
+    };
+    let name_start = first_end + 1;
+    let Some(name_end) = rest.get(name_start..).and_then(|value| value.find('\n')) else {
+        return start + name_start;
+    };
+    start + name_start + name_end + 1
 }
 
 fn read_handle(group: Group<'_>, handles: &mut HashSet<u64>) -> Result<(), DxfError> {

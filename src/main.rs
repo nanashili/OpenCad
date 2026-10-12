@@ -5,6 +5,7 @@ use opencad::{
 use std::env;
 use std::error::Error;
 use std::fs;
+use std::path::Path;
 use std::process::ExitCode;
 
 const USAGE: &str = "Usage: opencad <output.svg> <x1> <y1> <x2> <y2> [<x> <y> | --undo | --close]... [--break <x1> <y1> ...]\n       opencad line3 <output.dxf> <sx> <sy> <sz> <ex> <ey> <ez> [<sx> <sy> <sz> <ex> <ey> <ez>]...\n       opencad dxf-copy <input.dxf> <output.dxf>\n       opencad dxf-set-line <input.dxf> <output.dxf> <line-number> <sx> <sy> <sz> <ex> <ey> <ez>\n       opencad import-obj <input.obj> <output.dxf>\n       opencad import-stl <input.stl> <output.dxf>\n       opencad export-obj <input.dxf> <output.obj>\n       opencad export-stl <input.dxf> <output.stl> [--ascii]\n       opencad mesh-boolean <union|subtract|intersect> <a.dxf> <b.dxf> <output.dxf>\n--undo removes the latest segment in the current chain; --close connects its last point to its first (after two segments); --break starts a separate chain. Positive Y points upward.\nline3 writes independent 3D LINE entities. dxf-copy preserves the supported R12 ASCII DXF document, including LINE, world-XY CIRCLE / ARC, and straight XY POLYLINE entities at a common elevation on named layers and imported metadata. dxf-set-line replaces one LINE by its one-based line number. See README.md for the supported format and desktop editor.";
@@ -168,6 +169,22 @@ fn run() -> Result<(), Box<dyn Error>> {
     if args.len() == 1 && (args[0] == "--help" || args[0] == "-h") {
         println!("{USAGE}");
         return Ok(());
+    }
+    if args.first().is_some_and(|arg| arg == "run-script") {
+        if !(args.len() == 3 || args.len() == 4) {
+            return Err("Usage: opencad run-script <script.scr> <out.dxf> [input.dxf]".into());
+        }
+        #[cfg(feature = "desktop")]
+        {
+            let input = args.get(3).map(Path::new);
+            opencad::desktop::run_script_file(Path::new(&args[1]), Path::new(&args[2]), input)
+                .map_err(|error| -> Box<dyn Error> { error.into() })?;
+            return Ok(());
+        }
+        #[cfg(not(feature = "desktop"))]
+        {
+            return Err("run-script requires the desktop feature".into());
+        }
     }
     if args.first().is_some_and(|arg| arg == "line3") {
         if args.len() < 8 {

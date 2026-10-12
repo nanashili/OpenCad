@@ -123,13 +123,18 @@ impl OpenCadApp {
             self.feature_form = Some(form);
             return Ok(());
         }
+        let upper = verb.to_ascii_uppercase();
+        if matches!(upper.as_str(), "VIEW" | "UCS")
+            && let Some(result) = self.feature_view_command(&upper, &tokens)
+        {
+            return result;
+        }
         if matches!(
-            verb.to_ascii_uppercase().as_str(),
+            upper.as_str(),
             "VIEW" | "VPOINT" | "UCS" | "PLAN" | "3DORBIT"
         ) {
-            return self.view_command(&verb.to_ascii_uppercase(), rest, &tokens);
+            return self.view_command(&upper, rest, &tokens);
         }
-        let upper = verb.to_ascii_uppercase();
         if let Some(result) = self
             .feature_layout_command(&upper, rest, &tokens)
             .or_else(|| self.feature_construction_command(&upper, &tokens))
@@ -139,6 +144,15 @@ impl OpenCadApp {
             .or_else(|| self.feature_selection_command(&upper, &tokens))
             .or_else(|| self.feature_groups_command(&upper, &tokens))
             .or_else(|| self.feature_interchange_command(&upper, rest, &tokens))
+            .or_else(|| {
+                self.feature_data_command(&upper, rest).map(|result| {
+                    result.map(|output| {
+                        if !output.is_empty() {
+                            self.message(output, false);
+                        }
+                    })
+                })
+            })
             .or_else(|| self.feature_utility_command(&upper, rest, &tokens))
             .or_else(|| self.feature_modify_command(&upper, rest, &tokens))
             .or_else(|| self.feature_solid_command(&upper, rest, &tokens))
@@ -1517,7 +1531,7 @@ pub(super) fn parse_point(value: &str, elevation: f64) -> Result<Point3, String>
     .map_err(|e| e.to_string())
 }
 
-fn command_tokens(input: &str) -> Result<Vec<String>, String> {
+pub(super) fn command_tokens(input: &str) -> Result<Vec<String>, String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
     let mut quote = None;

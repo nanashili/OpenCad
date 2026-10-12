@@ -6,6 +6,7 @@ pub(super) struct Camera {
     scale: f64,
     view: crate::Camera3,
     ucs: crate::Ucs3,
+    last_canvas_size: [f64; 2],
 }
 impl Default for Camera {
     fn default() -> Self {
@@ -15,6 +16,7 @@ impl Default for Camera {
             view: crate::Camera3::new(Point3::default(), 100.0, crate::ViewOrientation::Top)
                 .expect("valid camera"),
             ucs: crate::Ucs3::world(),
+            last_canvas_size: [1024.0, 768.0],
         }
     }
 }
@@ -75,6 +77,40 @@ impl Camera {
     pub(super) fn set_ucs(&mut self, ucs: crate::Ucs3) {
         self.ucs = ucs;
     }
+    pub(super) fn named_view_viewport(&self) -> ([f64; 2], f64, f64) {
+        (
+            self.center,
+            self.last_canvas_size[1] / self.scale,
+            self.last_canvas_size[0] / self.scale,
+        )
+    }
+
+    pub(super) fn set_named_view_viewport(
+        &mut self,
+        center: [f64; 2],
+        height: f64,
+        width: f64,
+    ) -> Result<(), String> {
+        if !height.is_finite() || !width.is_finite() || height <= 0.0 || width <= 0.0 {
+            return Err("Named view has invalid viewport dimensions.".into());
+        }
+        let sx = self.last_canvas_size[0] / width;
+        let sy = self.last_canvas_size[1] / height;
+        self.set_named_view_state(center, sx.min(sy))
+    }
+
+    pub(super) fn set_named_view_state(
+        &mut self,
+        center: [f64; 2],
+        scale: f64,
+    ) -> Result<(), String> {
+        if !scale.is_finite() || scale <= 0.0 || center.iter().any(|value| !value.is_finite()) {
+            return Err("Named view has invalid viewport values.".into());
+        }
+        self.center = center;
+        self.scale = scale.clamp(1e-8, 1e6);
+        Ok(())
+    }
     fn fit(&mut self, entities: &[Entity], rect: Rect) -> Result<(), String> {
         if entities.is_empty() {
             *self = Self::default();
@@ -115,6 +151,7 @@ impl OpenCadApp {
                 let (response, painter) =
                     ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
                 let rect = response.rect;
+                self.camera.last_canvas_size = [f64::from(rect.width()), f64::from(rect.height())];
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
                         egui::WidgetType::Other,

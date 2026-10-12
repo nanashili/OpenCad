@@ -10,6 +10,7 @@ mod color;
 mod constraints;
 mod construction;
 mod corner;
+mod drawing_data;
 mod dxf;
 mod editor;
 mod ellipse;
@@ -25,6 +26,7 @@ mod linetype;
 mod mesh_ops;
 mod modeling;
 mod multiline;
+mod named_views;
 mod offset;
 mod point;
 mod polyline;
@@ -57,6 +59,12 @@ pub use constraints::{
 };
 pub use construction::{Ray3, XLine3};
 pub use corner::{Corner, CornerParameter, LineCorner};
+pub use drawing_data::{
+    CsvError, CsvTable, DataColumn, DataLink, DataLinkError, EntityHandle, ExtractionError,
+    FieldEvaluationError, FieldExpression, FieldExpressionError, FieldMetadataError,
+    FieldUpdateError, FieldValue, NamedField, extract_csv, table_from_csv, update_linked_table,
+    update_named_field, update_named_fields,
+};
 pub use dxf::{DxfDocument, DxfError, DxfErrorKind, read_dxf, write_dxf};
 pub use editor::{DrawOrder, EditError, Editor};
 pub use ellipse::Ellipse3;
@@ -78,6 +86,7 @@ pub use modeling::{
     ModelingError, helix_points, loft_profiles, section_mesh, slice_mesh, sweep_profile,
 };
 pub use multiline::{MLine2, MLineElement, MLineJustification, MLineStyle};
+pub use named_views::{NamedUcs, NamedUcsCatalog, NamedView, NamedViewCatalog, NamedViewError};
 pub use offset::{Offset, OffsetLayer, OffsetOptions};
 pub use point::PointEntity;
 pub use polyline::{Polyline2, PolylineSegment, PolylineWidth};

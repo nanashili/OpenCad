@@ -8,6 +8,7 @@ impl OpenCadApp {
     ) -> Option<Result<(), String>> {
         let result = match verb {
             "QSELECT" => self.qselect_command(tokens),
+            "SELECTSIMILAR" => self.select_similar_command(tokens),
             "LAYFRZ" => self.layer_freeze_command(tokens, true),
             "LAYTHW" => self.layer_freeze_command(tokens, false),
             "LAYOFF" => self.layer_visibility_command(tokens, false),
@@ -100,6 +101,92 @@ impl OpenCadApp {
         let count = selected.len();
         self.editor.select(selected);
         self.message(format!("QSELECT selected {count} object(s)."), false);
+        Ok(())
+    }
+
+    fn select_similar_command(&mut self, tokens: &[&str]) -> Result<(), String> {
+        let seed = tokens
+            .first()
+            .and_then(|value| value.parse::<usize>().ok())
+            .or_else(|| self.editor.selection().first().copied())
+            .ok_or("SELECTSIMILAR needs a selected entity or entity index.")?;
+        let source = self
+            .editor
+            .entities()
+            .get(seed)
+            .ok_or("Unknown entity index.")?;
+        let source_layer = self.editor.entity_layer(seed).map(str::to_owned);
+        let source_style = self.editor.entity_style(seed).cloned();
+        let type_only = tokens
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case("TYPE"));
+        let layer_only = tokens
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case("LAYER"));
+        let color_only = tokens
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case("COLOR"));
+        let linetype_only = tokens
+            .iter()
+            .any(|token| token.eq_ignore_ascii_case("LINETYPE"));
+        let block_only = tokens.iter().any(|token| {
+            token.eq_ignore_ascii_case("BLOCK") || token.eq_ignore_ascii_case("BLOCKNAME")
+        });
+        let block_name = match source {
+            Entity::Insert(insert) => Some(insert.block_name()),
+            _ => None,
+        };
+        let block_filter = tokens
+            .iter()
+            .skip(1)
+            .find(|token| {
+                !matches!(
+                    token.to_ascii_uppercase().as_str(),
+                    "TYPE" | "LAYER" | "COLOR" | "LINETYPE" | "BLOCK" | "BLOCKNAME"
+                )
+            })
+            .copied()
+            .or(block_name);
+        let restricted = type_only || layer_only || color_only || linetype_only || block_only;
+        let selected = (0..self.editor.entities().len())
+            .filter(|index| self.editor.is_entity_visible(*index))
+            .filter(|index| {
+                let entity = &self.editor.entities()[*index];
+                let style = self.editor.entity_style(*index);
+                (restricted
+                    && type_only
+                    && entity.name() == source.name())
+                    || (restricted
+                        && layer_only
+                        && source_layer.as_deref() == self.editor.entity_layer(*index))
+                    || (restricted
+                        && color_only
+                        && source_style
+                            .as_ref()
+                            .zip(style)
+                            .is_some_and(|(a, b)| a.color_index() == b.color_index()))
+                    || (restricted
+                        && linetype_only
+                        && source_style
+                            .as_ref()
+                            .zip(style)
+                            .is_some_and(|(a, b)| a.linetype() == b.linetype()))
+                    || (restricted
+                        && block_only
+                        && matches!(entity, Entity::Insert(insert) if block_filter.is_some_and(|name| insert.block_name().eq_ignore_ascii_case(name))))
+                    || (!restricted
+                        && entity.name() == source.name()
+                        && source_layer.as_deref() == self.editor.entity_layer(*index)
+                        && source_style.as_ref().zip(style).is_some_and(|(a, b)| {
+                            a.color_index() == b.color_index() && a.linetype() == b.linetype()
+                        }))
+            })
+            .collect::<Vec<_>>();
+        self.editor.select(selected.clone());
+        self.message(
+            format!("SELECTSIMILAR selected {} object(s).", selected.len()),
+            false,
+        );
         Ok(())
     }
 

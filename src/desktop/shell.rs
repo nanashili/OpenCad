@@ -236,6 +236,7 @@ fn command_for_action(action: &str) -> Option<&'static str> {
         "ID_ImageClip" => "IMAGECLIP",
         "ID_VportClip" => "VPCLIP",
         "ID_Qselect" => "QSELECT",
+        "ID_SelSimilar" => "SELECTSIMILAR",
         "ID_GROUP" => "GROUP",
         "ID_Ungroup" => "UNGROUP",
         "ID_LAYMCH" => "LAYMCH",

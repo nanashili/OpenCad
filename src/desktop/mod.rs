@@ -8,6 +8,7 @@ mod feature_annotations;
 mod feature_blocks;
 mod feature_constraints;
 mod feature_construction;
+mod feature_data;
 pub(super) mod feature_forms;
 mod feature_groups;
 mod feature_interchange;
@@ -19,6 +20,7 @@ mod feature_regions;
 mod feature_selection;
 mod feature_solid;
 mod feature_utility;
+mod feature_views;
 mod joining;
 mod lengthening;
 mod offsets;
@@ -201,45 +203,8 @@ pub struct OpenCadApp {
 }
 
 impl OpenCadApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
-        cc.egui_ctx.enable_accesskit();
-        cc.egui_ctx.set_theme(egui::Theme::Dark);
-        let mut style = (*cc.egui_ctx.style_of(egui::Theme::Dark)).clone();
-        style.visuals = egui::Visuals::dark();
-        style.visuals.panel_fill = PANEL;
-        style.visuals.window_fill = PANEL;
-        style.visuals.extreme_bg_color = Color32::from_rgb(47, 52, 63);
-        style.visuals.selection.bg_fill = Color32::from_rgb(68, 103, 137);
-        style.visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT);
-        style.visuals.widgets.active.bg_fill = Color32::from_rgb(68, 103, 137);
-        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(80, 89, 109);
-        style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(80, 89, 109);
-        style.visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(80, 89, 109);
-        style.visuals.widgets.noninteractive.bg_stroke.color = Color32::from_rgb(47, 52, 63);
-        style.visuals.widgets.noninteractive.fg_stroke.color = Color32::from_rgb(217, 217, 217);
-        style.visuals.widgets.inactive.fg_stroke.color = Color32::from_rgb(217, 217, 217);
-        style.visuals.window_corner_radius = egui::CornerRadius::ZERO;
-        for widget in [
-            &mut style.visuals.widgets.noninteractive,
-            &mut style.visuals.widgets.inactive,
-            &mut style.visuals.widgets.hovered,
-            &mut style.visuals.widgets.active,
-            &mut style.visuals.widgets.open,
-        ] {
-            widget.corner_radius = egui::CornerRadius::ZERO;
-        }
-        style.spacing.item_spacing = egui::vec2(5.0, 4.0);
-        style.spacing.button_padding = egui::vec2(6.0, 3.0);
-        style.spacing.interact_size = egui::vec2(22.0, 20.0);
-        style
-            .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(12.0));
-        style
-            .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(12.0));
-        cc.egui_ctx.set_style_of(egui::Theme::Dark, style);
-        shell::install_system_font(&cc.egui_ctx);
-        let mut app = Self {
+    fn headless_default() -> Self {
+        Self {
             editor: Editor::default(),
             path: None,
             name: "Drawing1".into(),
@@ -297,7 +262,59 @@ impl OpenCadApp {
             layouts: crate::LayoutCollection::default(),
             references: feature_references::ReferenceWorkspace::default(),
             current_mline_style: "STANDARD".into(),
-        };
+        }
+    }
+
+    pub fn headless(path: Option<PathBuf>) -> Result<Self, String> {
+        let mut app = Self::headless_default();
+        if let Some(path) = path {
+            app.open_path(path);
+            if app.status_error {
+                return Err(app.status);
+            }
+        }
+        Ok(app)
+    }
+
+    pub fn new(cc: &eframe::CreationContext<'_>, path: Option<PathBuf>) -> Self {
+        cc.egui_ctx.enable_accesskit();
+        cc.egui_ctx.set_theme(egui::Theme::Dark);
+        let mut style = (*cc.egui_ctx.style_of(egui::Theme::Dark)).clone();
+        style.visuals = egui::Visuals::dark();
+        style.visuals.panel_fill = PANEL;
+        style.visuals.window_fill = PANEL;
+        style.visuals.extreme_bg_color = Color32::from_rgb(47, 52, 63);
+        style.visuals.selection.bg_fill = Color32::from_rgb(68, 103, 137);
+        style.visuals.selection.stroke = egui::Stroke::new(1.0, ACCENT);
+        style.visuals.widgets.active.bg_fill = Color32::from_rgb(68, 103, 137);
+        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(80, 89, 109);
+        style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(80, 89, 109);
+        style.visuals.widgets.inactive.weak_bg_fill = Color32::from_rgb(80, 89, 109);
+        style.visuals.widgets.noninteractive.bg_stroke.color = Color32::from_rgb(47, 52, 63);
+        style.visuals.widgets.noninteractive.fg_stroke.color = Color32::from_rgb(217, 217, 217);
+        style.visuals.widgets.inactive.fg_stroke.color = Color32::from_rgb(217, 217, 217);
+        style.visuals.window_corner_radius = egui::CornerRadius::ZERO;
+        for widget in [
+            &mut style.visuals.widgets.noninteractive,
+            &mut style.visuals.widgets.inactive,
+            &mut style.visuals.widgets.hovered,
+            &mut style.visuals.widgets.active,
+            &mut style.visuals.widgets.open,
+        ] {
+            widget.corner_radius = egui::CornerRadius::ZERO;
+        }
+        style.spacing.item_spacing = egui::vec2(5.0, 4.0);
+        style.spacing.button_padding = egui::vec2(6.0, 3.0);
+        style.spacing.interact_size = egui::vec2(22.0, 20.0);
+        style
+            .text_styles
+            .insert(egui::TextStyle::Body, egui::FontId::proportional(12.0));
+        style
+            .text_styles
+            .insert(egui::TextStyle::Button, egui::FontId::proportional(12.0));
+        cc.egui_ctx.set_style_of(egui::Theme::Dark, style);
+        shell::install_system_font(&cc.egui_ctx);
+        let mut app = Self::headless_default();
         if let Some(storage) = cc.storage {
             app.restore_preferences(storage);
         }
@@ -604,6 +621,23 @@ impl OpenCadApp {
                 self.workspace.start = false;
                 self.remember_file(&path);
                 self.editor = Editor::new(document);
+                self.ucs = self.editor.document().current_ucs();
+                self.camera.set_ucs(self.ucs);
+                if let Some(view) = self.editor.document().active_view().cloned() {
+                    self.view_camera = view.camera();
+                    self.camera.set_view(self.view_camera);
+                    self.camera
+                        .set_named_view_viewport(
+                            view.center(),
+                            view.view_height(),
+                            view.view_width(),
+                        )
+                        .ok();
+                    if let Some(ucs) = view.associated_ucs() {
+                        self.ucs = ucs;
+                        self.camera.set_ucs(ucs);
+                    }
+                }
                 self.current_mline_style = self
                     .editor
                     .document()
@@ -673,11 +707,33 @@ impl OpenCadApp {
         self.save_path(path)
     }
 
-    fn save_path(&mut self, path: PathBuf) -> bool {
-        self.editor.set_layouts(self.layouts.clone());
+    fn document_snapshot(&self) -> DxfDocument {
         let mut document = self.editor.document().clone();
         document.set_layouts(self.layouts.clone());
-        let dxf = document.to_dxf();
+        let _ = document.set_current_ucs(document.current_ucs_name().to_owned(), self.ucs);
+        let (center, height, width) = self.camera.named_view_viewport();
+        let name = document
+            .active_view()
+            .map(|view| view.name().to_owned())
+            .unwrap_or_else(|| "CURRENT".into());
+        if let Ok(mut view) =
+            crate::NamedView::with_viewport(name, self.view_camera, center, height, width)
+        {
+            let _ = view
+                .set_associated_ucs(Some(self.ucs), Some(document.current_ucs_name().to_owned()));
+            document.set_active_view(Some(view));
+        }
+        document
+    }
+
+    fn save_path(&mut self, path: PathBuf) -> bool {
+        self.editor.set_layouts(self.layouts.clone());
+        let document = self.document_snapshot();
+        if let Err(error) = self.editor.commit_document(document) {
+            self.message(format!("Save failed: {error}"), true);
+            return false;
+        }
+        let dxf = self.editor.to_dxf();
         match atomic_write(&path, dxf.as_bytes()) {
             Ok(()) => {
                 self.remember_file(&path);
@@ -1017,6 +1073,59 @@ impl OpenCadApp {
             }
         }
     }
+}
+
+pub fn run_script_file(script: &Path, output: &Path, input: Option<&Path>) -> Result<(), String> {
+    let mut app = OpenCadApp::headless(input.map(Path::to_path_buf))?;
+    let source = fs::read_to_string(script)
+        .map_err(|error| format!("Cannot read script {}: {error}", script.display()))?;
+    let script_path = script.to_string_lossy().into_owned();
+    let runner = crate::ScriptRunner::default();
+    runner
+        .run(
+            &source,
+            script_path,
+            |including, include| {
+                let include_path = Path::new(including)
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(include);
+                fs::read_to_string(&include_path).map_err(|error| {
+                    format!(
+                        "Cannot read included script {}: {error}",
+                        include_path.display()
+                    )
+                })
+            },
+            |command| {
+                let raw = command.raw.trim();
+                if raw.is_empty() {
+                    return Err(format!(
+                        "Blank script prompt at line {} cannot be answered in headless mode",
+                        command.line
+                    ));
+                }
+                let (verb, rest) = raw.split_once(char::is_whitespace).unwrap_or((raw, ""));
+                let upper = verb.to_ascii_uppercase();
+                if matches!(upper.as_str(), "NEW" | "OPEN" | "SAVE" | "SAVEAS")
+                    && rest.trim().is_empty()
+                {
+                    return Err(format!(
+                        "{upper} requires an explicit path in headless script mode"
+                    ));
+                }
+                app.command_result(raw)?;
+                if app.feature_form.is_some() {
+                    app.feature_form = None;
+                    return Err(format!("{upper} requires an interactive desktop dialog"));
+                }
+                Ok(())
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let dxf = app.document_snapshot().to_dxf();
+    atomic_write(output, dxf.as_bytes())
+        .map_err(|error| format!("Cannot write {}: {error}", output.display()))
 }
 
 impl eframe::App for OpenCadApp {
