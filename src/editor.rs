@@ -1,7 +1,7 @@
 use crate::{
-    BoundaryMode, Corner, CornerParameter, DxfDocument, Entity, EntityStyle, EntityStyleError,
-    GeometryError, Layer, LayerError, Lengthen, Linetype, LinetypeError, Offset, OffsetLayer,
-    OffsetOptions, Transform,
+    BlockDefinition, BoundaryMode, Corner, CornerParameter, DxfDocument, Entity, EntityStyle,
+    EntityStyleError, GeometryError, Layer, LayerError, LayoutCollection, Lengthen, Linetype,
+    LinetypeError, Offset, OffsetLayer, OffsetOptions, Transform,
 };
 use std::{error::Error, fmt};
 
@@ -47,6 +47,7 @@ impl From<crate::DxfError> for EditError {
 #[derive(Clone)]
 struct Snapshot {
     document: DxfDocument,
+    layouts: LayoutCollection,
     selection: Vec<usize>,
     revision: u64,
 }
@@ -73,6 +74,7 @@ impl Editor {
         Self {
             current: Snapshot {
                 document,
+                layouts: LayoutCollection::default(),
                 selection: Vec::new(),
                 revision: 0,
             },
@@ -89,6 +91,9 @@ impl Editor {
     }
     pub fn selection(&self) -> &[usize] {
         &self.current.selection
+    }
+    pub fn layouts(&self) -> &LayoutCollection {
+        &self.current.layouts
     }
     pub fn layers(&self) -> &[Layer] {
         self.current.document.layers()
@@ -176,6 +181,41 @@ impl Editor {
         self.current.document = document;
         self.select(self.selection().to_vec());
         Ok(true)
+    }
+
+    /// Replace the drawing document after an external workflow has modified a
+    /// cloned candidate. Existing changed or removed entities must be editable;
+    /// valid selection indices are retained and removed indices are discarded.
+    pub fn commit_document(&mut self, candidate: DxfDocument) -> Result<bool, EditError> {
+        for (index, existing) in self.entities().iter().enumerate() {
+            let changed = candidate.entities().get(index) != Some(existing);
+            if changed {
+                self.editable_layer(self.entity_layer(index).expect("existing entity layer"))?;
+            }
+        }
+        let selection = self
+            .selection()
+            .iter()
+            .copied()
+            .filter(|index| *index < candidate.entities().len())
+            .collect();
+        self.checkpoint();
+        self.current.document = candidate;
+        self.current.selection = selection;
+        Ok(true)
+    }
+
+    /// Alias for callers that model the operation as replacing the editor's
+    /// document rather than committing an external candidate.
+    pub fn replace_document(&mut self, candidate: DxfDocument) -> Result<bool, EditError> {
+        self.commit_document(candidate)
+    }
+
+    /// Replace paper-space layout state as one undoable editor transaction.
+    pub fn set_layouts(&mut self, layouts: LayoutCollection) -> bool {
+        self.checkpoint();
+        self.current.layouts = layouts;
+        true
     }
     pub fn add_layer(&mut self, name: &str) -> Result<bool, LayerError> {
         self.edit_document(|document| {
@@ -337,6 +377,47 @@ impl Editor {
         Ok(true)
     }
 
+    /// Replace the current selection with zero or more entities in one undo
+    /// transaction. New entities inherit the first selected entity's layer and
+    /// explicit style; unrelated records retain their existing metadata.
+    pub fn replace_selection_with_entities(
+        &mut self,
+        entities: Vec<Entity>,
+    ) -> Result<bool, EditError> {
+        let mut selected = self.selection().to_vec();
+        if selected.is_empty() {
+            return Ok(false);
+        }
+        selected.sort_unstable();
+        selected.dedup();
+        for &index in &selected {
+            let layer = self
+                .entity_layer(index)
+                .ok_or(LayerError::MissingEntity(index))?;
+            self.editable_layer(layer)?;
+        }
+        let layer = self
+            .entity_layer(selected[0])
+            .ok_or(LayerError::MissingEntity(selected[0]))?
+            .to_owned();
+        let style = self
+            .entity_style(selected[0])
+            .cloned()
+            .ok_or(EntityStyleError::UnknownEntity(selected[0]))?;
+        self.checkpoint();
+        for index in selected.iter().rev() {
+            self.current.document.remove(*index);
+        }
+        let first = self.entities().len();
+        for entity in entities {
+            self.current
+                .document
+                .push_with_style(entity, &layer, style.clone())?;
+        }
+        self.select((first..self.entities().len()).collect());
+        Ok(true)
+    }
+
     /// Define a named block from the current selection. Geometry is stored in
     /// local coordinates relative to `base`; optionally replace the selection
     /// with one INSERT in the same transaction.
@@ -379,6 +460,59 @@ impl Editor {
                 .expect("validated current layer");
             self.select(vec![index]);
         }
+        Ok(true)
+    }
+
+    /// Import one externally loaded block definition atomically.  The
+    /// definition is registered without adding entities or changing the
+    /// current selection; duplicate names are rejected by the document API.
+    pub fn import_block_definition(
+        &mut self,
+        definition: BlockDefinition,
+    ) -> Result<bool, EditError> {
+        let mut document = self.current.document.clone();
+        document.add_block_definition(definition)?;
+        self.checkpoint();
+        self.current.document = document;
+        Ok(true)
+    }
+
+    /// Replace a named definition while preserving its registry position.
+    /// Linked INSERT layers are validated before the transaction is recorded.
+    pub fn replace_block_definition(
+        &mut self,
+        definition: BlockDefinition,
+    ) -> Result<bool, EditError> {
+        let Some(existing) = self.current.document.block(definition.name()) else {
+            return Err(crate::DxfError {
+                line: 0,
+                kind: crate::DxfErrorKind::UnsupportedProperty(2),
+            }
+            .into());
+        };
+        if existing == &definition {
+            return Ok(false);
+        }
+        let linked_layers: Vec<String> = self
+            .entities()
+            .iter()
+            .enumerate()
+            .filter(|(_, entity)| {
+                matches!(entity, Entity::Insert(insert) if insert.block_name().eq_ignore_ascii_case(definition.name()))
+            })
+            .map(|(index, _)| {
+                self.entity_layer(index)
+                    .expect("existing insert layer")
+                    .to_owned()
+            })
+            .collect();
+        for layer in linked_layers {
+            self.editable_layer(&layer)?;
+        }
+        let mut document = self.current.document.clone();
+        document.replace_block_definition(definition)?;
+        self.checkpoint();
+        self.current.document = document;
         Ok(true)
     }
 

@@ -241,6 +241,9 @@ impl Entity {
                     face.invisible_edges(),
                 )?)
             }
+            Self::XLine(line) => Self::XLine(line.transformed(transform)?),
+            Self::Ray(ray) => Self::Ray(ray.transformed(transform)?),
+            Self::Image(image) => Self::Image(image.transformed(transform)?),
         })
     }
 }

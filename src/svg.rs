@@ -91,6 +91,11 @@ pub(crate) fn entity_bounds(entities: &[Entity]) -> Result<[f64; 4], SvgError> {
                 point.position().x(),
                 point.position().y(),
             ],
+            Entity::XLine(_) | Entity::Ray(_) => continue,
+            Entity::Image(image) => {
+                let b = image.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
+                [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
+            }
             Entity::Ellipse(ellipse) => {
                 let points = (0..=64)
                     .filter_map(|i| ellipse.point_at_fraction(i as f64 / 64.0).ok())
@@ -311,6 +316,27 @@ fn render_styled_entities_svg(
                     let cy = max_y - point.position().y() + PADDING;
                     writeln!(svg, "    <circle cx=\"{cx}\" cy=\"{cy}\" r=\"1\" fill=\"{color}\" stroke=\"none\" />").expect("String write");
                 }
+                Entity::XLine(line) => render_construction(
+                    &mut svg,
+                    line.origin(),
+                    line.direction(),
+                    min_x,
+                    max_y,
+                    [min_x, min_y, max_x, max_y],
+                    false,
+                    style.as_str(),
+                ),
+                Entity::Ray(ray) => render_construction(
+                    &mut svg,
+                    ray.origin(),
+                    ray.direction(),
+                    min_x,
+                    max_y,
+                    [min_x, min_y, max_x, max_y],
+                    true,
+                    style.as_str(),
+                ),
+                Entity::Image(image) => render_image(&mut svg, image, min_x, max_y),
                 Entity::Line(line) => {
                     let x1 = line.start().x() - min_x + PADDING;
                     let y1 = max_y - line.start().y() + PADDING;
@@ -591,6 +617,49 @@ fn render_line(svg: &mut String, line: crate::Line3, min_x: f64, max_y: f64, sty
         "    <line x1=\"{x1}\" y1=\"{y1}\" x2=\"{x2}\" y2=\"{y2}\"{style} />"
     )
     .expect("String write");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_construction(
+    svg: &mut String,
+    origin: crate::Point3,
+    direction: crate::Point3,
+    min_x: f64,
+    max_y: f64,
+    bounds: [f64; 4],
+    ray: bool,
+    style: &str,
+) {
+    let min = crate::Point3::new(bounds[0], bounds[1], -1.0e9).expect("finite bounds");
+    let max = crate::Point3::new(bounds[2], bounds[3], 1.0e9).expect("finite bounds");
+    let clipped = if ray {
+        crate::Ray3::new(origin, direction).ok().and_then(|line| {
+            let (a, b) = line.clip_to_bounds(min, max).ok().flatten()?;
+            Some((line.point_at(a).ok()?, line.point_at(b).ok()?))
+        })
+    } else {
+        crate::XLine3::new(origin, direction).ok().and_then(|line| {
+            let (a, b) = line.clip_to_bounds(min, max).ok().flatten()?;
+            Some((line.point_at(a).ok()?, line.point_at(b).ok()?))
+        })
+    };
+    if let Some((a, b)) = clipped {
+        let line = crate::Line3::new(a, b);
+        render_line(svg, line, min_x, max_y, style);
+    }
+}
+
+fn render_image(svg: &mut String, image: &crate::RasterImage, min_x: f64, max_y: f64) {
+    if !image.visible() {
+        return;
+    }
+    let p = image.insertion();
+    let u = image.u_vector();
+    let v = image.v_vector();
+    let x = p.x() - min_x + PADDING;
+    let y = max_y - p.y() + PADDING;
+    let href = esc(&image.path().to_string_lossy());
+    writeln!(svg, "    <image href=\"{href}\" x=\"{x}\" y=\"{y}\" width=\"1\" height=\"1\" opacity=\"{}\" preserveAspectRatio=\"none\" transform=\"matrix({} {} {} {} 0 0)\" />", image.opacity(), u.x(), -u.y(), -v.x(), v.y()).expect("String write");
 }
 
 #[allow(clippy::too_many_arguments)]

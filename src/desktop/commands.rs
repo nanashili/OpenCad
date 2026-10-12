@@ -115,7 +115,8 @@ impl OpenCadApp {
         }
         let (verb, rest) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
         let rest = rest.trim();
-        let tokens: Vec<_> = rest.split_whitespace().collect();
+        let token_storage = command_tokens(rest)?;
+        let tokens: Vec<&str> = token_storage.iter().map(String::as_str).collect();
         if rest.is_empty()
             && let Some(form) = feature_forms::FeatureForm::for_command(verb)
         {
@@ -128,12 +129,17 @@ impl OpenCadApp {
         ) {
             return self.view_command(&verb.to_ascii_uppercase(), rest, &tokens);
         }
+        let upper = verb.to_ascii_uppercase();
         if let Some(result) = self
-            .feature_utility_command(&verb.to_ascii_uppercase(), rest, &tokens)
-            .or_else(|| self.feature_modify_command(&verb.to_ascii_uppercase(), rest, &tokens))
-            .or_else(|| self.feature_solid_command(&verb.to_ascii_uppercase(), rest, &tokens))
-            .or_else(|| self.feature_annotations_command(&verb.to_ascii_uppercase(), rest, &tokens))
-            .or_else(|| self.feature_blocks_command(&verb.to_ascii_uppercase(), rest, &tokens))
+            .feature_layout_command(&upper, rest, &tokens)
+            .or_else(|| self.feature_construction_command(&upper, &tokens))
+            .or_else(|| self.feature_reference_command(&upper, &tokens))
+            .or_else(|| self.feature_region_command(&upper, &tokens))
+            .or_else(|| self.feature_utility_command(&upper, rest, &tokens))
+            .or_else(|| self.feature_modify_command(&upper, rest, &tokens))
+            .or_else(|| self.feature_solid_command(&upper, rest, &tokens))
+            .or_else(|| self.feature_annotations_command(&upper, rest, &tokens))
+            .or_else(|| self.feature_blocks_command(&upper, rest, &tokens))
         {
             return result;
         }
@@ -1028,6 +1034,173 @@ impl OpenCadApp {
     }
 }
 
+impl OpenCadApp {
+    fn feature_region_command(
+        &mut self,
+        verb: &str,
+        tokens: &[&str],
+    ) -> Option<Result<(), String>> {
+        let operation = feature_regions::parse_region_command(verb, tokens)?;
+        Some(operation.and_then(|operation| {
+            let results = feature_regions::region_operation(
+                self.editor.entities(),
+                self.editor.selection(),
+                operation,
+            )?;
+            self.editor
+                .replace_selection_with_entities(results)
+                .map_err(|e| e.to_string())?;
+            self.finish();
+            self.message(format!("{verb} completed."), false);
+            Ok(())
+        }))
+    }
+
+    fn feature_construction_command(
+        &mut self,
+        verb: &str,
+        tokens: &[&str],
+    ) -> Option<Result<(), String>> {
+        let parsed = feature_construction::parse_construction_command(
+            verb,
+            tokens,
+            self.drawing_elevation(),
+        )?;
+        Some(parsed.and_then(|command| {
+            let entity = match command {
+                feature_construction::ConstructionCommand::XLine(line) => Entity::XLine(line),
+                feature_construction::ConstructionCommand::Ray(ray) => Entity::Ray(ray),
+            };
+            self.add_entities(vec![entity])?;
+            self.finish();
+            self.message(format!("{verb} created."), false);
+            Ok(())
+        }))
+    }
+
+    fn feature_reference_command(
+        &mut self,
+        verb: &str,
+        tokens: &[&str],
+    ) -> Option<Result<(), String>> {
+        let result =
+            feature_references::feature_references_command(&mut self.references, verb, tokens)?;
+        Some(result.and_then(|message| {
+            if verb.eq_ignore_ascii_case("XATTACH")
+                || (verb.eq_ignore_ascii_case("XREF")
+                    && tokens
+                        .first()
+                        .is_some_and(|t| t.eq_ignore_ascii_case("ATTACH")))
+            {
+                let name = if verb.eq_ignore_ascii_case("XREF") {
+                    tokens.get(2).copied()
+                } else {
+                    tokens.get(1).copied()
+                }
+                .or_else(|| {
+                    self.references
+                        .references
+                        .references()
+                        .last()
+                        .map(|r| r.name())
+                })
+                .ok_or("XATTACH did not produce a reference name.")?
+                .to_owned();
+                let insertion =
+                    Point3::new(0.0, 0.0, self.drawing_elevation()).map_err(|e| e.to_string())?;
+                let mut candidate = self.editor.document().clone();
+                self.references
+                    .attach_dxf(&mut candidate, &name, insertion)?;
+                self.editor
+                    .commit_document(candidate)
+                    .map_err(|error| error.to_string())?;
+            } else if verb.eq_ignore_ascii_case("XREF")
+                && tokens
+                    .first()
+                    .is_some_and(|t| t.eq_ignore_ascii_case("RELOAD"))
+            {
+                let name = tokens
+                    .get(1)
+                    .ok_or("XREF RELOAD requires a reference name.")?;
+                let mut candidate = self.editor.document().clone();
+                self.references.reload_dxf(&mut candidate, name)?;
+                self.editor
+                    .commit_document(candidate)
+                    .map_err(|error| error.to_string())?;
+            } else if verb.eq_ignore_ascii_case("XREF")
+                && tokens
+                    .first()
+                    .is_some_and(|t| t.eq_ignore_ascii_case("UNLOAD"))
+            {
+                let name = tokens
+                    .get(1)
+                    .ok_or("XREF UNLOAD requires a reference name.")?;
+                let mut candidate = self.editor.document().clone();
+                self.references.unload_dxf(&mut candidate, name)?;
+                self.editor
+                    .commit_document(candidate)
+                    .map_err(|error| error.to_string())?;
+            } else if verb.eq_ignore_ascii_case("XREF")
+                && tokens
+                    .first()
+                    .is_some_and(|t| t.eq_ignore_ascii_case("DETACH"))
+            {
+                let name = tokens
+                    .get(1)
+                    .ok_or("XREF DETACH requires a reference name.")?;
+                let mut candidate = self.editor.document().clone();
+                self.references.detach_dxf(&mut candidate, name)?;
+                self.editor
+                    .commit_document(candidate)
+                    .map_err(|error| error.to_string())?;
+            } else if verb.eq_ignore_ascii_case("XREF")
+                && tokens
+                    .first()
+                    .is_some_and(|t| t.eq_ignore_ascii_case("BIND"))
+            {
+                let name = tokens
+                    .get(1)
+                    .ok_or("XREF BIND requires a reference name.")?;
+                let mut candidate = self.editor.document().clone();
+                self.references.bind_dxf(&mut candidate, name)?;
+                self.editor
+                    .commit_document(candidate)
+                    .map_err(|error| error.to_string())?;
+            } else if verb.eq_ignore_ascii_case("IMAGEATTACH") {
+                if let Some(image) = self.references.images.last().cloned() {
+                    self.add_entities(vec![Entity::Image(image)])?;
+                }
+            } else if verb.eq_ignore_ascii_case("IMAGECLIP") {
+                let image_index = tokens
+                    .first()
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .and_then(|index| index.checked_sub(1));
+                if let Some(image_index) = image_index {
+                    let entity_index = self
+                        .editor
+                        .entities()
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(index, entity)| {
+                            matches!(entity, Entity::Image(_)).then_some(index)
+                        })
+                        .nth(image_index);
+                    if let (Some(entity_index), Some(image)) = (
+                        entity_index,
+                        self.references.images.get(image_index).cloned(),
+                    ) {
+                        self.editor
+                            .update(entity_index, Entity::Image(image))
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+            }
+            self.message(message, false);
+            Ok(())
+        }))
+    }
+}
+
 fn path_argument(value: &str) -> Option<PathBuf> {
     let value = value.trim().trim_matches('"');
     (!value.is_empty()).then(|| PathBuf::from(value))
@@ -1070,4 +1243,50 @@ pub(super) fn parse_point(value: &str, elevation: f64) -> Result<Point3, String>
         coordinates.get(2).copied().unwrap_or(elevation),
     )
     .map_err(|e| e.to_string())
+}
+
+fn command_tokens(input: &str) -> Result<Vec<String>, String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut quote = None;
+    let mut token_started = false;
+    let mut characters = input.chars().peekable();
+    while let Some(character) = characters.next() {
+        if let Some(delimiter) = quote {
+            if character == delimiter {
+                if characters.peek().copied() == Some(delimiter) {
+                    characters.next();
+                    current.push(delimiter);
+                } else {
+                    quote = None;
+                }
+            } else {
+                current.push(character);
+            }
+            continue;
+        }
+        match character {
+            '"' | '\'' if !token_started => {
+                quote = Some(character);
+                token_started = true;
+            }
+            c if c.is_whitespace() => {
+                if token_started {
+                    tokens.push(std::mem::take(&mut current));
+                    token_started = false;
+                }
+            }
+            c => {
+                current.push(c);
+                token_started = true;
+            }
+        }
+    }
+    if quote.is_some() {
+        return Err("Unmatched quote in command arguments.".into());
+    }
+    if token_started {
+        tokens.push(current);
+    }
+    Ok(tokens)
 }

@@ -82,6 +82,8 @@ pub struct BlockDefinition {
     base: Point3,
     entities: Vec<Entity>,
     attribute_definitions: Vec<AttributeDefinition>,
+    xref_path: Option<String>,
+    xref_overlay: bool,
 }
 
 impl BlockDefinition {
@@ -91,6 +93,8 @@ impl BlockDefinition {
             base,
             entities,
             attribute_definitions: Vec::new(),
+            xref_path: None,
+            xref_overlay: false,
         }
     }
     pub fn name(&self) -> &str {
@@ -104,6 +108,16 @@ impl BlockDefinition {
     }
     pub fn attribute_definitions(&self) -> &[AttributeDefinition] {
         &self.attribute_definitions
+    }
+    pub fn xref_path(&self) -> Option<&str> {
+        self.xref_path.as_deref()
+    }
+    pub fn xref_overlay(&self) -> bool {
+        self.xref_overlay
+    }
+    pub fn set_xref_source(&mut self, path: Option<impl Into<String>>, overlay: bool) {
+        self.xref_path = path.map(Into::into);
+        self.xref_overlay = overlay;
     }
     pub fn set_entities(&mut self, entities: Vec<Entity>) {
         self.entities = entities;
@@ -270,6 +284,19 @@ fn transform_entity(
 ) -> Result<Entity, GeometryError> {
     let point = |p| transform_point(p, base, insert, offset);
     match entity {
+        Entity::Insert(nested) => {
+            let mut result = nested.clone();
+            result.insertion = point(nested.insertion)?;
+            result.scale = [
+                nested.scale[0] * insert.scale[0],
+                nested.scale[1] * insert.scale[1],
+                nested.scale[2] * insert.scale[2],
+            ];
+            result.rotation += insert.rotation;
+            result.column_spacing *= insert.scale[0];
+            result.row_spacing *= insert.scale[1];
+            Ok(Entity::Insert(result))
+        }
         Entity::Line(line) => Ok(Entity::Line(Line3::new(
             point(line.start())?,
             point(line.end())?,

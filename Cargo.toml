@@ -9,6 +9,7 @@ default-run = "opencad"
 description = "Original Rust CAD desktop editor with source-preserving R12 DXF exchange"
 
 [dependencies]
+geo = { version = "=0.33.1", default-features = false }
 eframe = { version = "=0.35.0", optional = true, default-features = false, features = ["default_fonts", "glow", "accesskit", "x11", "wayland", "persistence"] }
 rfd = { version = "=0.17.2", optional = true }
 image = { version = "=0.25.10", optional = true, default-features = false, features = ["png"] }

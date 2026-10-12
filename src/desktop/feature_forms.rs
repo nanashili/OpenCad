@@ -104,6 +104,42 @@ impl FeatureForm {
                 ("Minimum corner", "0,0,0", "x,y,z"),
                 ("Maximum corner", "10,10,10", "x,y,z"),
             ],
+            "XLINE" => &[
+                ("Origin", "0,0,0", "x,y[,z]"),
+                ("Through", "10,0,0", "x,y[,z]"),
+            ],
+            "RAY" => &[
+                ("Origin", "0,0,0", "x,y[,z]"),
+                ("Through", "10,0,0", "x,y[,z]"),
+            ],
+            "LAYOUT" => &[
+                ("Operation", "LIST", "NEW|SET|COPY|RENAME|DELETE|LIST"),
+                ("Arguments", "", "layout arguments"),
+            ],
+            "PAGESETUP" => &[
+                ("Width", "210", "paper width"),
+                ("Height", "297", "paper height"),
+                ("Orientation", "PORTRAIT", "PORTRAIT|LANDSCAPE"),
+                ("Scale", "1", "positive number"),
+            ],
+            "MVIEW" => &[
+                ("Minimum point", "0,0,0", "x,y[,z]"),
+                ("Maximum point", "100,100,0", "x,y[,z]"),
+            ],
+            "PLOT" => &[("Output path", "plot.svg", "file path")],
+            "EXPORTPDF" => &[("Output path", "plot.pdf", "file path")],
+            "IMAGEATTACH" => &[
+                ("Path", "image.png", "PNG path"),
+                ("Insertion", "0,0,0", "x,y[,z]"),
+                ("U vector", "100,0,0", "x,y[,z]"),
+                ("V vector", "0,100,0", "x,y[,z]"),
+                ("Pixel width", "100", "positive integer"),
+                ("Pixel height", "100", "positive integer"),
+            ],
+            "XATTACH" => &[
+                ("DXF path", "reference.dxf", "DXF file path"),
+                ("Reference name", "Reference1", "optional block name"),
+            ],
             "WEDGE" | "PYRAMID" => &[
                 ("Insertion point", "0,0,0", "x,y[,z]"),
                 ("Width", "10", "positive number"),
@@ -195,9 +231,45 @@ impl FeatureForm {
             }
             "SPLINE" => format!("{} {}", values[0], normalize_points_spaced(&values[1])),
             "ARRAYPOLAR" => values.join(" "),
+            "XATTACH" => values
+                .iter()
+                .map(|value| encode_command_arg(value))
+                .collect::<Vec<_>>()
+                .join(" "),
+            "IMAGEATTACH" | "PLOT" | "EXPORTPDF" => {
+                let mut encoded = values;
+                if let Some(path) = encoded.first().cloned() {
+                    encoded[0] = encode_command_arg(&path);
+                }
+                encoded.join(" ")
+            }
+            "LAYOUT" => {
+                let operation = values.first().map(String::as_str).unwrap_or_default();
+                let arguments = values.get(1).map(String::as_str).unwrap_or_default();
+                let arguments = match operation.to_ascii_uppercase().as_str() {
+                    "NEW" | "SET" | "DELETE" => encode_command_arg(arguments),
+                    _ => arguments.to_owned(),
+                };
+                format!("{} {}", operation, arguments)
+            }
             _ => values.join(" "),
         };
         format!("{} {}", self.verb, body)
+    }
+}
+
+/// Encode one form field as a single command argument when it contains spaces
+/// or quote characters. Double quotes are doubled so the command tokenizer can
+/// recover the original field without interpreting backslashes as escapes.
+fn encode_command_arg(value: &str) -> String {
+    if value.is_empty()
+        || value.chars().any(char::is_whitespace)
+        || value.contains('"')
+        || value.contains('\'')
+    {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
     }
 }
 

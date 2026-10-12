@@ -6,8 +6,12 @@ mod corners;
 mod exploding;
 mod feature_annotations;
 mod feature_blocks;
+mod feature_construction;
 pub(super) mod feature_forms;
+mod feature_layouts;
 mod feature_modify;
+mod feature_references;
+mod feature_regions;
 mod feature_solid;
 mod feature_utility;
 mod joining;
@@ -186,6 +190,8 @@ pub struct OpenCadApp {
     recent_search: String,
     recent_list: bool,
     feature_form: Option<feature_forms::FeatureForm>,
+    layouts: crate::LayoutCollection,
+    references: feature_references::ReferenceWorkspace,
 }
 
 impl OpenCadApp {
@@ -282,6 +288,8 @@ impl OpenCadApp {
             recent_search: String::new(),
             recent_list: false,
             feature_form: None,
+            layouts: crate::LayoutCollection::default(),
+            references: feature_references::ReferenceWorkspace::default(),
         };
         if let Some(storage) = cc.storage {
             app.restore_preferences(storage);
@@ -534,6 +542,8 @@ impl OpenCadApp {
                 self.workspace.has_drawing = !closing;
                 self.workspace.start = closing;
                 self.editor = Editor::default();
+                self.layouts = crate::LayoutCollection::default();
+                self.references = feature_references::ReferenceWorkspace::default();
                 self.layer_color = LayerColorInput::default();
                 self.linetype_input = LinetypeInput::default();
                 self.path = None;
@@ -586,6 +596,13 @@ impl OpenCadApp {
                 self.workspace.start = false;
                 self.remember_file(&path);
                 self.editor = Editor::new(document);
+                self.references = feature_references::ReferenceWorkspace::from_document(
+                    self.editor.document(),
+                    path.parent(),
+                );
+                let imported_layouts = self.editor.document().layouts().clone();
+                self.layouts = imported_layouts.clone();
+                self.editor.set_layouts(imported_layouts);
                 self.layer_color = LayerColorInput::default();
                 self.linetype_input = LinetypeInput::default();
                 self.name = path
@@ -642,7 +659,11 @@ impl OpenCadApp {
     }
 
     fn save_path(&mut self, path: PathBuf) -> bool {
-        match atomic_write(&path, self.editor.to_dxf().as_bytes()) {
+        self.editor.set_layouts(self.layouts.clone());
+        let mut document = self.editor.document().clone();
+        document.set_layouts(self.layouts.clone());
+        let dxf = document.to_dxf();
+        match atomic_write(&path, dxf.as_bytes()) {
             Ok(()) => {
                 self.remember_file(&path);
                 self.name = path
@@ -716,6 +737,13 @@ impl OpenCadApp {
         } else {
             self.editor.undo()
         };
+        if changed {
+            self.layouts = self.editor.layouts().clone();
+            self.references.sync_from_document(
+                self.editor.document(),
+                self.path.as_deref().and_then(Path::parent),
+            );
+        }
         self.message(
             if changed {
                 if redo { "Redone." } else { "Undone." }

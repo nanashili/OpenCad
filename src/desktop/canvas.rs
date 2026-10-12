@@ -98,6 +98,20 @@ impl OpenCadApp {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(CANVAS))
             .show(ui, |ui| {
+                let layout_names = self.layouts.names().map(str::to_owned).collect::<Vec<_>>();
+                ui.horizontal(|ui| {
+                    ui.label("Layouts:");
+                    for name in layout_names {
+                        let selected = self.layouts.active().name() == name;
+                        if ui.selectable_label(selected, &name).clicked() {
+                            if let Err(error) = self.layouts.set_active(&name) {
+                                self.message(error.to_string(), true);
+                            } else {
+                                self.message(format!("Layout {name} active."), false);
+                            }
+                        }
+                    }
+                });
                 let (response, painter) =
                     ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
                 let rect = response.rect;
@@ -352,6 +366,44 @@ impl OpenCadApp {
                 }
                 if self.grid {
                     self.draw_grid(&painter, rect);
+                }
+                if self.layouts.active().name() != "Model" {
+                    let [paper_w, paper_h] = self.layouts.active().setup().dimensions();
+                    let paper = Rect::from_center_size(
+                        rect.center(),
+                        egui::vec2(
+                            (paper_w * self.camera.scale) as f32,
+                            (paper_h * self.camera.scale) as f32,
+                        ),
+                    );
+                    painter.rect_filled(paper, 0.0, Color32::from_gray(225));
+                    painter.rect_stroke(
+                        paper,
+                        0.0,
+                        Stroke::new(1.0, Color32::from_gray(80)),
+                        egui::StrokeKind::Inside,
+                    );
+                    for viewport in self.layouts.active().viewports() {
+                        let p = viewport.paper();
+                        let viewport_rect = Rect::from_min_max(
+                            rect.center()
+                                + egui::vec2(
+                                    (p[0] * self.camera.scale) as f32,
+                                    -(p[3] * self.camera.scale) as f32,
+                                ),
+                            rect.center()
+                                + egui::vec2(
+                                    (p[2] * self.camera.scale) as f32,
+                                    -(p[1] * self.camera.scale) as f32,
+                                ),
+                        );
+                        painter.rect_stroke(
+                            viewport_rect,
+                            0.0,
+                            Stroke::new(1.0, ACCENT),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                 }
                 let break_preview_source = self.break_preview_source();
                 let pedit_range_source = self.pedit_range_preview_source();
@@ -950,6 +1002,123 @@ impl OpenCadApp {
                     }
                 }
             }
+            Entity::XLine(line) => {
+                let corners = [
+                    self.camera.world(rect.left_top(), rect, 0.0),
+                    self.camera.world(rect.right_bottom(), rect, 0.0),
+                ];
+                if let (Some(min), Some(max)) = (corners[0], corners[1])
+                    && let Ok(Some((a, b))) = line.clip_to_bounds(
+                        Point3::new(min.x().min(max.x()), min.y().min(max.y()), -1.0e9)
+                            .unwrap_or(min),
+                        Point3::new(min.x().max(max.x()), min.y().max(max.y()), 1.0e9)
+                            .unwrap_or(max),
+                    )
+                    && let (Ok(pa), Ok(pb)) = (line.point_at(a), line.point_at(b))
+                    && let (Some(pa), Some(pb)) = (
+                        self.camera.screen_point(pa, rect),
+                        self.camera.screen_point(pb, rect),
+                    )
+                {
+                    painter.line_segment([pa, pb], stroke);
+                }
+            }
+            Entity::Ray(ray) => {
+                let corners = [
+                    self.camera.world(rect.left_top(), rect, 0.0),
+                    self.camera.world(rect.right_bottom(), rect, 0.0),
+                ];
+                if let (Some(min), Some(max)) = (corners[0], corners[1])
+                    && let Ok(Some((_, b))) = ray.clip_to_bounds(
+                        Point3::new(min.x().min(max.x()), min.y().min(max.y()), -1.0e9)
+                            .unwrap_or(min),
+                        Point3::new(min.x().max(max.x()), min.y().max(max.y()), 1.0e9)
+                            .unwrap_or(max),
+                    )
+                    && let (Ok(pa), Ok(pb)) = (ray.point_at(0.0), ray.point_at(b))
+                    && let (Some(pa), Some(pb)) = (
+                        self.camera.screen_point(pa, rect),
+                        self.camera.screen_point(pb, rect),
+                    )
+                {
+                    painter.line_segment([pa, pb], stroke);
+                }
+            }
+            Entity::Image(image) => self.draw_image(painter, image, rect, stroke),
+        }
+    }
+
+    fn draw_image(
+        &self,
+        painter: &Painter,
+        image: &crate::RasterImage,
+        rect: Rect,
+        stroke: Stroke,
+    ) {
+        if !image.visible() {
+            return;
+        }
+        let image_path = if image.path().is_relative() {
+            self.path
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .map_or_else(|| image.path().to_owned(), |base| base.join(image.path()))
+        } else {
+            image.path().to_owned()
+        };
+        let Ok(decoded) = image::open(&image_path) else {
+            if let Some(at) = self.camera.screen_point(image.insertion(), rect) {
+                painter.text(
+                    at,
+                    Align2::LEFT_TOP,
+                    "[image unavailable]",
+                    FontId::proportional(10.0),
+                    stroke.color,
+                );
+            }
+            return;
+        };
+        let rgba = decoded.to_rgba8();
+        let size = [rgba.width() as usize, rgba.height() as usize];
+        let color = egui::ColorImage::from_rgba_unmultiplied(size, rgba.as_raw());
+        let texture = painter.ctx().load_texture(
+            image_path.to_string_lossy().to_string(),
+            color,
+            egui::TextureOptions::LINEAR,
+        );
+        let Ok(triangles) = image.clipped_triangles() else {
+            return;
+        };
+        let mut mesh = egui::Mesh::with_texture(texture.id());
+        let tint = Color32::WHITE.gamma_multiply(image.opacity() as f32);
+        for triangle in triangles {
+            let base = mesh.vertices.len() as u32;
+            for (position, uv) in triangle.positions.into_iter().zip(triangle.uvs) {
+                if let Some(pos) = self.camera.screen_point(position, rect) {
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos,
+                        uv: egui::pos2(uv[0] as f32, uv[1] as f32),
+                        color: tint,
+                    });
+                }
+            }
+            if mesh.vertices.len() as u32 >= base + 3 {
+                mesh.indices.extend_from_slice(&[base, base + 1, base + 2]);
+            }
+        }
+        if !mesh.vertices.is_empty() {
+            painter.add(egui::Shape::mesh(mesh));
+        }
+        if let Some(boundary) = image.clip_boundary() {
+            let points = boundary
+                .iter()
+                .filter_map(|p| self.camera.screen_point(*p, rect))
+                .collect::<Vec<_>>();
+            if points.len() > 2 {
+                let mut closed = points.clone();
+                closed.push(points[0]);
+                painter.add(egui::Shape::line(closed, stroke));
+            }
         }
     }
 
@@ -1321,6 +1490,25 @@ impl OpenCadApp {
                     .filter_map(|p| self.camera.screen_point(p, rect))
                     .map(|p| position.distance(p))
                     .fold(f32::INFINITY, f32::min),
+                Entity::XLine(line) => line_distance(Line3::new(
+                    line.origin(),
+                    line.point_at(1_000_000.0).unwrap_or(line.origin()),
+                ))
+                .unwrap_or(f32::INFINITY),
+                Entity::Ray(ray) => line_distance(Line3::new(
+                    ray.origin(),
+                    ray.point_at(1_000_000.0).unwrap_or(ray.origin()),
+                ))
+                .unwrap_or(f32::INFINITY),
+                Entity::Image(image) => image
+                    .bounds()
+                    .ok()
+                    .and_then(|bounds| {
+                        let a = self.camera.screen_point(bounds.min, rect)?;
+                        let b = self.camera.screen_point(bounds.max, rect)?;
+                        Some(Rect::from_two_pos(a, b).distance_to_pos(position))
+                    })
+                    .unwrap_or(f32::INFINITY),
                 _ => f32::INFINITY,
             };
             if d < distance {
@@ -1447,5 +1635,11 @@ fn entity_points(entity: &Entity) -> Vec<Point3> {
             let (vertices, count) = face.vertices();
             vertices[..count].to_vec()
         }
+        Entity::XLine(line) => vec![line.origin()],
+        Entity::Ray(ray) => vec![ray.origin()],
+        Entity::Image(image) => image
+            .bounds()
+            .map(|b| vec![b.min, b.max])
+            .unwrap_or_default(),
     }
 }
