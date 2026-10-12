@@ -239,6 +239,23 @@ fn command_for_action(action: &str) -> Option<&'static str> {
         "ID_LAYLCK" => "LAYLCK",
         "ID_LAYULK" => "LAYULK",
         "ID_Imageadju" | "ID_Imagefram" | "ID_Imagequal" => "IMAGECLIP",
+        "ID_Mline" => "MLINE",
+        "ID_Mledit" => "MLEDIT",
+        "MM_GeomConstraint_Horizontal" => "GEOMCONSTRAINT HORIZONTAL",
+        "MM_GeomConstraint_Vertical" => "GEOMCONSTRAINT VERTICAL",
+        "MM_GeomConstraint_Coincident" => "GEOMCONSTRAINT COINCIDENT",
+        "MM_GeomConstraint_Parallel" => "GEOMCONSTRAINT PARALLEL",
+        "MM_GeomConstraint_Perpendicular" => "GEOMCONSTRAINT PERPENDICULAR",
+        "MM_GeomConstraint_Concentric" => "GEOMCONSTRAINT CONCENTRIC",
+        "MM_GeomConstraint_Equal" => "GEOMCONSTRAINT EQUAL",
+        "MM_GeomConstraint_Tangent" => "GEOMCONSTRAINT TANGENT",
+        "MM_GeomConstraint_Fix" => "GEOMCONSTRAINT FIX",
+        "MM_DimConstraint_Aligned"
+        | "MM_DimConstraint_Horizontal"
+        | "MM_DimConstraint_Vertical"
+        | "MM_DimConstraint_Angular"
+        | "MM_DimConstraint_Radius"
+        | "MM_DimConstraint_Diameter" => "DIMCONSTRAINT",
         "ID_Move" => "MOVE",
         "ID_Copy" => "COPY",
         "ID_Rotate" => "ROTATE",

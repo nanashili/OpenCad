@@ -48,6 +48,15 @@ impl FeatureForm {
                 ("Content", "Text", "text content"),
             ],
             "LEADER" | "MLEADER" => &[("Vertices", "0,0;10,5", "point;point;...")],
+            "MLINE" => &[("Vertices", "0,0;10,0", "point;point;...")],
+            "MLEDIT" => &[
+                (
+                    "Operation",
+                    "LIST",
+                    "SCALE|STYLE|TOP|ZERO|BOTTOM|CLOSE|OPEN|LIST",
+                ),
+                ("Value", "1", "scale for SCALE or style name for STYLE"),
+            ],
             "TABLE" => &[
                 ("Anchor", "0,0,0", "x,y[,z]"),
                 ("Rows", "2", "positive integer"),
@@ -151,6 +160,31 @@ impl FeatureForm {
                 ("Operator", "=", "= or !="),
                 ("Mode", "REPLACE", "REPLACE|ADD|REMOVE|INTERSECT"),
             ],
+            "GEOMCONSTRAINT" => &[
+                ("Kind", "HORIZONTAL", "constraint kind"),
+                ("First entity", "1", "entity number; selection fallback"),
+                ("Second entity", "2", "entity number when needed"),
+            ],
+            "DIMCONSTRAINT" => &[
+                ("Kind", "LENGTH", "LENGTH|DISTANCE|RADIUS|DIAMETER|ANGLE"),
+                ("Value", "10", "numeric target"),
+                ("First entity", "1", "entity number"),
+                ("Second entity", "2", "entity number when needed"),
+            ],
+            "CONSTRAINT" => &[
+                (
+                    "Action",
+                    "LIST",
+                    "LIST|DELETE|ENABLE|DISABLE|TOGGLE|VALUE|SOLVE",
+                ),
+                ("Constraint id", "1", "constraint number"),
+                ("Value", "10", "numeric value for VALUE"),
+            ],
+            "MLSTYLE" => &[
+                ("Action", "LIST", "LIST|CREATE|SET"),
+                ("Name", "STANDARD", "style name"),
+                ("Offsets", "-0.5,0.5", "comma-separated offsets for CREATE"),
+            ],
             "GROUP" => &[
                 (
                     "Action",
@@ -253,6 +287,7 @@ impl FeatureForm {
             .collect();
         let body = match self.verb.as_str() {
             "LEADER" | "MLEADER" | "HATCH" => normalize_points(&values[0]),
+            "MLINE" => normalize_points_spaced(&values[0]),
             "DIMLINEAR" | "DIMALIGNED" | "DIMRADIUS" | "DIMDIAMETRIC" | "DIMANGULAR" => {
                 values.join(";")
             }
@@ -265,6 +300,8 @@ impl FeatureForm {
                 encode_command_arg(&values[1]),
                 values[3]
             ),
+            "GEOMCONSTRAINT" | "DIMCONSTRAINT" => values.join(" "),
+            "CONSTRAINT" | "MLSTYLE" => values.join(" "),
             "XATTACH" => values
                 .iter()
                 .map(|value| encode_command_arg(value))

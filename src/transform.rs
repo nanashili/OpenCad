@@ -244,6 +244,7 @@ impl Entity {
             Self::XLine(line) => Self::XLine(line.transformed(transform)?),
             Self::Ray(ray) => Self::Ray(ray.transformed(transform)?),
             Self::Image(image) => Self::Image(image.transformed(transform)?),
+            Self::MLine(mline) => Self::MLine(mline.transformed(transform)?),
         })
     }
 }

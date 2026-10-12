@@ -6,6 +6,7 @@ mod block;
 mod breaking;
 mod circle;
 mod color;
+mod constraints;
 mod construction;
 mod corner;
 mod dxf;
@@ -19,6 +20,7 @@ mod layout;
 mod lengthen;
 mod line;
 mod linetype;
+mod multiline;
 mod offset;
 mod point;
 mod polyline;
@@ -42,6 +44,9 @@ pub use annotation::{
 pub use arc::Arc3;
 pub use block::{Attribute, AttributeDefinition, BlockDefinition, BlockInsert, Insert};
 pub use circle::{Circle3, Entity};
+pub use constraints::{
+    Anchor, ConstraintError, ConstraintKind, ConstraintRecord, ConstraintSet, LinePair,
+};
 pub use construction::{Ray3, XLine3};
 pub use corner::{Corner, CornerParameter, LineCorner};
 pub use dxf::{DxfDocument, DxfError, DxfErrorKind, read_dxf, write_dxf};
@@ -54,6 +59,7 @@ pub use layout::{Layout, LayoutCollection, Orientation, PageSetup, Viewport};
 pub use lengthen::Lengthen;
 pub use line::{Bounds3, Line3, Point3};
 pub use linetype::{Linetype, LinetypeError};
+pub use multiline::{MLine2, MLineElement, MLineJustification, MLineStyle};
 pub use offset::{Offset, OffsetLayer, OffsetOptions};
 pub use point::PointEntity;
 pub use polyline::{Polyline2, PolylineSegment, PolylineWidth};

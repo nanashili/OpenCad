@@ -1068,6 +1068,29 @@ impl OpenCadApp {
                 }
             }
             Entity::Image(image) => self.draw_image(painter, image, rect, stroke),
+            Entity::MLine(mline) => {
+                if let Ok(paths) = mline.explode() {
+                    for path in paths {
+                        let points: Option<Vec<_>> = path
+                            .into_iter()
+                            .map(|point| self.camera.screen_point(point, rect))
+                            .collect();
+                        if let Some(points) = points {
+                            painter.add(egui::Shape::line(points, stroke));
+                        }
+                    }
+                }
+                if let Ok(caps) = mline.cap_lines() {
+                    for line in caps {
+                        if let (Some(a), Some(b)) = (
+                            self.camera.screen_point(line.start(), rect),
+                            self.camera.screen_point(line.end(), rect),
+                        ) {
+                            painter.line_segment([a, b], stroke);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -1532,6 +1555,15 @@ impl OpenCadApp {
                         Some(Rect::from_two_pos(a, b).distance_to_pos(position))
                     })
                     .unwrap_or(f32::INFINITY),
+                Entity::MLine(mline) => mline
+                    .explode()
+                    .ok()
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|path| path.into_iter())
+                    .filter_map(|point| self.camera.screen_point(point, rect))
+                    .map(|point| position.distance(point))
+                    .fold(f32::INFINITY, f32::min),
                 _ => f32::INFINITY,
             };
             if d < distance {
@@ -1664,5 +1696,11 @@ fn entity_points(entity: &Entity) -> Vec<Point3> {
             .bounds()
             .map(|b| vec![b.min, b.max])
             .unwrap_or_default(),
+        Entity::MLine(mline) => mline
+            .explode()
+            .unwrap_or_default()
+            .into_iter()
+            .flatten()
+            .collect(),
     }
 }

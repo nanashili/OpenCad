@@ -133,6 +133,7 @@ impl OpenCadApp {
         if let Some(result) = self
             .feature_layout_command(&upper, rest, &tokens)
             .or_else(|| self.feature_construction_command(&upper, &tokens))
+            .or_else(|| self.feature_constraints_command(&upper, &tokens))
             .or_else(|| self.feature_reference_command(&upper, &tokens))
             .or_else(|| self.feature_region_command(&upper, &tokens))
             .or_else(|| self.feature_selection_command(&upper, &tokens))
@@ -146,6 +147,184 @@ impl OpenCadApp {
             return result;
         }
         match verb.to_ascii_uppercase().as_str() {
+            "MLINE" => {
+                let (style_name, point_tokens) = tokens
+                    .first()
+                    .filter(|token| !token.contains(','))
+                    .map_or((None, tokens.as_slice()), |name| {
+                        (Some(*name), &tokens[1..])
+                    });
+                let style = self
+                    .editor
+                    .document()
+                    .mline_styles()
+                    .iter()
+                    .find(|candidate| {
+                        style_name.map_or_else(
+                            || {
+                                candidate
+                                    .name()
+                                    .eq_ignore_ascii_case(&self.current_mline_style)
+                            },
+                            |name| candidate.name().eq_ignore_ascii_case(name),
+                        )
+                    })
+                    .cloned()
+                    .or_else(|| crate::MLineStyle::new("STANDARD", vec![-0.5, 0.5]).ok())
+                    .ok_or("No MLINESTYLE is available.")?;
+                if self.editor.document().mline_styles().is_empty() {
+                    let mut document = self.editor.document().clone();
+                    document.set_mline_styles(vec![style.clone()]);
+                    self.editor
+                        .commit_document(document)
+                        .map_err(|error| error.to_string())?;
+                }
+                let mline = feature_multiline::parse_mline(point_tokens, style)?;
+                self.add_entities(vec![Entity::MLine(mline)])?;
+                self.finish();
+                self.message("Multiline created.", false);
+            }
+            "MLSTYLE" => {
+                let action = tokens
+                    .first()
+                    .copied()
+                    .unwrap_or("LIST")
+                    .to_ascii_uppercase();
+                match action.as_str() {
+                    "LIST" => {
+                        let names = self
+                            .editor
+                            .document()
+                            .mline_styles()
+                            .iter()
+                            .map(|s| s.name())
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        self.message(
+                            if names.is_empty() {
+                                "No MLINESTYLE definitions.".into()
+                            } else {
+                                names
+                            },
+                            false,
+                        );
+                    }
+                    "CREATE" => {
+                        let name = tokens
+                            .get(1)
+                            .ok_or("MLSTYLE CREATE name offset[,offset...].")?;
+                        let offsets = tokens
+                            .get(2)
+                            .ok_or("MLSTYLE CREATE name offset[,offset...].")?
+                            .split(',')
+                            .map(|value| {
+                                value.parse::<f64>().map_err(|_| "Offset must be numeric.")
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        let style = feature_multiline::create_mlstyle(name, &offsets)?;
+                        let mut document = self.editor.document().clone();
+                        let mut styles = document.mline_styles().to_vec();
+                        styles.retain(|existing| !existing.name().eq_ignore_ascii_case(name));
+                        styles.push(style);
+                        document.set_mline_styles(styles);
+                        self.editor
+                            .commit_document(document)
+                            .map_err(|e| e.to_string())?;
+                        self.message(format!("MLINESTYLE {name} created."), false);
+                    }
+                    "SET" => {
+                        let name = tokens.get(1).ok_or("MLSTYLE SET name.")?;
+                        if !self
+                            .editor
+                            .document()
+                            .mline_styles()
+                            .iter()
+                            .any(|style| style.name().eq_ignore_ascii_case(name))
+                        {
+                            return Err(format!("Unknown MLINESTYLE {name}."));
+                        }
+                        self.current_mline_style = (*name).to_owned();
+                        self.message(format!("MLINESTYLE {name} is current."), false);
+                    }
+                    _ => return Err("MLSTYLE supports LIST, CREATE, and SET.".into()),
+                }
+            }
+            "MLEDIT" => {
+                let index = *self
+                    .editor
+                    .selection()
+                    .first()
+                    .ok_or("Select an MLINE before using MLEDIT.")?;
+                let Some(Entity::MLine(mut mline)) = self.editor.entities().get(index).cloned()
+                else {
+                    return Err("Selected entity is not an MLINE.".into());
+                };
+                let operation = tokens.first().copied().unwrap_or("LIST");
+                match operation.to_ascii_uppercase().as_str() {
+                    "SCALE" => {
+                        let value = tokens
+                            .get(1)
+                            .ok_or("MLEDIT SCALE value.")?
+                            .parse::<f64>()
+                            .map_err(|_| "Scale must be numeric.")?;
+                        feature_multiline::edit_mline(&mut mline, Some(value), None, None, None)?;
+                    }
+                    "CLOSE" | "OPEN" => feature_multiline::edit_mline(
+                        &mut mline,
+                        None,
+                        None,
+                        Some(operation.eq_ignore_ascii_case("CLOSE")),
+                        None,
+                    )?,
+                    "TOP" | "ZERO" | "BOTTOM" => {
+                        let justification = match operation.to_ascii_uppercase().as_str() {
+                            "TOP" => crate::MLineJustification::Top,
+                            "BOTTOM" => crate::MLineJustification::Bottom,
+                            _ => crate::MLineJustification::Zero,
+                        };
+                        feature_multiline::edit_mline(
+                            &mut mline,
+                            None,
+                            Some(justification),
+                            None,
+                            None,
+                        )?;
+                    }
+                    "STYLE" => {
+                        let name = tokens.get(1).ok_or("MLEDIT STYLE name.")?;
+                        let style = self
+                            .editor
+                            .document()
+                            .mline_styles()
+                            .iter()
+                            .find(|style| style.name().eq_ignore_ascii_case(name))
+                            .cloned()
+                            .ok_or_else(|| format!("Unknown MLINESTYLE {name}."))?;
+                        feature_multiline::edit_mline(&mut mline, None, None, None, Some(style))?;
+                    }
+                    "LIST" => {
+                        self.message(
+                            format!(
+                                "MLINE scale {} with {} elements.",
+                                mline.scale(),
+                                mline.style().elements().len()
+                            ),
+                            false,
+                        );
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(
+                            "MLEDIT supports SCALE, STYLE, TOP, ZERO, BOTTOM, CLOSE, OPEN, and LIST."
+                                .into(),
+                        );
+                    }
+                }
+                self.editor
+                    .update(index, Entity::MLine(mline))
+                    .map_err(|e| e.to_string())?;
+                self.message("MLINE updated.", false);
+            }
             "POINT" => {
                 let point = parse_point(rest, self.drawing_elevation())?;
                 self.add_entities(vec![Entity::Point(crate::PointEntity::new(point))])?;

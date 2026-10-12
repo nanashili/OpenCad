@@ -3,11 +3,12 @@
 //! contents are retained without interpreting their contents.
 
 use crate::group::EntityGroup;
+use crate::{Anchor, ConstraintError, ConstraintKind, ConstraintRecord, ConstraintSet, LinePair};
 use crate::{
     Arc3, BlockDefinition, Circle3, CornerParameter, Dimension, DimensionKind, Entity, EntityStyle,
     EntityStyleError, Face3, GeometryError, Hatch, HatchPattern, Insert, Layer, LayerError, Leader,
-    Line3, Linetype, LinetypeError, MText, Point3, Polyline2, PolylineWidth, RasterImage, Ray3,
-    Spline3, Table, Text, XLine3,
+    Line3, Linetype, LinetypeError, MLine2, MLineElement, MLineJustification, MLineStyle, MText,
+    Point3, Polyline2, PolylineWidth, RasterImage, Ray3, Spline3, Table, Text, XLine3,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -285,12 +286,15 @@ pub struct DxfDocument {
     layouts: crate::LayoutCollection,
     groups: Vec<EntityGroup>,
     reordered: bool,
+    constraints: ConstraintSet,
+    mline_styles: Vec<MLineStyle>,
 }
 
 impl DxfDocument {
     /// Validate supported sections, entity fields, layer membership and handles.
     pub fn parse(input: &str) -> Result<Self, DxfError> {
         let mut groups = Groups::new(input);
+        let mline_styles = read_mline_styles(input);
         let mut seen = [false; 5];
         let mut previous_section = 0;
         let mut handles = HashSet::new();
@@ -373,6 +377,8 @@ impl DxfDocument {
                     layouts: read_layouts(input),
                     groups: read_groups(input),
                     reordered: false,
+                    constraints: read_constraints(input, &entity_handles(input)),
+                    mline_styles,
                 });
             }
             if (marker.code, marker.value) != (0, "SECTION") {
@@ -439,10 +445,14 @@ impl DxfDocument {
                         (
                             0,
                             "SPLINE" | "TEXT" | "MTEXT" | "LEADER" | "MULTILEADER" | "TABLE"
-                            | "ACAD_TABLE" | "DIMENSION" | "HATCH" | "IMAGE",
+                            | "ACAD_TABLE" | "DIMENSION" | "HATCH" | "IMAGE" | "MLINE",
                         ) => {
-                            let (entity, record) =
-                                read_extended_entity(&mut groups, group, &mut handles)?;
+                            let (entity, record) = read_extended_entity(
+                                &mut groups,
+                                group,
+                                &mut handles,
+                                &mline_styles,
+                            )?;
                             entities.push(entity);
                             records.push(Some(record));
                         }
@@ -512,6 +522,64 @@ impl DxfDocument {
     }
     pub fn groups(&self) -> &[EntityGroup] {
         &self.groups
+    }
+    pub fn constraints(&self) -> &[ConstraintRecord] {
+        self.constraints.records()
+    }
+    pub fn constraint_set(&self) -> &ConstraintSet {
+        &self.constraints
+    }
+    pub fn set_constraints(&mut self, constraints: ConstraintSet) {
+        self.constraints = constraints;
+    }
+    pub fn add_constraint(
+        &mut self,
+        kind: ConstraintKind,
+        value: Option<f64>,
+    ) -> Result<u64, ConstraintError> {
+        self.constraints.add(kind, value)
+    }
+    pub fn add_fixed_constraint(
+        &mut self,
+        anchor: Anchor,
+        point: Point3,
+    ) -> Result<u64, ConstraintError> {
+        self.constraints.add_fixed(anchor, point)
+    }
+    pub fn solve_constraints(&mut self) -> Result<bool, ConstraintError> {
+        let mut candidate = self.entities.clone();
+        let changed = self.constraints.solve_entities(&mut candidate)?;
+        if changed {
+            self.entities = candidate;
+        }
+        Ok(changed)
+    }
+    pub fn set_constraint_enabled(
+        &mut self,
+        id: u64,
+        enabled: bool,
+    ) -> Result<bool, ConstraintError> {
+        self.constraints.set_enabled(id, enabled)
+    }
+    pub fn set_constraint_value(&mut self, id: u64, value: f64) -> Result<bool, ConstraintError> {
+        self.constraints.set_value(id, value)
+    }
+    pub fn remove_constraint(&mut self, id: u64) -> Result<ConstraintRecord, ConstraintError> {
+        self.constraints.remove(id)
+    }
+    pub fn mline_styles(&self) -> &[MLineStyle] {
+        &self.mline_styles
+    }
+    pub fn set_mline_styles(&mut self, styles: Vec<MLineStyle>) {
+        self.mline_styles = styles;
+    }
+    pub fn mline_style(&self, name: &str) -> Option<&MLineStyle> {
+        self.mline_styles
+            .iter()
+            .find(|style| style.name().eq_ignore_ascii_case(name))
+    }
+    pub fn current_mline_style(&self) -> Option<&MLineStyle> {
+        self.mline_styles.first()
     }
     pub fn create_group(
         &mut self,
@@ -624,6 +692,10 @@ impl DxfDocument {
                 group
             })
             .collect();
+        self.constraints = remap_constraints(
+            &self.constraints,
+            &inverse.iter().map(|i| Some(*i)).collect::<Vec<_>>(),
+        );
         self.reordered = true;
         Ok(true)
     }
@@ -1060,6 +1132,17 @@ impl DxfDocument {
                     .collect(),
             );
         }
+        let mut mapping = vec![None; self.entities.len() + 1];
+        for (old, mapped) in mapping.iter_mut().enumerate() {
+            *mapped = if old == index {
+                None
+            } else if old > index {
+                Some(old - 1)
+            } else {
+                Some(old)
+            };
+        }
+        self.constraints = remap_constraints(&self.constraints, &mapping);
         Some(removed)
     }
 
@@ -1301,6 +1384,24 @@ impl DxfDocument {
             }
         }
         self.layer_data.write_changes(&mut changes, &mut tables);
+        let mline_style_objects = serialize_mline_styles(&self.mline_styles, "\n");
+        let mline_style_records = serialize_mline_style_records(&self.mline_styles, "\n");
+        let mline_style_spans = mline_style_spans(&self.source);
+        if mline_style_spans.is_empty() {
+            tables.push_str(&mline_style_objects);
+        } else {
+            for (index, (start, end)) in mline_style_spans.iter().copied().enumerate() {
+                changes.push((
+                    start,
+                    end,
+                    if index == 0 {
+                        mline_style_records.clone()
+                    } else {
+                        String::new()
+                    },
+                ));
+            }
+        }
         if !tables.is_empty() {
             if let Some(at) = self.layer_data.tables_end {
                 changes.push((at, at, tables));
@@ -1395,6 +1496,37 @@ impl DxfDocument {
         if !viewport_entities.is_empty() {
             changes.push((self.insertion, self.insertion, viewport_entities));
         }
+        let images = self
+            .entities
+            .iter()
+            .filter_map(|entity| match entity {
+                Entity::Image(image) => Some(image),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let layout_objects = serialize_layouts(&self.layouts, &self.source, &mut object_handle);
+        let constraint_objects = serialize_constraints(
+            &self.constraints,
+            &self.source,
+            &generated_handles,
+            &mut object_handle,
+        );
+        let constraint_spans = constraint_spans(&self.source);
+        let mut constraint_objects = constraint_objects;
+        if !constraint_spans.is_empty() {
+            for (index, (start, end)) in constraint_spans.iter().copied().enumerate() {
+                changes.push((
+                    start,
+                    end,
+                    if index == 0 {
+                        constraint_objects.clone()
+                    } else {
+                        String::new()
+                    },
+                ));
+            }
+            constraint_objects.clear();
+        }
         // Insert fields at an entity boundary before deleting a following record.
         changes.sort_by_key(|change| (change.0, change.1));
         let mut output = String::with_capacity(self.source.len());
@@ -1405,24 +1537,20 @@ impl DxfDocument {
             cursor = end;
         }
         output.push_str(&self.source[cursor..]);
-        let images = self
-            .entities
-            .iter()
-            .filter_map(|entity| match entity {
-                Entity::Image(image) => Some(image),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let layout_objects = serialize_layouts(&self.layouts, &self.source, &mut object_handle);
-        if !images.is_empty() || !layout_objects.is_empty() || !group_objects.is_empty() {
+        if !images.is_empty()
+            || !layout_objects.is_empty()
+            || !group_objects.is_empty()
+            || !constraint_objects.is_empty()
+        {
             let objects = format!(
-                "{}{}{}",
+                "{}{}{}{}",
                 images
                     .iter()
                     .map(|image| serialize_image_def(image))
                     .collect::<String>(),
                 group_objects,
-                layout_objects
+                layout_objects,
+                constraint_objects
             );
             let marker = if output.contains("\r\n0\r\nEOF") {
                 "\r\n0\r\nEOF"
@@ -1499,6 +1627,77 @@ fn group_error(code: u16) -> DxfError {
         line: 0,
         kind: DxfErrorKind::UnsupportedProperty(code),
     }
+}
+
+fn remap_constraints(constraints: &ConstraintSet, mapping: &[Option<usize>]) -> ConstraintSet {
+    let anchor = |anchor: Anchor| -> Option<Anchor> {
+        let map_index = |index: usize| mapping.get(index).copied().flatten();
+        match anchor {
+            Anchor::EntityPoint(index) => map_index(index).map(Anchor::EntityPoint),
+            Anchor::LineStart(index) => map_index(index).map(Anchor::LineStart),
+            Anchor::LineEnd(index) => map_index(index).map(Anchor::LineEnd),
+            Anchor::CircleCenter(index) => map_index(index).map(Anchor::CircleCenter),
+        }
+    };
+    let index = |value: usize| mapping.get(value).copied().flatten();
+    let kind = |kind: ConstraintKind| -> Option<ConstraintKind> {
+        Some(match kind {
+            ConstraintKind::Horizontal(value) => ConstraintKind::Horizontal(index(value)?),
+            ConstraintKind::Vertical(value) => ConstraintKind::Vertical(index(value)?),
+            ConstraintKind::Coincident(a, b) => ConstraintKind::Coincident(anchor(a)?, anchor(b)?),
+            ConstraintKind::Parallel(LinePair::Lines(a, b)) => {
+                ConstraintKind::Parallel(LinePair::Lines(index(a)?, index(b)?))
+            }
+            ConstraintKind::Perpendicular(LinePair::Lines(a, b)) => {
+                ConstraintKind::Perpendicular(LinePair::Lines(index(a)?, index(b)?))
+            }
+            ConstraintKind::Concentric(a, b) => ConstraintKind::Concentric(index(a)?, index(b)?),
+            ConstraintKind::EqualLength(LinePair::Lines(a, b)) => {
+                ConstraintKind::EqualLength(LinePair::Lines(index(a)?, index(b)?))
+            }
+            ConstraintKind::EqualRadius(a, b) => ConstraintKind::EqualRadius(index(a)?, index(b)?),
+            ConstraintKind::Tangent { line, circle } => ConstraintKind::Tangent {
+                line: index(line)?,
+                circle: index(circle)?,
+            },
+            ConstraintKind::Fix(value) => ConstraintKind::Fix(anchor(value)?),
+            ConstraintKind::Distance { a, b } => ConstraintKind::Distance {
+                a: anchor(a)?,
+                b: anchor(b)?,
+            },
+            ConstraintKind::LineLength(value) => ConstraintKind::LineLength(index(value)?),
+            ConstraintKind::Radius(value) => ConstraintKind::Radius(index(value)?),
+            ConstraintKind::Diameter(value) => ConstraintKind::Diameter(index(value)?),
+            ConstraintKind::Angle(LinePair::Lines(a, b)) => {
+                ConstraintKind::Angle(LinePair::Lines(index(a)?, index(b)?))
+            }
+        })
+    };
+    let mut result = ConstraintSet::new();
+    for record in constraints.records() {
+        let Some(kind) = kind(record.kind()) else {
+            continue;
+        };
+        let added = if matches!(kind, ConstraintKind::Fix(_)) {
+            record.fixed_point().and_then(|point| {
+                result
+                    .add_fixed(
+                        match kind {
+                            ConstraintKind::Fix(anchor) => anchor,
+                            _ => unreachable!(),
+                        },
+                        point,
+                    )
+                    .ok()
+            })
+        } else {
+            result.add(kind, record.value()).ok()
+        };
+        if let Some(id) = added {
+            let _ = result.set_enabled(id, record.enabled());
+        }
+    }
+    result
 }
 
 fn coordinate(group: Group<'_>) -> Result<Coordinate, DxfError> {
@@ -2311,7 +2510,7 @@ fn read_block_definitions(input: &str) -> Result<Vec<BlockDefinition>, DxfError>
                 }
                 "SPLINE" | "TEXT" | "MTEXT" | "LEADER" | "MULTILEADER" | "TABLE" | "ACAD_TABLE"
                 | "DIMENSION" | "HATCH" | "INSERT" | "IMAGE" => {
-                    read_extended_entity(&mut groups, child, &mut handles)
+                    read_extended_entity(&mut groups, child, &mut handles, &[])
                 }
                 "POLYLINE" => read_polyline(&mut groups, child, &mut handles),
                 _ => {
@@ -2491,6 +2690,8 @@ fn entity_handles(input: &str) -> HashMap<String, usize> {
                 | "IMAGE"
                 | "INSERT"
                 | "POLYLINE"
+                | "LWPOLYLINE"
+                | "MLINE"
         ) {
             continue;
         }
@@ -2546,6 +2747,134 @@ fn serialize_groups(
     output
 }
 
+fn read_constraints(input: &str, handles: &HashMap<String, usize>) -> ConstraintSet {
+    let mut groups = Groups::new(input);
+    let mut result = ConstraintSet::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code != 0 || marker.value != "XRECORD" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        for field in fields.iter().filter(|field| field.code == 1000) {
+            let Some(payload) = field.value.strip_prefix("OpenCadConstraints|v1|") else {
+                continue;
+            };
+            let mut parts = payload.split('|');
+            let kind = parts
+                .next()
+                .and_then(|value| decode_constraint_kind(value, handles));
+            let value = parts.next().and_then(|value| value.parse::<f64>().ok());
+            let fixed = parts.next().and_then(|value| {
+                let mut coords = value.split(',').filter_map(|part| part.parse::<f64>().ok());
+                Point3::new(coords.next()?, coords.next()?, coords.next()?).ok()
+            });
+            let enabled = parts
+                .next()
+                .and_then(|value| value.parse::<u8>().ok())
+                .is_none_or(|value| value != 0);
+            let Some(kind) = kind else { continue };
+            if let Some(point) = fixed
+                && let ConstraintKind::Fix(anchor) = kind
+            {
+                let id = result.add_fixed(anchor, point);
+                if let Ok(id) = id {
+                    let _ = result.set_enabled(id, enabled);
+                }
+                continue;
+            }
+            if let Ok(id) = result.add(kind, value) {
+                let _ = result.set_enabled(id, enabled);
+            }
+        }
+    }
+    result
+}
+
+fn constraint_spans(input: &str) -> Vec<(usize, usize)> {
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    let mut spans = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "XRECORD" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        if fields
+            .iter()
+            .any(|field| field.code == 1000 && field.value.starts_with("OpenCadConstraints|v1|"))
+        {
+            let end = groups
+                .peek()
+                .ok()
+                .flatten()
+                .map_or(input.len(), |next| next.start);
+            spans.push((marker.start, end));
+        }
+    }
+    spans
+}
+
+fn serialize_constraints(
+    constraints: &ConstraintSet,
+    source: &str,
+    generated_handles: &HashMap<usize, String>,
+    handle: &mut u64,
+) -> String {
+    if constraints.is_empty() {
+        return String::new();
+    }
+    let mut by_index = entity_handles(source)
+        .into_iter()
+        .map(|(handle, index)| (index, handle))
+        .collect::<HashMap<_, _>>();
+    by_index.extend(
+        generated_handles
+            .iter()
+            .map(|(index, handle)| (*index, handle.clone())),
+    );
+    let mut output = String::new();
+    let mut records = String::new();
+    for record in constraints.records() {
+        let Some(kind) = encode_constraint_kind(record.kind(), &by_index) else {
+            continue;
+        };
+        let value = record
+            .value()
+            .map_or_else(|| "-".to_owned(), |value| value.to_string());
+        let fixed = record.fixed_point().map_or_else(
+            || "-".to_owned(),
+            |point| format!("{},{},{}", point.x(), point.y(), point.z()),
+        );
+        records.push_str(&format!(
+            "1000\nOpenCadConstraints|v1|{kind}|{value}|{fixed}|{}\n",
+            u8::from(record.enabled())
+        ));
+    }
+    if records.is_empty() {
+        return output;
+    }
+    output.push_str(&format!(
+        "0\nXRECORD\n5\n{:X}\n100\nAcDbXrecord\n{}",
+        *handle, records
+    ));
+    *handle = handle.saturating_add(1);
+    output
+}
+
 fn insert_entity_handle(output: &mut String, handle: &str) {
     let Some(first_end) = output.find('\n') else {
         return;
@@ -2556,6 +2885,222 @@ fn insert_entity_handle(output: &mut String, handle: &str) {
     };
     let at = name_start + name_end + 1;
     output.insert_str(at, &format!("5\n{handle}\n"));
+}
+
+fn encode_constraint_kind(
+    kind: ConstraintKind,
+    handles: &HashMap<usize, String>,
+) -> Option<String> {
+    let entity = |index: usize| handles.get(&index).cloned();
+    let anchor = |anchor: Anchor| -> Option<String> {
+        let (tag, index) = match anchor {
+            Anchor::EntityPoint(index) => ("E", index),
+            Anchor::LineStart(index) => ("S", index),
+            Anchor::LineEnd(index) => ("N", index),
+            Anchor::CircleCenter(index) => ("C", index),
+        };
+        Some(format!("{tag}:{}", entity(index)?))
+    };
+    Some(match kind {
+        ConstraintKind::Horizontal(index) => format!("H:{}", entity(index)?),
+        ConstraintKind::Vertical(index) => format!("V:{}", entity(index)?),
+        ConstraintKind::Coincident(a, b) => format!("K:{},{}", anchor(a)?, anchor(b)?),
+        ConstraintKind::Parallel(LinePair::Lines(a, b)) => {
+            format!("P:{},{}", entity(a)?, entity(b)?)
+        }
+        ConstraintKind::Perpendicular(LinePair::Lines(a, b)) => {
+            format!("Q:{},{}", entity(a)?, entity(b)?)
+        }
+        ConstraintKind::Concentric(a, b) => format!("O:{},{}", entity(a)?, entity(b)?),
+        ConstraintKind::EqualLength(LinePair::Lines(a, b)) => {
+            format!("L:{},{}", entity(a)?, entity(b)?)
+        }
+        ConstraintKind::EqualRadius(a, b) => format!("R:{},{}", entity(a)?, entity(b)?),
+        ConstraintKind::Tangent { line, circle } => {
+            format!("T:{},{}", entity(line)?, entity(circle)?)
+        }
+        ConstraintKind::Fix(anchor_value) => format!("F:{}", anchor(anchor_value)?),
+        ConstraintKind::Distance { a, b } => format!("D:{},{}", anchor(a)?, anchor(b)?),
+        ConstraintKind::LineLength(index) => format!("I:{}", entity(index)?),
+        ConstraintKind::Radius(index) => format!("A:{}", entity(index)?),
+        ConstraintKind::Diameter(index) => format!("M:{}", entity(index)?),
+        ConstraintKind::Angle(LinePair::Lines(a, b)) => format!("G:{},{}", entity(a)?, entity(b)?),
+    })
+}
+
+fn decode_constraint_kind(value: &str, handles: &HashMap<String, usize>) -> Option<ConstraintKind> {
+    let (tag, args) = value.split_once(':')?;
+    let entity = |text: &str| handles.get(text).copied();
+    let anchor = |text: &str| -> Option<Anchor> {
+        let (tag, handle) = text.split_once(':')?;
+        let index = entity(handle)?;
+        Some(match tag {
+            "E" => Anchor::EntityPoint(index),
+            "S" => Anchor::LineStart(index),
+            "N" => Anchor::LineEnd(index),
+            "C" => Anchor::CircleCenter(index),
+            _ => return None,
+        })
+    };
+    let mut values = args.split(',');
+    Some(match tag {
+        "H" => ConstraintKind::Horizontal(entity(args)?),
+        "V" => ConstraintKind::Vertical(entity(args)?),
+        "K" => ConstraintKind::Coincident(anchor(values.next()?)?, anchor(values.next()?)?),
+        "P" => ConstraintKind::Parallel(LinePair::Lines(
+            entity(values.next()?)?,
+            entity(values.next()?)?,
+        )),
+        "Q" => ConstraintKind::Perpendicular(LinePair::Lines(
+            entity(values.next()?)?,
+            entity(values.next()?)?,
+        )),
+        "O" => ConstraintKind::Concentric(entity(values.next()?)?, entity(values.next()?)?),
+        "L" => ConstraintKind::EqualLength(LinePair::Lines(
+            entity(values.next()?)?,
+            entity(values.next()?)?,
+        )),
+        "R" => ConstraintKind::EqualRadius(entity(values.next()?)?, entity(values.next()?)?),
+        "T" => ConstraintKind::Tangent {
+            line: entity(values.next()?)?,
+            circle: entity(values.next()?)?,
+        },
+        "F" => ConstraintKind::Fix(anchor(args)?),
+        "D" => ConstraintKind::Distance {
+            a: anchor(values.next()?)?,
+            b: anchor(values.next()?)?,
+        },
+        "I" => ConstraintKind::LineLength(entity(args)?),
+        "A" => ConstraintKind::Radius(entity(args)?),
+        "M" => ConstraintKind::Diameter(entity(args)?),
+        "G" => ConstraintKind::Angle(LinePair::Lines(
+            entity(values.next()?)?,
+            entity(values.next()?)?,
+        )),
+        _ => return None,
+    })
+}
+
+fn read_mline_styles(input: &str) -> Vec<MLineStyle> {
+    let mut groups = Groups::new(input);
+    let mut tables = false;
+    let mut result = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "TABLES" {
+            tables = true;
+            continue;
+        }
+        if !tables {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "MLINESTYLE" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let Some(name) = fields
+            .iter()
+            .find(|field| field.code == 2)
+            .map(|field| field.value)
+        else {
+            continue;
+        };
+        let offsets = fields
+            .iter()
+            .filter(|field| field.code == 49)
+            .filter_map(|field| field.value.parse::<f64>().ok())
+            .collect::<Vec<_>>();
+        let Ok(mut style) = MLineStyle::new(
+            name,
+            if offsets.is_empty() {
+                vec![-0.5, 0.5]
+            } else {
+                offsets
+            },
+        ) else {
+            continue;
+        };
+        let _ = style.set_elements(
+            fields
+                .iter()
+                .filter(|field| field.code == 49)
+                .filter_map(|field| MLineElement::new(field.value.parse().ok()?).ok())
+                .collect(),
+        );
+        style.set_caps(
+            fields
+                .iter()
+                .find(|field| field.code == 73)
+                .and_then(|field| field.value.parse::<i32>().ok())
+                .is_some_and(|value| value != 0),
+            fields
+                .iter()
+                .find(|field| field.code == 74)
+                .and_then(|field| field.value.parse::<i32>().ok())
+                .is_some_and(|value| value != 0),
+        );
+        result.push(style);
+    }
+    result
+}
+
+fn serialize_mline_styles(styles: &[MLineStyle], newline: &str) -> String {
+    if styles.is_empty() {
+        return String::new();
+    }
+    let mut output = format!(
+        "0{newline}TABLE{newline}2{newline}MLINESTYLE{newline}70{newline}{count}{newline}",
+        count = styles.len()
+    );
+    output.push_str(&serialize_mline_style_records(styles, newline));
+    output.push_str(&format!("0{newline}ENDTAB{newline}"));
+    output
+}
+
+fn serialize_mline_style_records(styles: &[MLineStyle], newline: &str) -> String {
+    let mut output = String::new();
+    for style in styles {
+        output.push_str(&format!("0{newline}MLINESTYLE{newline}2{newline}{name}{newline}70{newline}0{newline}71{newline}{count}{newline}73{newline}{start}{newline}74{newline}{end}{newline}", name = style.name(), count = style.elements().len(), start = i32::from(style.start_cap()), end = i32::from(style.end_cap())));
+        for element in style.elements() {
+            output.push_str(&format!("49{newline}{offset}{newline}62{newline}{color}{newline}6{newline}{linetype}{newline}", offset = element.offset(), color = element.color().map_or(256, i32::from), linetype = element.linetype().unwrap_or("BYLAYER")));
+        }
+    }
+    output
+}
+
+fn mline_style_spans(input: &str) -> Vec<(usize, usize)> {
+    let mut groups = Groups::new(input);
+    let mut tables = false;
+    let mut spans = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "TABLES" {
+            tables = true;
+            continue;
+        }
+        if !tables {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "MLINESTYLE" {
+            continue;
+        }
+        if record_fields(&mut groups).is_err() {
+            break;
+        }
+        let end = groups
+            .peek()
+            .ok()
+            .flatten()
+            .map_or(input.len(), |next| next.start);
+        spans.push((marker.start, end));
+    }
+    spans
 }
 
 fn read_layouts(input: &str) -> crate::LayoutCollection {
@@ -3271,7 +3816,7 @@ fn read_insert_entity(
     marker: Group<'_>,
     handles: &mut HashSet<u64>,
 ) -> Result<(Entity, EntityRecord), DxfError> {
-    let (mut entity, mut record) = read_extended_entity(groups, marker, handles)?;
+    let (mut entity, mut record) = read_extended_entity(groups, marker, handles, &[])?;
     let Entity::Insert(ref mut insert) = entity else {
         return Ok((entity, record));
     };
@@ -3315,6 +3860,7 @@ fn read_extended_entity(
     groups: &mut Groups<'_>,
     marker: Group<'_>,
     handles: &mut HashSet<u64>,
+    mline_styles: &[MLineStyle],
 ) -> Result<(Entity, EntityRecord), DxfError> {
     let source = record_fields(groups)?;
     let properties = read_entity_properties(&source, marker.line, handles)?;
@@ -3447,6 +3993,76 @@ fn read_extended_entity(
                 })?;
                 leader.set_annotation(field_text(&source, 3)?);
                 Entity::Leader(leader)
+            }
+            "MLINE" => {
+                let xs = source
+                    .iter()
+                    .filter(|field| field.code == 10)
+                    .map(|field| read_number(*field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let ys = source
+                    .iter()
+                    .filter(|field| field.code == 20)
+                    .map(|field| read_number(*field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let zs = source
+                    .iter()
+                    .filter(|field| field.code == 30)
+                    .map(|field| read_number(*field))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if xs.len() < 2 || xs.len() != ys.len() {
+                    return Err(DxfError {
+                        line: marker.line,
+                        kind: DxfErrorKind::MissingField(10),
+                    });
+                }
+                let vertices = xs
+                    .into_iter()
+                    .zip(ys)
+                    .enumerate()
+                    .map(|(index, (x, y))| Point3::new(x, y, zs.get(index).copied().unwrap_or(0.0)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| DxfError {
+                        line: marker.line,
+                        kind: DxfErrorKind::InvalidCoordinate(10),
+                    })?;
+                let style_name = field_text(&source, 2)?.unwrap_or_else(|| "Standard".into());
+                let style = mline_styles
+                    .iter()
+                    .find(|style| style.name().eq_ignore_ascii_case(&style_name))
+                    .cloned()
+                    .map_or_else(|| MLineStyle::new(style_name, vec![-0.5, 0.5]), Ok)
+                    .map_err(|error| DxfError {
+                        line: marker.line,
+                        kind: DxfErrorKind::Corner(error),
+                    })?;
+                let mut mline = MLine2::new(vertices, style).map_err(|error| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::Corner(error),
+                })?;
+                if let Some(scale) = field_number(&source, 40, marker.line)? {
+                    mline.set_scale(scale).map_err(|error| DxfError {
+                        line: marker.line,
+                        kind: DxfErrorKind::Corner(error),
+                    })?;
+                }
+                if let Some(flags) = field_number(&source, 70, marker.line)? {
+                    mline
+                        .set_closed(flags as u8 & 1 != 0)
+                        .map_err(|error| DxfError {
+                            line: marker.line,
+                            kind: DxfErrorKind::Corner(error),
+                        })?;
+                }
+                if let Some(justification) = field_number(&source, 71, marker.line)? {
+                    mline.set_justification(match justification as i32 {
+                        0 => MLineJustification::Top,
+                        1 => MLineJustification::Zero,
+                        2 => MLineJustification::Bottom,
+                        _ => MLineJustification::Zero,
+                    });
+                }
+                Entity::MLine(mline)
             }
             "SPLINE" => {
                 let degree = field_number(&source, 71, marker.line)?.unwrap_or(1.0) as usize;
@@ -4128,6 +4744,33 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
                 .expect("String write");
             }
             writeln!(output, "70\n{flags}").expect("String write");
+            return;
+        }
+        Entity::MLine(mline) => {
+            let flags = u8::from(mline.is_closed());
+            let justification = match mline.justification() {
+                MLineJustification::Top => 0,
+                MLineJustification::Zero => 1,
+                MLineJustification::Bottom => 2,
+            };
+            writeln!(
+                output,
+                "2\n{}\n70\n{flags}\n71\n{justification}\n72\n{}\n40\n{}",
+                mline.style().name(),
+                mline.vertices().len(),
+                mline.scale()
+            )
+            .expect("String write");
+            for point in mline.vertices() {
+                writeln!(
+                    output,
+                    "10\n{}\n20\n{}\n30\n{}",
+                    point.x(),
+                    point.y(),
+                    point.z()
+                )
+                .expect("String write");
+            }
             return;
         }
         Entity::Text(text) => {

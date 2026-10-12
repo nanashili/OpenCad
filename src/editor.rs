@@ -1,7 +1,8 @@
+use crate::constraints::{Anchor, ConstraintError, ConstraintKind, ConstraintRecord};
 use crate::{
     BlockDefinition, BoundaryMode, Corner, CornerParameter, DxfDocument, Entity, EntityGroup,
     EntityStyle, EntityStyleError, GeometryError, Layer, LayerError, LayoutCollection, Lengthen,
-    Linetype, LinetypeError, Offset, OffsetLayer, OffsetOptions, Transform,
+    Linetype, LinetypeError, Offset, OffsetLayer, OffsetOptions, Point3, Transform,
 };
 use std::{error::Error, fmt};
 
@@ -10,6 +11,7 @@ type LayerState = (String, bool, bool, bool, bool);
 #[derive(Debug)]
 pub enum EditError {
     Geometry(GeometryError),
+    Constraint(ConstraintError),
     Layer(LayerError),
     Style(EntityStyleError),
     Dxf(crate::DxfError),
@@ -26,6 +28,7 @@ impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Geometry(error) => error.fmt(f),
+            Self::Constraint(error) => error.fmt(f),
             Self::Layer(error) => error.fmt(f),
             Self::Style(error) => error.fmt(f),
             Self::Dxf(error) => error.fmt(f),
@@ -36,6 +39,11 @@ impl Error for EditError {}
 impl From<GeometryError> for EditError {
     fn from(error: GeometryError) -> Self {
         Self::Geometry(error)
+    }
+}
+impl From<ConstraintError> for EditError {
+    fn from(error: ConstraintError) -> Self {
+        Self::Constraint(error)
     }
 }
 impl From<LayerError> for EditError {
@@ -203,6 +211,153 @@ impl Editor {
     pub fn layouts(&self) -> &LayoutCollection {
         &self.current.layouts
     }
+    pub fn constraints(&self) -> &[ConstraintRecord] {
+        self.current.document.constraints()
+    }
+
+    pub fn add_constraint(
+        &mut self,
+        kind: ConstraintKind,
+        value: Option<f64>,
+    ) -> Result<u64, ConstraintError> {
+        let mut candidate = self.current.document.clone();
+        let id = candidate.add_constraint(kind, value)?;
+        self.checkpoint();
+        self.current.document = candidate;
+        Ok(id)
+    }
+
+    pub fn add_fixed_constraint(
+        &mut self,
+        anchor: Anchor,
+        point: Point3,
+    ) -> Result<u64, ConstraintError> {
+        let mut candidate = self.current.document.clone();
+        let id = candidate.add_fixed_constraint(anchor, point)?;
+        self.checkpoint();
+        self.current.document = candidate;
+        Ok(id)
+    }
+
+    /// Pin a supported entity's complete 2D definition in one metadata edit.
+    /// Lines pin both endpoints; circles pin center and radius; points pin
+    /// their position. The document solver then preserves the definition on
+    /// subsequent geometry edits.
+    pub fn fix_entity_constraint(&mut self, index: usize) -> Result<Vec<u64>, ConstraintError> {
+        let entity = self
+            .entities()
+            .get(index)
+            .ok_or(ConstraintError::InvalidReference(index))?;
+        let mut candidate = self.current.document.clone();
+        let mut ids = Vec::new();
+        match entity {
+            Entity::Point(point) => ids.push(
+                candidate.add_fixed_constraint(Anchor::EntityPoint(index), point.position())?,
+            ),
+            Entity::Line(line) => {
+                ids.push(candidate.add_fixed_constraint(Anchor::LineStart(index), line.start())?);
+                ids.push(candidate.add_fixed_constraint(Anchor::LineEnd(index), line.end())?);
+            }
+            Entity::Circle(circle) => {
+                ids.push(
+                    candidate.add_fixed_constraint(Anchor::CircleCenter(index), circle.center())?,
+                );
+                ids.push(
+                    candidate
+                        .add_constraint(ConstraintKind::Radius(index), Some(circle.radius()))?,
+                );
+            }
+            _ => {
+                return Err(ConstraintError::UnsupportedGeometry(
+                    "a point, line, or circle",
+                ));
+            }
+        }
+        self.checkpoint();
+        self.current.document = candidate;
+        Ok(ids)
+    }
+
+    pub fn remove_constraint(&mut self, id: u64) -> Result<ConstraintRecord, ConstraintError> {
+        let mut candidate = self.current.document.clone();
+        let removed = candidate.remove_constraint(id)?;
+        self.checkpoint();
+        self.current.document = candidate;
+        Ok(removed)
+    }
+
+    pub fn set_constraint_enabled(
+        &mut self,
+        id: u64,
+        enabled: bool,
+    ) -> Result<bool, ConstraintError> {
+        let mut candidate = self.current.document.clone();
+        if !candidate.set_constraint_enabled(id, enabled)? {
+            return Ok(false);
+        }
+        self.commit_constraint_candidate(candidate)
+    }
+
+    pub fn set_constraint_value(&mut self, id: u64, value: f64) -> Result<bool, ConstraintError> {
+        let mut candidate = self.current.document.clone();
+        if !candidate.set_constraint_value(id, value)? {
+            return Ok(false);
+        }
+        self.commit_constraint_candidate(candidate)
+    }
+
+    fn commit_constraint_candidate(
+        &mut self,
+        mut candidate: DxfDocument,
+    ) -> Result<bool, ConstraintError> {
+        candidate.solve_constraints()?;
+        let geometry_changed = self.entities() != candidate.entities();
+        let metadata_changed = self.constraints() != candidate.constraints();
+        if !geometry_changed && !metadata_changed {
+            return Ok(false);
+        }
+        for (index, (before, after)) in self.entities().iter().zip(candidate.entities()).enumerate()
+        {
+            if before != after {
+                self.editable_layer(self.entity_layer(index).ok_or(
+                    ConstraintError::Inconsistent("constrained entity no longer exists"),
+                )?)
+                .map_err(|_| {
+                    ConstraintError::Inconsistent(
+                        "constrained entity is on a locked or hidden layer",
+                    )
+                })?;
+            }
+        }
+        self.checkpoint();
+        self.current.document = candidate;
+        Ok(true)
+    }
+
+    /// Solve all enabled constraints against a cloned document and commit only
+    /// when every constrained edit is valid and its layer is editable.
+    pub fn solve_constraints(&mut self) -> Result<bool, ConstraintError> {
+        let mut candidate = self.current.document.clone();
+        if !candidate.solve_constraints()? {
+            return Ok(false);
+        }
+        for (index, (before, after)) in self.entities().iter().zip(candidate.entities()).enumerate()
+        {
+            if before != after {
+                self.editable_layer(self.entity_layer(index).ok_or(
+                    ConstraintError::Inconsistent("constrained entity no longer exists"),
+                )?)
+                .map_err(|_| {
+                    ConstraintError::Inconsistent(
+                        "constrained entity is on a locked or hidden layer",
+                    )
+                })?;
+            }
+        }
+        self.checkpoint();
+        self.current.document = candidate;
+        Ok(true)
+    }
     pub fn layers(&self) -> &[Layer] {
         self.current.document.layers()
     }
@@ -307,7 +462,8 @@ impl Editor {
     /// Replace the drawing document after an external workflow has modified a
     /// cloned candidate. Existing changed or removed entities must be editable;
     /// valid selection indices are retained and removed indices are discarded.
-    pub fn commit_document(&mut self, candidate: DxfDocument) -> Result<bool, EditError> {
+    pub fn commit_document(&mut self, mut candidate: DxfDocument) -> Result<bool, EditError> {
+        candidate.solve_constraints()?;
         for (index, existing) in self.entities().iter().enumerate() {
             let changed = candidate.entities().get(index) != Some(existing);
             if changed {
@@ -680,16 +836,16 @@ impl Editor {
             return Ok(false);
         }
         self.editable_layer(&self.active_layer)?;
-        self.checkpoint();
-        let first = self.entities().len();
+        let mut candidate = self.current.document.clone();
+        let first = candidate.entities().len();
         for entity in entities {
-            self.current
-                .document
+            candidate
                 .push_on_layer(entity, &self.active_layer)
                 .expect("validated current layer");
         }
-        self.select((first..self.entities().len()).collect());
-        Ok(true)
+        let new_selection = (first..candidate.entities().len()).collect();
+        self.commit_geometry_candidate(candidate, new_selection)
+            .map_err(Self::geometry_commit_layer_error)
     }
 
     /// Replace the current selection with zero or more entities in one undo
@@ -719,18 +875,16 @@ impl Editor {
             .entity_style(selected[0])
             .cloned()
             .ok_or(EntityStyleError::UnknownEntity(selected[0]))?;
-        self.checkpoint();
+        let mut candidate = self.current.document.clone();
         for index in selected.iter().rev() {
-            self.current.document.remove(*index);
+            candidate.remove(*index);
         }
-        let first = self.entities().len();
+        let first = candidate.entities().len();
         for entity in entities {
-            self.current
-                .document
-                .push_with_style(entity, &layer, style.clone())?;
+            candidate.push_with_style(entity, &layer, style.clone())?;
         }
-        self.select((first..self.entities().len()).collect());
-        Ok(true)
+        let new_selection = (first..candidate.entities().len()).collect();
+        self.commit_geometry_candidate(candidate, new_selection)
     }
 
     /// Define a named block from the current selection. Geometry is stored in
@@ -935,12 +1089,12 @@ impl Editor {
             return Ok(false);
         }
         self.editable_layer(self.entity_layer(index).expect("existing entity layer"))?;
-        self.checkpoint();
-        self.current
-            .document
+        let mut candidate = self.current.document.clone();
+        candidate
             .replace_entity(index, entity)
             .expect("validated existing entity type");
-        Ok(true)
+        self.commit_geometry_candidate(candidate, self.selection().to_vec())
+            .map_err(Self::geometry_commit_layer_error)
     }
 
     pub fn translate_selection(
@@ -972,6 +1126,39 @@ impl Editor {
         self.map_selection(copy, operation)
     }
 
+    fn geometry_commit_layer_error(error: EditError) -> LayerError {
+        match error {
+            EditError::Layer(layer) => layer,
+            EditError::Constraint(constraint) => LayerError::Constraint(constraint.to_string()),
+            other => LayerError::Constraint(other.to_string()),
+        }
+    }
+
+    fn commit_geometry_candidate(
+        &mut self,
+        mut candidate: DxfDocument,
+        selection: Vec<usize>,
+    ) -> Result<bool, EditError> {
+        candidate.solve_constraints()?;
+        let changed = self.entities() != candidate.entities();
+        if !changed {
+            return Ok(false);
+        }
+        for (index, (before, after)) in self.entities().iter().zip(candidate.entities()).enumerate()
+        {
+            if before != after {
+                self.editable_layer(
+                    self.entity_layer(index)
+                        .ok_or(LayerError::MissingEntity(index))?,
+                )?;
+            }
+        }
+        self.checkpoint();
+        self.current.document = candidate;
+        self.select(selection);
+        Ok(true)
+    }
+
     fn map_selection(
         &mut self,
         copy: bool,
@@ -986,6 +1173,7 @@ impl Editor {
             .iter()
             .map(|index| operation(&self.entities()[*index]))
             .collect::<Result<Vec<_>, _>>()?;
+        let mut candidate = self.current.document.clone();
         if copy {
             let styles: Vec<_> = self
                 .selection()
@@ -999,16 +1187,14 @@ impl Editor {
                     )
                 })
                 .collect();
-            self.checkpoint();
-            let first = self.entities().len();
+            let first = candidate.entities().len();
             for (entity, (layer, style)) in transformed.into_iter().zip(styles) {
-                self.current
-                    .document
+                candidate
                     .push_with_style(entity, &layer, style)
                     .expect("existing source layer");
             }
-            self.select((first..self.entities().len()).collect());
-            return Ok(true);
+            let new_selection = (first..candidate.entities().len()).collect();
+            return self.commit_geometry_candidate(candidate, new_selection);
         }
         if transformed
             .iter()
@@ -1017,14 +1203,12 @@ impl Editor {
         {
             return Ok(false);
         }
-        self.checkpoint();
         for (index, entity) in self.current.selection.iter().copied().zip(transformed) {
-            self.current
-                .document
+            candidate
                 .replace_entity(index, entity)
                 .expect("transform preserves type");
         }
-        Ok(true)
+        self.commit_geometry_candidate(candidate, self.selection().to_vec())
     }
 
     /// Add one transformed copy of every selected entity for each transform.
@@ -1065,16 +1249,15 @@ impl Editor {
                 ));
             }
         }
-        self.checkpoint();
-        let first = self.entities().len();
+        let mut candidate = self.current.document.clone();
+        let first = candidate.entities().len();
         for (entity, layer, style) in copies {
-            self.current
-                .document
+            candidate
                 .push_with_style(entity, &layer, style)
                 .expect("validated source layer");
         }
-        self.select((first..self.entities().len()).collect());
-        Ok(true)
+        let new_selection = (first..candidate.entities().len()).collect();
+        self.commit_geometry_candidate(candidate, new_selection)
     }
 
     /// Copy all layer and explicit style properties from one entity to targets.
@@ -1156,20 +1339,15 @@ impl Editor {
             .entity_style(index)
             .expect("existing source style")
             .clone();
-        self.checkpoint();
+        let mut candidate = self.current.document.clone();
         if options.erase_source {
-            self.current
-                .document
-                .remove(index)
-                .expect("validated source index");
+            candidate.remove(index).expect("validated source index");
         }
-        let created = self.entities().len();
-        self.current
-            .document
+        let created = candidate.entities().len();
+        candidate
             .push_with_style(entity, &target_layer, style)
             .expect("validated target layer");
-        self.select(vec![created]);
-        Ok(true)
+        self.commit_geometry_candidate(candidate, vec![created])
     }
 
     /// Trim or split one source in a single transaction, retaining its layer/style.
@@ -1317,27 +1495,23 @@ impl Editor {
         if result.connector().is_some() {
             self.editable_layer(&connector_layer)?;
         }
-        self.checkpoint();
+        let mut candidate = self.current.document.clone();
         if trim {
-            self.current
-                .document
+            candidate
                 .replace_entity(first, Entity::Line(result.first()))
                 .expect("validated source line");
-            self.current
-                .document
+            candidate
                 .replace_entity(second, Entity::Line(result.second()))
                 .expect("validated source line");
         }
         let mut selected = vec![first, second];
         if let Some(connector) = result.connector() {
-            selected.push(self.entities().len());
-            self.current
-                .document
+            selected.push(candidate.entities().len());
+            candidate
                 .push_on_layer(connector.clone(), &connector_layer)
                 .expect("validated connector layer");
         }
-        self.select(selected);
-        Ok(true)
+        self.commit_geometry_candidate(candidate, selected)
     }
 
     fn cutting_edges(&self, source: usize, boundaries: &[usize]) -> Vec<Entity> {
@@ -1370,29 +1544,23 @@ impl Editor {
         let same_type = parts
             .first()
             .is_some_and(|part| part.name() == source.name());
-        self.checkpoint();
+        let mut candidate = self.current.document.clone();
         let mut selected = Vec::new();
         if same_type {
-            self.current
-                .document
+            candidate
                 .replace_entity(index, parts.remove(0))
                 .expect("validated source type");
             selected.push(index);
         } else {
-            self.current
-                .document
-                .remove(index)
-                .expect("validated source index");
+            candidate.remove(index).expect("validated source index");
         }
         for part in parts {
-            selected.push(self.entities().len());
-            self.current
-                .document
+            selected.push(candidate.entities().len());
+            candidate
                 .push_with_style(part, &layer, style.clone())
                 .expect("validated source layer");
         }
-        self.select(selected);
-        Ok(true)
+        self.commit_geometry_candidate(candidate, selected)
     }
 
     /// Replace selected polylines and block INSERTs with their components in one edit.
@@ -1414,23 +1582,20 @@ impl Editor {
         if count == 0 {
             return Ok(0);
         }
-        self.checkpoint();
+        let mut candidate = self.current.document.clone();
         for (index, ..) in plans.iter().rev() {
-            self.current
-                .document
-                .remove(*index)
-                .expect("validated source index");
+            candidate.remove(*index).expect("validated source index");
         }
-        let first = self.entities().len();
+        let first = candidate.entities().len();
         for (_, layer, style, parts) in plans {
             for part in parts {
-                self.current
-                    .document
+                candidate
                     .push_with_style(part, &layer, style.clone())
                     .expect("validated source layer");
             }
         }
-        self.select((first..self.entities().len()).collect());
+        let new_selection = (first..candidate.entities().len()).collect();
+        self.commit_geometry_candidate(candidate, new_selection)?;
         Ok(count)
     }
 
@@ -1527,20 +1692,15 @@ impl Editor {
             self.editable_layer(self.entity_layer(*index).expect("validated join index"))?;
         }
         consumed.sort_unstable();
-        self.checkpoint();
-        self.current
-            .document
+        let mut candidate = self.current.document.clone();
+        candidate
             .replace_entity(source, result)
             .expect("same join source type");
         for &index in consumed.iter().rev() {
-            self.current
-                .document
-                .remove(index)
-                .expect("validated join candidate");
+            candidate.remove(index).expect("validated join candidate");
         }
-        self.select(vec![
-            source - consumed.iter().filter(|index| **index < source).count(),
-        ]);
+        let selection = vec![source - consumed.iter().filter(|index| **index < source).count()];
+        self.commit_geometry_candidate(candidate, selection)?;
         Ok(consumed.len())
     }
 
@@ -1562,20 +1722,18 @@ impl Editor {
         self.replace_curve_parts(index, vec![Entity::Polyline(polyline)])
     }
 
-    pub fn delete_selection(&mut self) -> Result<bool, LayerError> {
+    pub fn delete_selection(&mut self) -> Result<bool, EditError> {
         if self.selection().is_empty() {
             return Ok(false);
         }
         self.editable_selection()?;
-        self.checkpoint();
+        let mut candidate = self.current.document.clone();
         for index in self.current.selection.iter().rev().copied() {
-            self.current
-                .document
+            candidate
                 .remove(index)
                 .expect("selection contains existing entities");
         }
-        self.current.selection.clear();
-        Ok(true)
+        self.commit_geometry_candidate(candidate, Vec::new())
     }
 
     pub fn undo(&mut self) -> bool {

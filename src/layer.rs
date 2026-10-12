@@ -99,6 +99,7 @@ pub enum LayerError {
     TooManyLayers,
     CannotHideColorZero(String),
     InvalidColorIndex(i16),
+    Constraint(String),
 }
 
 impl fmt::Display for LayerError {
@@ -123,6 +124,7 @@ impl fmt::Display for LayerError {
             Self::InvalidColorIndex(index) => {
                 write!(f, "layer color {index} must be an ACI index from 1 to 255")
             }
+            Self::Constraint(message) => write!(f, "constraint edit failed: {message}"),
         }
     }
 }

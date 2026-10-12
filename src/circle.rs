@@ -1,6 +1,6 @@
 use crate::{
-    Arc3, Dimension, Ellipse3, Face3, GeometryError, Hatch, Insert, Leader, Line3, MText, Point3,
-    PointEntity, Polyline2, RasterImage, Ray3, Spline3, Table, Text, XLine3,
+    Arc3, Dimension, Ellipse3, Face3, GeometryError, Hatch, Insert, Leader, Line3, MLine2, MText,
+    Point3, PointEntity, Polyline2, RasterImage, Ray3, Spline3, Table, Text, XLine3,
 };
 
 /// A finite circle in the world XY plane, at the center's Z elevation.
@@ -64,6 +64,7 @@ pub enum Entity {
     XLine(XLine3),
     Ray(Ray3),
     Image(RasterImage),
+    MLine(MLine2),
 }
 
 impl Entity {
@@ -87,6 +88,7 @@ impl Entity {
             Self::XLine(_) => "XLINE",
             Self::Ray(_) => "RAY",
             Self::Image(_) => "IMAGE",
+            Self::MLine(_) => "MLINE",
         }
     }
 
@@ -146,6 +148,7 @@ impl Entity {
             Self::XLine(line) => Self::XLine(line.translated(dx, dy, dz)?),
             Self::Ray(ray) => Self::Ray(ray.translated(dx, dy, dz)?),
             Self::Image(image) => Self::Image(image.translated(dx, dy, dz)?),
+            Self::MLine(mline) => Self::MLine(mline.translated(dx, dy, dz)?),
         })
     }
 

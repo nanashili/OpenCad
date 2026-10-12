@@ -6,11 +6,13 @@ mod corners;
 mod exploding;
 mod feature_annotations;
 mod feature_blocks;
+mod feature_constraints;
 mod feature_construction;
 pub(super) mod feature_forms;
 mod feature_groups;
 mod feature_layouts;
 mod feature_modify;
+mod feature_multiline;
 mod feature_references;
 mod feature_regions;
 mod feature_selection;
@@ -194,6 +196,7 @@ pub struct OpenCadApp {
     feature_form: Option<feature_forms::FeatureForm>,
     layouts: crate::LayoutCollection,
     references: feature_references::ReferenceWorkspace,
+    current_mline_style: String,
 }
 
 impl OpenCadApp {
@@ -292,6 +295,7 @@ impl OpenCadApp {
             feature_form: None,
             layouts: crate::LayoutCollection::default(),
             references: feature_references::ReferenceWorkspace::default(),
+            current_mline_style: "STANDARD".into(),
         };
         if let Some(storage) = cc.storage {
             app.restore_preferences(storage);
@@ -546,6 +550,7 @@ impl OpenCadApp {
                 self.editor = Editor::default();
                 self.layouts = crate::LayoutCollection::default();
                 self.references = feature_references::ReferenceWorkspace::default();
+                self.current_mline_style = "STANDARD".into();
                 self.layer_color = LayerColorInput::default();
                 self.linetype_input = LinetypeInput::default();
                 self.path = None;
@@ -598,6 +603,13 @@ impl OpenCadApp {
                 self.workspace.start = false;
                 self.remember_file(&path);
                 self.editor = Editor::new(document);
+                self.current_mline_style = self
+                    .editor
+                    .document()
+                    .mline_styles()
+                    .first()
+                    .map(|style| style.name().to_owned())
+                    .unwrap_or_else(|| "STANDARD".into());
                 self.references = feature_references::ReferenceWorkspace::from_document(
                     self.editor.document(),
                     path.parent(),

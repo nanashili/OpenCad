@@ -411,6 +411,24 @@ fn vector_pdf(
             Entity::Image(_) => {
                 return Err("EXPORTPDF does not support raster IMAGE entities".into());
             }
+            Entity::MLine(mline) => {
+                for path in mline.explode().map_err(|e| e.to_string())? {
+                    append_lines(
+                        &mut content,
+                        path.windows(2).map(|pair| (pair[0], pair[1])),
+                        &p,
+                    );
+                }
+                append_lines(
+                    &mut content,
+                    mline
+                        .cap_lines()
+                        .map_err(|e| e.to_string())?
+                        .into_iter()
+                        .map(|line| (line.start(), line.end())),
+                    &p,
+                );
+            }
             Entity::Point(point) => {
                 let q = point.position();
                 let (x, y) = p(q.x(), q.y());

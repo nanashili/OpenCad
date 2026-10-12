@@ -96,6 +96,7 @@ pub(crate) fn entity_bounds(entities: &[Entity]) -> Result<[f64; 4], SvgError> {
                 let b = image.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
                 [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
             }
+            Entity::MLine(mline) => mline.bounds().map_err(|_| SvgError::BoundsTooLarge)?,
             Entity::Ellipse(ellipse) => {
                 let points = (0..=64)
                     .filter_map(|i| ellipse.point_at_fraction(i as f64 / 64.0).ok())
@@ -337,6 +338,22 @@ fn render_styled_entities_svg(
                     style.as_str(),
                 ),
                 Entity::Image(image) => render_image(&mut svg, image, min_x, max_y),
+                Entity::MLine(mline) => {
+                    for path in mline.explode().map_err(|_| SvgError::BoundsTooLarge)? {
+                        for pair in path.windows(2) {
+                            render_line(
+                                &mut svg,
+                                crate::Line3::new(pair[0], pair[1]),
+                                min_x,
+                                max_y,
+                                style.as_str(),
+                            );
+                        }
+                    }
+                    for line in mline.cap_lines().map_err(|_| SvgError::BoundsTooLarge)? {
+                        render_line(&mut svg, line, min_x, max_y, style.as_str());
+                    }
+                }
                 Entity::Line(line) => {
                     let x1 = line.start().x() - min_x + PADDING;
                     let y1 = max_y - line.start().y() + PADDING;
