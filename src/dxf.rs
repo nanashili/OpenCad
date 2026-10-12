@@ -9,8 +9,8 @@ use crate::{
     DimensionStyle, Entity, EntityStyle, EntityStyleError, Face3, GeometryError, Hatch,
     HatchPattern, Insert, Layer, LayerError, Leader, Line3, Linetype, LinetypeError, MLeader,
     MLeaderBranch, MLeaderContent, MLeaderStyle, MLine2, MLineElement, MLineJustification,
-    MLineStyle, MText, Mesh3, Point3, Polyline2, Polyline3, PolylineWidth, RasterImage, Ray3,
-    Spline3, Table, Text, TextStyle, XLine3,
+    MLineStyle, MText, Mesh3, PdfUnderlay, Point3, Polyline2, Polyline3, PolylineWidth,
+    RasterImage, Ray3, Spline3, Table, Text, TextStyle, XLine3,
 };
 use crate::{DataLink, FieldExpression, NamedField};
 use crate::{NamedUcs, NamedUcsCatalog, NamedView, NamedViewCatalog};
@@ -313,6 +313,7 @@ impl DxfDocument {
     /// Validate supported sections, entity fields, layer membership and handles.
     pub fn parse(input: &str) -> Result<Self, DxfError> {
         let mut groups = Groups::new(input);
+        let pdf_definitions = read_pdf_definitions(input);
         let mline_styles = read_mline_styles(input);
         let text_styles = read_text_styles(input);
         let dimension_styles = read_dimension_styles(input);
@@ -380,12 +381,33 @@ impl DxfDocument {
                     })
                     .collect();
                 let image_paths = read_image_def_paths(input);
+                let pdf_metadata = read_pdf_metadata(input);
                 for entity in &mut entities {
                     if let Entity::Image(image) = entity {
                         let key = image.path().to_string_lossy().to_string();
                         if let Some(path) = image_paths.get(&key) {
                             image.set_path(path.clone());
                         }
+                    }
+                }
+                for (index, entity) in entities.iter_mut().enumerate() {
+                    let Entity::PdfUnderlay(underlay) = entity else {
+                        continue;
+                    };
+                    let Some(record) = records.get(index).and_then(Option::as_ref) else {
+                        continue;
+                    };
+                    let Some(definition) = record_field_text_at(input, record.start, 340) else {
+                        continue;
+                    };
+                    let Ok(definition_handle) = u64::from_str_radix(definition.trim(), 16) else {
+                        continue;
+                    };
+                    let metadata_handle = record_handle_at(input, record.start)
+                        .and_then(|value| u64::from_str_radix(value.trim(), 16).ok())
+                        .unwrap_or(definition_handle);
+                    if let Some(metadata) = pdf_metadata.get(&metadata_handle) {
+                        apply_pdf_metadata(underlay, *metadata, record.source_line)?;
                     }
                 }
                 let mut used_handles = HashSet::new();
@@ -499,9 +521,10 @@ impl DxfDocument {
                         (
                             0,
                             "POINT" | "LINE" | "XLINE" | "RAY" | "CIRCLE" | "ARC" | "ELLIPSE"
-                            | "3DFACE",
+                            | "3DFACE" | "PDFUNDERLAY",
                         ) => {
-                            let (entity, record) = read_entity(&mut groups, group, &mut handles)?;
+                            let (entity, record) =
+                                read_entity(&mut groups, group, &mut handles, &pdf_definitions)?;
                             entities.push(entity);
                             records.push(Some(record));
                         }
@@ -1850,6 +1873,42 @@ impl DxfDocument {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        let pdf_underlays = self
+            .entities
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entity)| match entity {
+                Entity::PdfUnderlay(underlay) => self
+                    .entity_handles
+                    .get(index)
+                    .copied()
+                    .map(|handle| (handle, underlay)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let pdf_definition_objects = serialize_pdf_definitions(
+            &pdf_underlays
+                .iter()
+                .map(|(_, underlay)| *underlay)
+                .collect::<Vec<_>>(),
+            &self.source,
+        );
+        let mut pdf_metadata_objects = serialize_pdf_metadata(&pdf_underlays, &mut object_handle);
+        let pdf_metadata_spans = pdf_metadata_spans(&self.source);
+        if !pdf_metadata_spans.is_empty() {
+            for (index, (start, end)) in pdf_metadata_spans.iter().copied().enumerate() {
+                changes.push((
+                    start,
+                    end,
+                    if index == 0 {
+                        pdf_metadata_objects.clone()
+                    } else {
+                        String::new()
+                    },
+                ));
+            }
+            pdf_metadata_objects.clear();
+        }
         let layout_objects = serialize_layouts(&self.layouts, &self.source, &mut object_handle);
         let constraint_objects = serialize_constraints(
             &self.constraints,
@@ -1908,18 +1967,22 @@ impl DxfDocument {
             || !constraint_objects.is_empty()
             || !mleader_style_objects.is_empty()
             || !data_objects.is_empty()
+            || !pdf_definition_objects.is_empty()
+            || !pdf_metadata_objects.is_empty()
         {
             let objects = format!(
-                "{}{}{}{}{}{}",
+                "{}{}{}{}{}{}{}{}",
                 images
                     .iter()
                     .map(|image| serialize_image_def(image))
                     .collect::<String>(),
+                pdf_definition_objects,
                 group_objects,
                 layout_objects,
                 constraint_objects,
                 mleader_style_objects,
-                data_objects
+                data_objects,
+                pdf_metadata_objects
             );
             let marker = if output.contains("\r\n0\r\nEOF") {
                 "\r\n0\r\nEOF"
@@ -1991,6 +2054,7 @@ impl DxfDocument {
                     | Entity::Ray(_)
                     | Entity::Image(_)
                     | Entity::Mesh(_)
+                    | Entity::PdfUnderlay(_)
             )
         }) {
             output = output.replacen("$ACADVER\n1\nAC1009", "$ACADVER\n1\nAC1027", 1);
@@ -2830,6 +2894,7 @@ fn read_preserved_section(
 
 fn read_block_definitions(input: &str) -> Result<Vec<BlockDefinition>, DxfError> {
     let mut groups = Groups::new(input);
+    let pdf_definitions = read_pdf_definitions(input);
     let mut in_blocks = false;
     let mut result = Vec::new();
     let mut handles = HashSet::new();
@@ -2901,9 +2966,8 @@ fn read_block_definitions(input: &str) -> Result<Vec<BlockDefinition>, DxfError>
                 continue;
             }
             let parsed = match child.value {
-                "POINT" | "LINE" | "XLINE" | "RAY" | "CIRCLE" | "ARC" | "ELLIPSE" | "3DFACE" => {
-                    read_entity(&mut groups, child, &mut handles)
-                }
+                "POINT" | "LINE" | "XLINE" | "RAY" | "CIRCLE" | "ARC" | "ELLIPSE" | "3DFACE"
+                | "PDFUNDERLAY" => read_entity(&mut groups, child, &mut handles, &pdf_definitions),
                 "SPLINE" | "TEXT" | "MTEXT" | "LEADER" | "MULTILEADER" | "TABLE" | "ACAD_TABLE"
                 | "DIMENSION" | "HATCH" | "INSERT" | "IMAGE" | "MESH" => read_extended_entity(
                     &mut groups,
@@ -3096,6 +3160,7 @@ fn entity_handles(input: &str) -> HashMap<String, usize> {
                 | "LWPOLYLINE"
                 | "MLINE"
                 | "MESH"
+                | "PDFUNDERLAY"
         ) {
             continue;
         }
@@ -5383,6 +5448,16 @@ fn record_handle_at(input: &str, start: usize) -> Option<String> {
         .map(|field| field.value.to_owned())
 }
 
+fn record_field_text_at(input: &str, start: usize, code: u16) -> Option<String> {
+    let mut groups = Groups::new(input.get(start..)?);
+    let _ = groups.next().ok()??;
+    record_fields(&mut groups)
+        .ok()?
+        .iter()
+        .find(|field| field.code == code)
+        .map(|field| field.value.to_owned())
+}
+
 fn entity_handle_insertion_offset(input: &str, start: usize) -> usize {
     let Some(rest) = input.get(start..) else {
         return start;
@@ -5495,7 +5570,11 @@ fn read_entity(
     groups: &mut Groups<'_>,
     marker: Group<'_>,
     handles: &mut HashSet<u64>,
+    pdf_definitions: &HashMap<u64, (std::path::PathBuf, u32)>,
 ) -> Result<(Entity, EntityRecord), DxfError> {
+    if marker.value == "PDFUNDERLAY" {
+        return read_pdf_underlay(groups, marker, handles, pdf_definitions);
+    }
     let codes: &[u16] = match marker.value {
         "POINT" => &[10, 20, 30],
         "LINE" => &[10, 20, 30, 11, 21, 31],
@@ -5648,6 +5727,171 @@ fn read_entity(
             polyline: None,
         },
     ))
+}
+
+fn read_pdf_underlay(
+    groups: &mut Groups<'_>,
+    marker: Group<'_>,
+    handles: &mut HashSet<u64>,
+    pdf_definitions: &HashMap<u64, (std::path::PathBuf, u32)>,
+) -> Result<(Entity, EntityRecord), DxfError> {
+    let source_fields = record_fields(groups)?;
+    let properties = read_entity_properties(&source_fields, marker.line, handles)?;
+    let (insertion, definition_handle) = read_pdf_reference(&source_fields, marker.line)?;
+    let (path, page) = pdf_definitions.get(&definition_handle).ok_or(DxfError {
+        line: marker.line,
+        kind: DxfErrorKind::UnsupportedProperty(340),
+    })?;
+    let mut underlay =
+        PdfUnderlay::unresolved(path.clone(), *page, insertion).map_err(|_| DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::InvalidCoordinate(10),
+        })?;
+    configure_pdf_underlay(&mut underlay, &source_fields, marker.line)?;
+    if let Some(clip) = read_pdf_clip(&source_fields, marker.line)? {
+        underlay.set_page_clip(Some(clip)).map_err(|_| DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::InvalidCoordinate(11),
+        })?;
+    }
+    let entity = Entity::PdfUnderlay(underlay);
+    let end = groups.peek()?.map_or(groups.offset, |group| group.start);
+    let fields = source_fields
+        .iter()
+        .filter_map(|field| coordinate(*field).ok().map(|value| (field.code, value)))
+        .collect();
+    Ok((
+        entity.clone(),
+        EntityRecord {
+            original: entity,
+            source_line: marker.line,
+            start: marker.start,
+            end,
+            fields_end: end,
+            fields,
+            properties,
+            polyline: None,
+        },
+    ))
+}
+
+fn read_pdf_reference(fields: &[Group<'_>], line: usize) -> Result<(Point3, u64), DxfError> {
+    let insertion = Point3::new(
+        field_number(fields, 10, line)?.ok_or(DxfError {
+            line,
+            kind: DxfErrorKind::MissingField(10),
+        })?,
+        field_number(fields, 20, line)?.ok_or(DxfError {
+            line,
+            kind: DxfErrorKind::MissingField(20),
+        })?,
+        field_number(fields, 30, line)?.unwrap_or(0.0),
+    )
+    .map_err(|_| DxfError {
+        line,
+        kind: DxfErrorKind::InvalidCoordinate(10),
+    })?;
+    let handle = unique_field(fields, 340)?.ok_or(DxfError {
+        line,
+        kind: DxfErrorKind::MissingField(340),
+    })?;
+    let handle = u64::from_str_radix(handle.value.trim(), 16).map_err(|_| DxfError {
+        line: handle.line,
+        kind: DxfErrorKind::InvalidHandle(340),
+    })?;
+    Ok((insertion, handle))
+}
+
+fn configure_pdf_underlay(
+    underlay: &mut PdfUnderlay,
+    fields: &[Group<'_>],
+    line: usize,
+) -> Result<(), DxfError> {
+    validate_xy_normal(
+        [
+            field_number(fields, 210, line)?,
+            field_number(fields, 220, line)?,
+            field_number(fields, 230, line)?,
+        ],
+        line,
+    )?;
+    underlay
+        .set_scale([
+            field_number(fields, 41, line)?.unwrap_or(1.0),
+            field_number(fields, 42, line)?.unwrap_or(1.0),
+        ])
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::InvalidCoordinate(41),
+        })?;
+    underlay
+        .set_rotation(field_number(fields, 50, line)?.unwrap_or(0.0).to_radians())
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::InvalidCoordinate(50),
+        })?;
+    let flags = field_number(fields, 280, line)?.unwrap_or(2.0);
+    if !flags.is_finite() || flags.fract() != 0.0 || !(0.0..=f64::from(u8::MAX)).contains(&flags) {
+        return Err(DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(280),
+        });
+    }
+    let flags = flags as u8;
+    underlay.set_clip_enabled(flags & 1 != 0);
+    underlay.set_display_enabled(flags & 2 != 0);
+    underlay.set_monochrome(flags & 4 != 0);
+    underlay.set_frame_mode(1).map_err(|_| DxfError {
+        line,
+        kind: DxfErrorKind::UnsupportedProperty(280),
+    })?;
+    underlay
+        .set_contrast(field_number(fields, 281, line)?.unwrap_or(100.0))
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(281),
+        })?;
+    underlay
+        .set_fade(field_number(fields, 282, line)?.unwrap_or(0.0))
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(282),
+        })?;
+    Ok(())
+}
+
+fn read_pdf_clip(fields: &[Group<'_>], line: usize) -> Result<Option<Vec<[f64; 2]>>, DxfError> {
+    let mut clip = Vec::new();
+    for field in fields.iter().filter(|field| field.code == 11) {
+        let x = field.value.parse::<f64>().map_err(|_| DxfError {
+            line: field.line,
+            kind: DxfErrorKind::InvalidCoordinate(11),
+        })?;
+        let y = fields
+            .iter()
+            .find(|candidate| candidate.code == 21 && candidate.start > field.start)
+            .map(|candidate| {
+                candidate.value.parse::<f64>().map_err(|_| DxfError {
+                    line: candidate.line,
+                    kind: DxfErrorKind::InvalidCoordinate(21),
+                })
+            })
+            .transpose()?;
+        let Some(y) = y else {
+            return Err(DxfError {
+                line,
+                kind: DxfErrorKind::MissingField(21),
+            });
+        };
+        if !x.is_finite() || !y.is_finite() {
+            return Err(DxfError {
+                line,
+                kind: DxfErrorKind::InvalidCoordinate(11),
+            });
+        }
+        clip.push([x, y]);
+    }
+    Ok((!clip.is_empty()).then_some(clip))
 }
 
 fn validate_xy_normal(normal: [Option<f64>; 3], line: usize) -> Result<(), DxfError> {
@@ -7150,6 +7394,50 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
             writeln!(output, "10\n{}\n20\n{}\n30\n{}\n11\n{}\n21\n{}\n31\n{}\n12\n{}\n22\n{}\n32\n{}\n13\n{}\n23\n{}\n340\n{}", insertion.x(), insertion.y(), insertion.z(), u.x() / width_f, u.y() / width_f, u.z() / width_f, v.x() / height_f, v.y() / height_f, v.z() / height_f, width, height, image_handle(image)).expect("String write");
             return;
         }
+        Entity::PdfUnderlay(underlay) => {
+            let insertion = underlay.insertion();
+            let scale = underlay.scale();
+            let mut flags = 0u8;
+            if underlay.clip_enabled() {
+                flags |= 1;
+            }
+            if underlay.display_enabled() {
+                flags |= 2;
+            }
+            if underlay.monochrome() {
+                flags |= 4;
+            }
+            writeln!(
+                output,
+                "340\n{:X}\n10\n{}\n20\n{}\n30\n{}\n41\n{}\n42\n{}\n43\n1\n50\n{}\n280\n{}\n281\n{}\n282\n{}",
+                pdf_definition_handle(underlay),
+                insertion.x(),
+                insertion.y(),
+                insertion.z(),
+                scale[0],
+                scale[1],
+                underlay.rotation().to_degrees(),
+                flags,
+                underlay.contrast(),
+                underlay.fade()
+            )
+            .expect("String write");
+            if let Some(clip) = underlay.clip() {
+                let page_size = underlay.resolved_page_size().ok();
+                for point in clip {
+                    let (x, y) = match page_size {
+                        Some(size) => (point[0] * size[0], point[1] * size[1]),
+                        None => (point[0], point[1]),
+                    };
+                    writeln!(output, "11\n{}\n21\n{}", x, y).expect("String write");
+                }
+            } else if let Some(clip) = underlay.pending_page_clip() {
+                for point in clip {
+                    writeln!(output, "11\n{}\n21\n{}", point[0], point[1]).expect("String write");
+                }
+            }
+            return;
+        }
         Entity::Polyline3(polyline) => {
             writeln!(
                 output,
@@ -7213,6 +7501,272 @@ fn serialize_image_def(image: &RasterImage) -> String {
         image.u_vector().x() / f64::from(width.max(1)),
         image.v_vector().y() / f64::from(height.max(1))
     )
+}
+
+fn pdf_definition_handle(underlay: &PdfUnderlay) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    underlay.path().to_string_lossy().hash(&mut hasher);
+    underlay.page().hash(&mut hasher);
+    0xB000_0000_0000_0000_u64 | (hasher.finish() & 0x0FFF_FFFF_FFFF_FFFF)
+}
+
+fn serialize_pdf_definition(underlay: &PdfUnderlay) -> String {
+    format!(
+        "0\nUNDERLAYDEFINITION\n5\n{:X}\n100\nAcDbUnderlayDefinition\n1\n{}\n2\n{}\n",
+        pdf_definition_handle(underlay),
+        underlay.path().display(),
+        underlay.page()
+    )
+}
+
+fn serialize_pdf_definitions(underlays: &[&PdfUnderlay], source: &str) -> String {
+    let existing = read_pdf_definitions(source);
+    let mut emitted = HashSet::new();
+    underlays
+        .iter()
+        .filter(|underlay| {
+            let handle = pdf_definition_handle(underlay);
+            emitted.insert(handle) && !existing.contains_key(&handle)
+        })
+        .map(|underlay| serialize_pdf_definition(underlay))
+        .collect()
+}
+
+fn read_pdf_definitions(input: &str) -> HashMap<u64, (std::path::PathBuf, u32)> {
+    let mut definitions = HashMap::new();
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "UNDERLAYDEFINITION" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let Some(handle) = fields
+            .iter()
+            .find(|field| field.code == 5)
+            .and_then(|field| u64::from_str_radix(field.value.trim(), 16).ok())
+        else {
+            continue;
+        };
+        let Some(path) = fields
+            .iter()
+            .find(|field| field.code == 1)
+            .map(|field| std::path::PathBuf::from(field.value))
+        else {
+            continue;
+        };
+        let Some(page) = fields
+            .iter()
+            .find(|field| field.code == 2)
+            .and_then(|field| field.value.parse::<u32>().ok())
+            .filter(|value| *value > 0)
+        else {
+            continue;
+        };
+        definitions.insert(handle, (path, page));
+    }
+    definitions
+}
+
+#[derive(Clone, Copy)]
+struct PdfMetadata {
+    page_size: [f64; 2],
+    clip_enabled: bool,
+    display_enabled: bool,
+    frame_mode: u8,
+    monochrome: bool,
+    fade: f64,
+    contrast: f64,
+}
+
+fn apply_pdf_metadata(
+    underlay: &mut PdfUnderlay,
+    metadata: PdfMetadata,
+    line: usize,
+) -> Result<(), DxfError> {
+    underlay
+        .set_page_size(metadata.page_size)
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::InvalidCoordinate(1),
+        })?;
+    underlay
+        .set_frame_mode(metadata.frame_mode)
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(280),
+        })?;
+    underlay.set_clip_enabled(metadata.clip_enabled);
+    underlay.set_display_enabled(metadata.display_enabled);
+    underlay.set_monochrome(metadata.monochrome);
+    underlay.set_fade(metadata.fade).map_err(|_| DxfError {
+        line,
+        kind: DxfErrorKind::UnsupportedProperty(282),
+    })?;
+    underlay
+        .set_contrast(metadata.contrast)
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(281),
+        })?;
+    Ok(())
+}
+
+fn serialize_pdf_metadata(underlays: &[(u64, &PdfUnderlay)], handle: &mut u64) -> String {
+    if underlays.is_empty() {
+        return String::new();
+    }
+    let mut output = String::new();
+    for (entity_handle, underlay) in underlays {
+        let Ok(size) = underlay.resolved_page_size() else {
+            continue;
+        };
+        output.push_str(&format!(
+            "0\nXRECORD\n5\n{:X}\n100\nAcDbXrecord\n1000\nOpenCadData|v2|PDF|{:X}|{}|{}|{}|{}|{}|{}|{}|{}\n",
+            *handle,
+            entity_handle,
+            size[0],
+            size[1],
+            u8::from(underlay.clip_enabled()),
+            u8::from(underlay.display_enabled()),
+            underlay.frame_mode(),
+            u8::from(underlay.monochrome()),
+            underlay.fade(),
+            underlay.contrast()
+        ));
+        *handle = handle.saturating_add(1);
+    }
+    output
+}
+
+fn pdf_metadata_spans(input: &str) -> Vec<(usize, usize)> {
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    let mut spans = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "XRECORD" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        if fields
+            .iter()
+            .any(|field| field.code == 1000 && field.value.starts_with("OpenCadData|v2|PDF|"))
+        {
+            let end = groups
+                .peek()
+                .ok()
+                .flatten()
+                .map_or(input.len(), |next| next.start);
+            spans.push((marker.start, end));
+        }
+    }
+    spans
+}
+
+fn read_pdf_metadata(input: &str) -> HashMap<u64, PdfMetadata> {
+    let mut metadata = HashMap::new();
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "XRECORD" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        for field in fields.iter().filter(|field| field.code == 1000) {
+            let Some(payload) = field.value.strip_prefix("OpenCadData|v2|PDF|") else {
+                continue;
+            };
+            let values: Vec<_> = payload.split('|').collect();
+            if values.len() != 9 {
+                continue;
+            }
+            let (
+                Ok(handle),
+                Ok(width),
+                Ok(height),
+                Ok(clip),
+                Ok(display),
+                Ok(frame),
+                Ok(mono),
+                Ok(fade),
+                Ok(contrast),
+            ) = (
+                u64::from_str_radix(values[0], 16),
+                values[1].parse::<f64>(),
+                values[2].parse::<f64>(),
+                values[3].parse::<u8>(),
+                values[4].parse::<u8>(),
+                values[5].parse::<u8>(),
+                values[6].parse::<u8>(),
+                values[7].parse::<f64>(),
+                values[8].parse::<f64>(),
+            )
+            else {
+                continue;
+            };
+            if width.is_finite()
+                && height.is_finite()
+                && width > 0.0
+                && height > 0.0
+                && clip <= 1
+                && display <= 1
+                && frame <= 2
+                && mono <= 1
+                && fade.is_finite()
+                && contrast.is_finite()
+            {
+                metadata.insert(
+                    handle,
+                    PdfMetadata {
+                        page_size: [width, height],
+                        clip_enabled: clip != 0,
+                        display_enabled: display != 0,
+                        frame_mode: frame,
+                        monochrome: mono != 0,
+                        fade,
+                        contrast,
+                    },
+                );
+            }
+        }
+    }
+    metadata
 }
 
 fn write_vertex(

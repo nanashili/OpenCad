@@ -4,7 +4,14 @@ use crate::{
     DxfDocument, Entity,
     layout::{Orientation, PageSetup, Viewport},
 };
-use std::fs;
+use std::{
+    fs,
+    io::{Cursor, Read},
+    path::{Path, PathBuf},
+};
+
+const MAX_PLOT_REFERENCE_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_PLOT_IMAGE_PIXELS: u64 = 16_000_000;
 
 impl OpenCadApp {
     pub(super) fn feature_layout_command(
@@ -213,8 +220,13 @@ impl OpenCadApp {
             return Err("EXPORTPDF output.pdf.".into());
         };
         let layout = self.layouts.active();
-        let bytes = vector_pdf(self.editor.document(), layout.setup(), layout.viewports())
-            .map_err(|e| e.to_string())?;
+        let bytes = vector_pdf(
+            self.editor.document(),
+            layout.setup(),
+            layout.viewports(),
+            self.path.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
         fs::write(t[0], bytes).map_err(|e| format!("Cannot write PDF: {e}"))
     }
 }
@@ -223,13 +235,22 @@ fn vector_pdf(
     document: &DxfDocument,
     setup: PageSetup,
     viewports: &[Viewport],
+    document_path: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
-    let entities = flatten_entities(document)?;
+    let mut entities = flatten_entities(document)?;
+    entities.retain(|entity| match entity {
+        Entity::Image(image) => image.visible(),
+        Entity::PdfUnderlay(underlay) => underlay.display_enabled(),
+        _ => true,
+    });
+    resolve_underlay_sizes(&mut entities, document_path)?;
     let b = crate::layout::world_bounds(&entities).map_err(|e| e.to_string())?;
     let [w, h] = setup.dimensions();
     let m = setup.margins();
     let scale = setup.scale();
     let mut content = String::from("1 w 0 0 0 RG\n");
+    let mut pdf = PdfWriter::new();
+    let mut xobjects = Vec::new();
     if let Some(points) = viewports
         .first()
         .filter(|v| v.clip_enabled())
@@ -379,6 +400,7 @@ fn vector_pdf(
                 }
             }
             Entity::Table(t) => {
+                let display_cells = t.display_cells();
                 append_lines(
                     &mut content,
                     t.grid_lines()
@@ -388,7 +410,7 @@ fn vector_pdf(
                     &p,
                 );
                 let mut y = t.anchor().y();
-                for (row_height, cells) in t.row_heights().iter().zip(t.cells()) {
+                for (row_height, cells) in t.row_heights().iter().zip(&display_cells) {
                     let mut x = t.anchor().x();
                     for (cell, width) in cells.iter().zip(t.column_widths()) {
                         append_text(
@@ -450,8 +472,28 @@ fn vector_pdf(
                 true,
                 &p,
             ),
-            Entity::Image(_) => {
-                return Err("EXPORTPDF does not support raster IMAGE entities".into());
+            Entity::Image(image) => {
+                if !image.visible() {
+                    continue;
+                }
+                append_raster_plot_image(
+                    &mut pdf,
+                    &mut content,
+                    &mut xobjects,
+                    image,
+                    document_path,
+                    &p,
+                )?;
+            }
+            Entity::PdfUnderlay(underlay) => {
+                append_pdf_underlay(
+                    &mut pdf,
+                    &mut content,
+                    &mut xobjects,
+                    underlay,
+                    document_path,
+                    &p,
+                )?;
             }
             Entity::MLine(mline) => {
                 for path in mline.explode().map_err(|e| e.to_string())? {
@@ -491,40 +533,119 @@ fn vector_pdf(
             }
         }
     }
-    let objects = [
-        "<< /Type /Catalog /Pages 2 0 R >>".into(),
-        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".into(),
-        format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w} {h}] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>"
-        ),
-        format!(
-            "<< /Length {} >>\nstream\n{}endstream",
-            content.len(),
-            content
-        ),
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".into(),
-    ];
-    let mut out = b"%PDF-1.4\n".to_vec();
-    let mut offsets = vec![0];
-    for (i, o) in objects.iter().enumerate() {
-        offsets.push(out.len());
-        out.extend_from_slice(format!("{} 0 obj\n{}\nendobj\n", i + 1, o).as_bytes());
+    let xobject_dict = xobjects
+        .iter()
+        .map(|resource| format!("/{} {} 0 R", resource.name, resource.object_id))
+        .collect::<Vec<_>>()
+        .join(" ");
+    pdf.finish(w, h, content, xobject_dict)
+}
+
+fn append_pdf_underlay(
+    pdf: &mut PdfWriter,
+    content: &mut String,
+    xobjects: &mut Vec<PdfImageResource>,
+    underlay: &crate::PdfUnderlay,
+    document_path: Option<&Path>,
+    map: &impl Fn(f64, f64) -> (f64, f64),
+) -> Result<(), String> {
+    if !underlay.display_enabled() {
+        return Ok(());
     }
-    let xref = out.len();
-    out.extend_from_slice(
-        format!("xref\n0 {}\n0000000000 65535 f \n", objects.len() + 1).as_bytes(),
-    );
-    for off in offsets.iter().skip(1) {
-        out.extend_from_slice(format!("{off:010} 00000 n \n").as_bytes());
+    let path = resolve_reference_path(underlay.path(), document_path);
+    let data = read_bounded(&path)?;
+    let mut placement = underlay.clone();
+    if !placement.page_size_known() {
+        let info = crate::pdf_info(&data)
+            .map_err(|error| format!("Cannot resolve PDF underlay {}: {error}", path.display()))?;
+        let page = placement
+            .page()
+            .checked_sub(1)
+            .and_then(|index| info.pages.get(index as usize))
+            .ok_or_else(|| {
+                format!(
+                    "PDF underlay page {} is unavailable in {}",
+                    placement.page(),
+                    path.display()
+                )
+            })?;
+        placement
+            .set_page_size([f64::from(page.width_points), f64::from(page.height_points)])
+            .map_err(|error| format!("Invalid PDF underlay dimensions: {error}"))?;
     }
-    out.extend_from_slice(
-        format!(
-            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
-            objects.len() + 1
-        )
-        .as_bytes(),
-    );
-    Ok(out)
+    let mut preview = crate::render_pdf_page(&data, placement.page() as usize)
+        .map_err(|error| format!("Cannot render PDF underlay {}: {error}", path.display()))?;
+    crate::pdf_render::adjust_preview(
+        &mut preview,
+        placement.fade(),
+        placement.contrast(),
+        placement.monochrome(),
+    )
+    .map_err(|error| format!("Cannot adjust PDF underlay pixels: {error}"))?;
+    let resource = pdf.add_rgba_image(preview.width, preview.height, &preview.pixels)?;
+    xobjects.push(resource.clone());
+    let [page_width, page_height] = placement
+        .resolved_page_size()
+        .map_err(|error| format!("PDF underlay dimensions unavailable: {error}"))?;
+    let [scale_x, scale_y] = placement.scale();
+    let (sin, cos) = placement.rotation().sin_cos();
+    let insertion = placement.insertion();
+    let full_u = crate::Point3::new(cos * page_width * scale_x, sin * page_width * scale_x, 0.0)
+        .map_err(|error| format!("Invalid PDF underlay placement: {error}"))?;
+    let full_v = crate::Point3::new(
+        -sin * page_height * scale_y,
+        cos * page_height * scale_y,
+        0.0,
+    )
+    .map_err(|error| format!("Invalid PDF underlay placement: {error}"))?;
+    let mut raster = crate::RasterImage::new(
+        path,
+        insertion,
+        full_u,
+        full_v,
+        preview.width,
+        preview.height,
+    )
+    .map_err(|error| format!("Invalid PDF underlay image geometry: {error}"))?;
+    if placement.clip_enabled() {
+        let polygon = placement
+            .clipped_polygon()
+            .map_err(|error| format!("Invalid PDF underlay clip: {error}"))?;
+        raster
+            .set_clip_boundary(Some(polygon))
+            .map_err(|error| format!("Invalid PDF underlay clip: {error}"))?;
+    }
+    append_underlay_image(content, &raster, resource, map)?;
+    if placement.frame_mode() == 1 {
+        let frame = placement
+            .clipped_polygon()
+            .map_err(|error| format!("Invalid PDF underlay frame: {error}"))?;
+        let mut edges = frame
+            .windows(2)
+            .map(|pair| (pair[0], pair[1]))
+            .collect::<Vec<_>>();
+        if let (Some(first), Some(last)) = (frame.first(), frame.last()) {
+            edges.push((*last, *first));
+        }
+        append_lines(content, edges, map);
+    }
+    Ok(())
+}
+
+fn append_raster_plot_image(
+    pdf: &mut PdfWriter,
+    content: &mut String,
+    xobjects: &mut Vec<PdfImageResource>,
+    image: &crate::RasterImage,
+    document_path: Option<&Path>,
+    map: &impl Fn(f64, f64) -> (f64, f64),
+) -> Result<(), String> {
+    let path = resolve_reference_path(image.path(), document_path);
+    let (width, height, pixels) = load_png_pixels(&path)?;
+    let pixels = with_opacity(pixels, image.opacity())?;
+    let resource = pdf.add_rgba_image(width, height, &pixels)?;
+    xobjects.push(resource.clone());
+    append_raster_image(content, image, resource, map)
 }
 
 fn flatten_entities(document: &DxfDocument) -> Result<Vec<Entity>, String> {
@@ -562,6 +683,346 @@ fn flatten_entities(document: &DxfDocument) -> Result<Vec<Entity>, String> {
     let mut out = Vec::new();
     visit(document, document.entities(), 0, &mut out)?;
     Ok(out)
+}
+
+fn resolve_underlay_sizes(
+    entities: &mut [Entity],
+    document_path: Option<&Path>,
+) -> Result<(), String> {
+    for entity in entities {
+        let Entity::PdfUnderlay(underlay) = entity else {
+            continue;
+        };
+        if underlay.page_size_known() {
+            continue;
+        }
+        let path = resolve_reference_path(underlay.path(), document_path);
+        let data = read_bounded(&path)?;
+        let info = crate::pdf_info(&data)
+            .map_err(|error| format!("Cannot resolve PDF underlay {}: {error}", path.display()))?;
+        let page = underlay
+            .page()
+            .checked_sub(1)
+            .and_then(|index| info.pages.get(index as usize))
+            .ok_or_else(|| {
+                format!(
+                    "PDF underlay page {} is unavailable in {}",
+                    underlay.page(),
+                    path.display()
+                )
+            })?;
+        underlay
+            .set_page_size([f64::from(page.width_points), f64::from(page.height_points)])
+            .map_err(|error| format!("Invalid PDF underlay dimensions: {error}"))?;
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct PdfImageResource {
+    name: String,
+    object_id: usize,
+}
+
+struct PdfObject {
+    dictionary: String,
+    stream: Option<Vec<u8>>,
+}
+
+struct PdfWriter {
+    objects: Vec<Option<PdfObject>>,
+    next_image: usize,
+}
+
+impl PdfWriter {
+    fn new() -> Self {
+        Self {
+            objects: (0..5).map(|_| None).collect(),
+            next_image: 1,
+        }
+    }
+
+    fn add_object(&mut self, object: PdfObject) -> usize {
+        self.objects.push(Some(object));
+        self.objects.len()
+    }
+
+    fn add_rgba_image(
+        &mut self,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> Result<PdfImageResource, String> {
+        let pixels = u64::from(width)
+            .checked_mul(u64::from(height))
+            .filter(|pixels| *pixels > 0 && *pixels <= MAX_PLOT_IMAGE_PIXELS)
+            .ok_or("Plot image dimensions exceed the supported limit.")?;
+        let byte_count = usize::try_from(pixels)
+            .ok()
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or("Plot image dimensions exceed the supported limit.")?;
+        if rgba.len() != byte_count {
+            return Err("Plot image pixel data has an invalid length.".into());
+        }
+        let rgb_byte_count = usize::try_from(pixels)
+            .ok()
+            .and_then(|pixels| pixels.checked_mul(3))
+            .ok_or("Plot image dimensions exceed the supported limit.")?;
+        let mut rgb = Vec::with_capacity(rgb_byte_count);
+        let mut alpha = Vec::with_capacity(pixels as usize);
+        let mut has_alpha = false;
+        for pixel in rgba.chunks_exact(4) {
+            rgb.extend_from_slice(&pixel[..3]);
+            alpha.push(pixel[3]);
+            has_alpha |= pixel[3] != 255;
+        }
+        let soft_mask = if has_alpha {
+            Some(self.add_object(PdfObject {
+                dictionary: format!(
+                    "<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {} >>",
+                    alpha.len()
+                ),
+                stream: Some(alpha),
+            }))
+        } else {
+            None
+        };
+        let mut dictionary = format!(
+            "<< /Type /XObject /Subtype /Image /Width {width} /Height {height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {}",
+            rgb.len()
+        );
+        if let Some(mask) = soft_mask {
+            dictionary.push_str(&format!(" /SMask {mask} 0 R"));
+        }
+        dictionary.push_str(" >>");
+        let object_id = self.add_object(PdfObject {
+            dictionary,
+            stream: Some(rgb),
+        });
+        let name = format!("Im{}", self.next_image);
+        self.next_image += 1;
+        Ok(PdfImageResource { name, object_id })
+    }
+
+    fn finish(
+        mut self,
+        width: f64,
+        height: f64,
+        content: String,
+        xobjects: String,
+    ) -> Result<Vec<u8>, String> {
+        self.objects[0] = Some(PdfObject::plain("<< /Type /Catalog /Pages 2 0 R >>"));
+        self.objects[1] = Some(PdfObject::plain(
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+        ));
+        self.objects[2] = Some(PdfObject::plain(format!(
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] /Resources << /Font << /F1 5 0 R >> /XObject << {xobjects} >> >> /Contents 4 0 R >>"
+        )));
+        self.objects[3] = Some(PdfObject::stream(content.into_bytes()));
+        self.objects[4] = Some(PdfObject::plain(
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+        ));
+
+        let mut output = b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec();
+        let mut offsets = Vec::with_capacity(self.objects.len() + 1);
+        offsets.push(0usize);
+        for (index, object) in self.objects.into_iter().enumerate() {
+            let object = object.ok_or("PDF object writer left an unresolved object.")?;
+            offsets.push(output.len());
+            output.extend_from_slice(format!("{} 0 obj\n", index + 1).as_bytes());
+            output.extend_from_slice(object.dictionary.as_bytes());
+            if let Some(stream) = object.stream {
+                output.extend_from_slice(b"\nstream\n");
+                output.extend_from_slice(&stream);
+                output.extend_from_slice(b"\nendstream");
+            }
+            output.extend_from_slice(b"\nendobj\n");
+        }
+        let xref_offset = output.len();
+        output.extend_from_slice(
+            format!("xref\n0 {}\n0000000000 65535 f \n", offsets.len()).as_bytes(),
+        );
+        for offset in offsets.iter().skip(1) {
+            if *offset > 9_999_999_999 {
+                return Err("PDF output exceeds the supported xref size.".into());
+            }
+            output.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        output.extend_from_slice(
+            format!(
+                "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+                offsets.len()
+            )
+            .as_bytes(),
+        );
+        Ok(output)
+    }
+}
+
+impl PdfObject {
+    fn plain(dictionary: impl Into<String>) -> Self {
+        Self {
+            dictionary: dictionary.into(),
+            stream: None,
+        }
+    }
+
+    fn stream(bytes: Vec<u8>) -> Self {
+        Self {
+            dictionary: format!("<< /Length {} >>", bytes.len()),
+            stream: Some(bytes),
+        }
+    }
+}
+
+fn resolve_reference_path(path: &Path, document_path: Option<&Path>) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_owned();
+    }
+    document_path
+        .and_then(Path::parent)
+        .map_or_else(|| path.to_owned(), |parent| parent.join(path))
+}
+
+fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
+    let file = fs::File::open(path)
+        .map_err(|error| format!("Cannot read plot reference {}: {error}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_PLOT_REFERENCE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("Cannot read plot reference {}: {error}", path.display()))?;
+    if bytes.len() as u64 > MAX_PLOT_REFERENCE_BYTES {
+        return Err(format!(
+            "Plot reference {} exceeds the supported file size.",
+            path.display()
+        ));
+    }
+    Ok(bytes)
+}
+
+fn load_png_pixels(path: &Path) -> Result<(u32, u32, Vec<u8>), String> {
+    let bytes = read_bounded(path)?;
+    let mut reader = image::ImageReader::with_format(Cursor::new(bytes), image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(MAX_PLOT_IMAGE_PIXELS as u32);
+    limits.max_image_height = Some(MAX_PLOT_IMAGE_PIXELS as u32);
+    limits.max_alloc = Some(64 * 1024 * 1024);
+    reader.limits(limits);
+    let decoded = reader.decode().map_err(|error| {
+        format!(
+            "Cannot decode PNG plot reference {}: {error}",
+            path.display()
+        )
+    })?;
+    let width = decoded.width();
+    let height = decoded.height();
+    let pixels = u64::from(width)
+        .checked_mul(u64::from(height))
+        .filter(|pixels| *pixels > 0 && *pixels <= MAX_PLOT_IMAGE_PIXELS)
+        .ok_or_else(|| {
+            format!(
+                "PNG plot reference {} exceeds supported dimensions.",
+                path.display()
+            )
+        })?;
+    let rgba = decoded.to_rgba8().into_raw();
+    let expected = usize::try_from(pixels)
+        .ok()
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| {
+            format!(
+                "PNG plot reference {} exceeds supported dimensions.",
+                path.display()
+            )
+        })?;
+    if rgba.len() != expected {
+        return Err(format!(
+            "PNG plot reference {} has invalid pixel data.",
+            path.display()
+        ));
+    }
+    Ok((width, height, rgba))
+}
+
+fn with_opacity(mut pixels: Vec<u8>, opacity: f64) -> Result<Vec<u8>, String> {
+    if !opacity.is_finite() || !(0.0..=1.0).contains(&opacity) {
+        return Err("Raster image opacity is invalid.".into());
+    }
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel[3] = (f64::from(pixel[3]) * opacity).round() as u8;
+    }
+    Ok(pixels)
+}
+
+fn append_raster_image(
+    content: &mut String,
+    image: &crate::RasterImage,
+    resource: PdfImageResource,
+    map: &impl Fn(f64, f64) -> (f64, f64),
+) -> Result<(), String> {
+    append_clipped_image(content, image, resource, map)
+}
+
+fn append_underlay_image(
+    content: &mut String,
+    image: &crate::RasterImage,
+    resource: PdfImageResource,
+    map: &impl Fn(f64, f64) -> (f64, f64),
+) -> Result<(), String> {
+    append_clipped_image(content, image, resource, map)
+}
+
+fn append_clipped_image(
+    content: &mut String,
+    image: &crate::RasterImage,
+    resource: PdfImageResource,
+    map: &impl Fn(f64, f64) -> (f64, f64),
+) -> Result<(), String> {
+    let triangles = crate::raster_geometry::clipped_triangles(
+        image.insertion(),
+        image.u_vector(),
+        image.v_vector(),
+        image.clip_boundary(),
+    )
+    .map_err(|error| format!("Cannot clip raster plot image: {error}"))?;
+    let insertion = image.insertion();
+    let u_end = add_point(insertion, image.u_vector())?;
+    let v_end = add_point(insertion, image.v_vector())?;
+    let origin = map(insertion.x(), insertion.y());
+    let u = map(u_end.x(), u_end.y());
+    let v = map(v_end.x(), v_end.y());
+    let a = u.0 - origin.0;
+    let b = u.1 - origin.1;
+    let c = v.0 - origin.0;
+    let d = v.1 - origin.1;
+    let (c, d, e, f) = (c, d, origin.0, origin.1);
+    for triangle in triangles {
+        let points = triangle
+            .positions
+            .iter()
+            .map(|point| map(point.x(), point.y()))
+            .collect::<Vec<_>>();
+        content.push_str("q ");
+        content.push_str(&format!("{} {} m ", points[0].0, points[0].1));
+        content.push_str(&format!(
+            "{} {} l {} {} l h W n ",
+            points[1].0, points[1].1, points[2].0, points[2].1
+        ));
+        content.push_str(&format!(
+            "{a} {b} {c} {d} {e} {f} cm /{} Do Q\n",
+            resource.name
+        ));
+    }
+    Ok(())
+}
+
+fn add_point(point: crate::Point3, vector: crate::Point3) -> Result<crate::Point3, String> {
+    crate::Point3::new(
+        point.x() + vector.x(),
+        point.y() + vector.y(),
+        point.z() + vector.z(),
+    )
+    .map_err(|error| format!("Invalid raster image placement: {error}"))
 }
 
 fn append_curve<I>(out: &mut String, points: I, map: &impl Fn(f64, f64) -> (f64, f64))

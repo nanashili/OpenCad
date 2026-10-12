@@ -234,7 +234,7 @@ impl RasterImage {
     }
 }
 
-fn clip_uv_polygon(polygon: &mut Vec<[f64; 2]>) {
+pub(crate) fn clip_uv_polygon(polygon: &mut Vec<[f64; 2]>) {
     for (axis, lower) in [(0, true), (0, false), (1, true), (1, false)] {
         let input = std::mem::take(polygon);
         for (a, b) in input
@@ -266,7 +266,7 @@ fn clip_uv_polygon(polygon: &mut Vec<[f64; 2]>) {
         }
     }
 }
-fn triangulate_uv(p: &[[f64; 2]]) -> Result<Vec<[[f64; 2]; 3]>, GeometryError> {
+pub(crate) fn triangulate_uv(p: &[[f64; 2]]) -> Result<Vec<[[f64; 2]; 3]>, GeometryError> {
     let mut ids: Vec<usize> = (0..p.len()).collect();
     let area: f64 = p
         .iter()

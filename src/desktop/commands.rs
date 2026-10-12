@@ -144,6 +144,7 @@ impl OpenCadApp {
             .or_else(|| self.feature_selection_command(&upper, &tokens))
             .or_else(|| self.feature_groups_command(&upper, &tokens))
             .or_else(|| self.feature_interchange_command(&upper, rest, &tokens))
+            .or_else(|| self.feature_pdf_command(&upper, rest, &tokens))
             .or_else(|| {
                 self.feature_data_command(&upper, rest).map(|result| {
                     result.map(|output| {
@@ -156,6 +157,7 @@ impl OpenCadApp {
             .or_else(|| self.feature_utility_command(&upper, rest, &tokens))
             .or_else(|| self.feature_modify_command(&upper, rest, &tokens))
             .or_else(|| self.feature_solid_command(&upper, rest, &tokens))
+            .or_else(|| self.feature_tables_command(&upper, rest, &tokens))
             .or_else(|| self.feature_annotations_command(&upper, rest, &tokens))
             .or_else(|| self.feature_blocks_command(&upper, rest, &tokens))
         {

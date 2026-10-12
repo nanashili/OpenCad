@@ -229,6 +229,7 @@ fn command_for_action(action: &str) -> Option<&'static str> {
         "ID_Plot" | "ID_PlotSetup" => "PLOT",
         "ID_ExportPdf" => "EXPORTPDF",
         "ID_Imageatta" => "IMAGEATTACH",
+        "ID_PDFATTACH" => "PDFATTACH",
         "ID_Region" => "REGION",
         "ID_Union" => "UNION",
         "ID_Subtract" => "SUBTRACT",

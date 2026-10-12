@@ -3,6 +3,7 @@ use crate::drawing_data::{
     CsvTable, DataColumn, DataLink, FieldExpression, NamedField, extract_csv, table_from_csv,
     update_linked_table, update_named_fields,
 };
+use crate::table_formula::evaluate_table;
 use std::fs;
 use std::path::Path;
 
@@ -175,6 +176,9 @@ impl OpenCadApp {
         let path = self.resolve_data_path(link.path());
         match direction.as_str() {
             "PULL" | "DOWNLOAD" => {
+                if tokens.len() != 2 {
+                    return Err("DATALINKUPDATE PULL name.".into());
+                }
                 let csv = CsvTable::parse_delimited(
                     &fs::read_to_string(path).map_err(|e| e.to_string())?,
                     link.delimiter(),
@@ -188,6 +192,15 @@ impl OpenCadApp {
                 Ok("Data link updated from CSV.".into())
             }
             "PUSH" | "UPLOAD" => {
+                if tokens.len() > 3 {
+                    return Err("DATALINKUPDATE PUSH name [RAW|EVALUATED].".into());
+                }
+                let evaluated = match tokens.get(2).map(String::as_str) {
+                    None => false,
+                    Some(value) if value.eq_ignore_ascii_case("RAW") => false,
+                    Some(value) if value.eq_ignore_ascii_case("EVALUATED") => true,
+                    Some(_) => return Err("DATALINKUPDATE PUSH name [RAW|EVALUATED].".into()),
+                };
                 let handle = link
                     .target_entity_handle()
                     .ok_or("Data link has no table target.")?;
@@ -202,13 +215,13 @@ impl OpenCadApp {
                 let temp = path.with_extension("opencad.tmp");
                 fs::write(
                     &temp,
-                    self.table_csv(table, link.has_header(), link.delimiter())?,
+                    self.table_csv(table, link.has_header(), link.delimiter(), evaluated)?,
                 )
                 .map_err(|e| e.to_string())?;
                 fs::rename(&temp, path).map_err(|e| e.to_string())?;
                 Ok("Data link exported to CSV.".into())
             }
-            _ => Err("DATALINKUPDATE syntax: PULL|PUSH name.".into()),
+            _ => Err("DATALINKUPDATE syntax: PULL|PUSH name [RAW|EVALUATED].".into()),
         }
     }
 
@@ -371,8 +384,15 @@ impl OpenCadApp {
         table: &crate::Table,
         has_header: bool,
         delimiter: char,
+        evaluated: bool,
     ) -> Result<String, String> {
-        let cells = table.cells();
+        let evaluated_cells;
+        let cells = if evaluated {
+            evaluated_cells = evaluate_table(table).display_cells();
+            evaluated_cells.as_slice()
+        } else {
+            table.cells()
+        };
         if cells.is_empty() || cells[0].is_empty() {
             return Err("TABLE has no cells to export.".into());
         }

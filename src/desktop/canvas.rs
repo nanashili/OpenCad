@@ -1,5 +1,13 @@
 use super::*;
-use egui::{Align2, FontId, Painter, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind};
+use egui::{
+    Align2, FontId, Painter, PointerButton, Pos2, Rect, Sense, Stroke, StrokeKind, TextureHandle,
+};
+use std::cell::RefCell;
+
+struct PdfTextureEntry {
+    key: String,
+    texture: TextureHandle,
+}
 
 pub(super) struct Camera {
     center: [f64; 2],
@@ -7,6 +15,7 @@ pub(super) struct Camera {
     view: crate::Camera3,
     ucs: crate::Ucs3,
     last_canvas_size: [f64; 2],
+    pdf_cache: RefCell<Vec<PdfTextureEntry>>,
 }
 impl Default for Camera {
     fn default() -> Self {
@@ -17,10 +26,15 @@ impl Default for Camera {
                 .expect("valid camera"),
             ucs: crate::Ucs3::world(),
             last_canvas_size: [1024.0, 768.0],
+            pdf_cache: RefCell::new(Vec::new()),
         }
     }
 }
 impl Camera {
+    pub(super) fn clear_pdf_cache(&self) {
+        self.pdf_cache.borrow_mut().clear();
+    }
+
     pub(super) fn zoom(&mut self, factor: f64) -> Result<(), String> {
         if !factor.is_finite() || factor <= 0.0 {
             return Err("Zoom factor must be a positive finite number.".into());
@@ -966,6 +980,7 @@ impl OpenCadApp {
                 }
             }
             Entity::Table(table) => {
+                let display_cells = table.display_cells();
                 if let Ok(lines) = table.grid_lines() {
                     for line in lines {
                         if let (Some(a), Some(b)) = (
@@ -982,7 +997,7 @@ impl OpenCadApp {
                     let mut x = anchor.x();
                     for (column, width) in table.column_widths().iter().enumerate() {
                         if let Some(value) =
-                            table.cells().get(row).and_then(|cells| cells.get(column))
+                            display_cells.get(row).and_then(|cells| cells.get(column))
                             && let Some(at) =
                                 self.camera.screen(x + width / 2.0, y + height / 2.0, rect)
                         {
@@ -1148,6 +1163,9 @@ impl OpenCadApp {
                 }
             }
             Entity::Image(image) => self.draw_image(painter, image, rect, stroke),
+            Entity::PdfUnderlay(underlay) => {
+                self.draw_pdf_underlay(painter, underlay, rect, stroke)
+            }
             Entity::MLine(mline) => {
                 if let Ok(paths) = mline.explode() {
                     for path in paths {
@@ -1245,6 +1263,204 @@ impl OpenCadApp {
                 closed.push(points[0]);
                 painter.add(egui::Shape::line(closed, stroke));
             }
+        }
+    }
+
+    fn draw_pdf_underlay(
+        &self,
+        painter: &Painter,
+        underlay: &crate::PdfUnderlay,
+        rect: Rect,
+        stroke: Stroke,
+    ) {
+        if !underlay.display_enabled() {
+            return;
+        }
+        let texture = match self.pdf_underlay_texture(painter, underlay) {
+            Ok(texture) => texture,
+            Err(message) => {
+                self.draw_pdf_error(painter, underlay, rect, stroke, message);
+                return;
+            }
+        };
+        if !underlay.page_size_known() {
+            self.draw_pdf_error(
+                painter,
+                underlay,
+                rect,
+                stroke,
+                "[PDF page dimensions unresolved]",
+            );
+            return;
+        }
+        let polygon = match underlay.clipped_polygon() {
+            Ok(polygon) => polygon,
+            Err(error) => {
+                self.draw_pdf_error(
+                    painter,
+                    underlay,
+                    rect,
+                    stroke,
+                    &format!("[PDF geometry: {error}]"),
+                );
+                return;
+            }
+        };
+        if polygon.len() < 3 {
+            return;
+        }
+        let (u_vector, v_vector) = match underlay_plot_vectors(underlay) {
+            Ok(vectors) => vectors,
+            Err(_) => {
+                self.draw_pdf_error(painter, underlay, rect, stroke, "[PDF placement invalid]");
+                return;
+            }
+        };
+        let clip = underlay.clip_enabled().then_some(polygon.as_slice());
+        let Ok(triangles) = crate::raster_geometry::clipped_triangles(
+            underlay.insertion(),
+            u_vector,
+            v_vector,
+            clip,
+        ) else {
+            self.draw_pdf_error(painter, underlay, rect, stroke, "[PDF clip unsupported]");
+            return;
+        };
+        let mut mesh = egui::Mesh::with_texture(texture.id());
+        for triangle in triangles {
+            let points = triangle.positions;
+            let base = mesh.vertices.len() as u32;
+            for (point, uv) in points.into_iter().zip(triangle.uvs) {
+                if let Some(position) = self.camera.screen_point(point, rect) {
+                    mesh.vertices.push(egui::epaint::Vertex {
+                        pos: position,
+                        uv: egui::pos2(uv[0] as f32, 1.0 - uv[1] as f32),
+                        color: Color32::WHITE,
+                    });
+                }
+            }
+            if mesh.vertices.len() as u32 >= base + 3 {
+                mesh.indices.extend_from_slice(&[base, base + 1, base + 2]);
+            }
+        }
+        if !mesh.vertices.is_empty() {
+            painter.add(egui::Shape::mesh(mesh));
+        }
+        if underlay.frame_mode() != 0 {
+            let points: Vec<_> = polygon
+                .iter()
+                .filter_map(|point| self.camera.screen_point(*point, rect))
+                .collect();
+            if points.len() > 2 {
+                let mut closed = points.clone();
+                closed.push(points[0]);
+                painter.add(egui::Shape::line(closed, stroke));
+            }
+        }
+    }
+
+    fn pdf_underlay_texture(
+        &self,
+        painter: &Painter,
+        underlay: &crate::PdfUnderlay,
+    ) -> Result<egui::TextureHandle, &'static str> {
+        let path = if underlay.path().is_relative() {
+            self.path
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .map_or_else(
+                    || underlay.path().to_owned(),
+                    |base| base.join(underlay.path()),
+                )
+        } else {
+            underlay.path().to_owned()
+        };
+        let Ok(metadata) = std::fs::metadata(&path) else {
+            return Err("[PDF underlay unavailable]");
+        };
+        if metadata.len() > 128 * 1024 * 1024 {
+            return Err("[PDF underlay too large]");
+        }
+        let Ok(data) = std::fs::read(&path) else {
+            return Err("[PDF underlay unavailable]");
+        };
+        let modified = metadata
+            .modified()
+            .ok()
+            .and_then(|value| value.duration_since(std::time::UNIX_EPOCH).ok())
+            .map_or(0, |value| value.as_nanos());
+        let key = format!(
+            "{}:{}:{}:{}:{}:{}:{}:{}",
+            path.display(),
+            modified,
+            data.len(),
+            underlay.page(),
+            underlay.fade().to_bits(),
+            underlay.contrast().to_bits(),
+            underlay.monochrome(),
+            underlay.display_enabled(),
+        );
+        if let Some(texture) = self
+            .camera
+            .pdf_cache
+            .borrow()
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(|entry| entry.texture.clone())
+        {
+            return Ok(texture);
+        }
+
+        let Ok(mut preview) = crate::pdf_render::render_pdf_page(&data, underlay.page() as usize)
+        else {
+            return Err("[PDF page unavailable]");
+        };
+        if crate::pdf_render::adjust_preview(
+            &mut preview,
+            underlay.fade(),
+            underlay.contrast(),
+            underlay.monochrome(),
+        )
+        .is_err()
+        {
+            return Err("[PDF display settings invalid]");
+        }
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [preview.width as usize, preview.height as usize],
+            &preview.pixels,
+        );
+        let texture = painter.ctx().load_texture(
+            format!("pdf-underlay:{}", key),
+            image,
+            egui::TextureOptions::LINEAR,
+        );
+        let mut cache = self.camera.pdf_cache.borrow_mut();
+        cache.push(PdfTextureEntry {
+            key,
+            texture: texture.clone(),
+        });
+        if cache.len() > 8 {
+            cache.remove(0);
+        }
+        Ok(texture)
+    }
+
+    fn draw_pdf_error(
+        &self,
+        painter: &Painter,
+        underlay: &crate::PdfUnderlay,
+        rect: Rect,
+        stroke: Stroke,
+        message: &str,
+    ) {
+        if let Some(point) = self.camera.screen_point(underlay.insertion(), rect) {
+            painter.text(
+                point,
+                Align2::LEFT_TOP,
+                message,
+                FontId::proportional(10.0),
+                stroke.color,
+            );
         }
     }
 
@@ -1678,6 +1894,15 @@ impl OpenCadApp {
                         Some(Rect::from_two_pos(a, b).distance_to_pos(position))
                     })
                     .unwrap_or(f32::INFINITY),
+                Entity::PdfUnderlay(underlay) => underlay
+                    .bounds()
+                    .ok()
+                    .and_then(|bounds| {
+                        let a = self.camera.screen_point(bounds.min, rect)?;
+                        let b = self.camera.screen_point(bounds.max, rect)?;
+                        Some(Rect::from_two_pos(a, b).distance_to_pos(position))
+                    })
+                    .unwrap_or(f32::INFINITY),
                 Entity::MLine(mline) => mline
                     .explode()
                     .ok()
@@ -1706,6 +1931,21 @@ impl OpenCadApp {
         }
         closest
     }
+}
+
+fn underlay_plot_vectors(
+    underlay: &crate::PdfUnderlay,
+) -> Result<(Point3, Point3), crate::GeometryError> {
+    let [page_width, page_height] = underlay.resolved_page_size()?;
+    let [scale_x, scale_y] = underlay.scale();
+    let (sin, cos) = underlay.rotation().sin_cos();
+    let u_vector = Point3::new(cos * page_width * scale_x, sin * page_width * scale_x, 0.0)?;
+    let v_vector = Point3::new(
+        -sin * page_height * scale_y,
+        cos * page_height * scale_y,
+        0.0,
+    )?;
+    Ok((u_vector, v_vector))
 }
 
 // Original pointer capture policy: within 6 degrees and 8 screen pixels of a
@@ -1833,6 +2073,10 @@ fn entity_points(entity: &Entity) -> Vec<Point3> {
         Entity::XLine(line) => vec![line.origin()],
         Entity::Ray(ray) => vec![ray.origin()],
         Entity::Image(image) => image
+            .bounds()
+            .map(|b| vec![b.min, b.max])
+            .unwrap_or_default(),
+        Entity::PdfUnderlay(underlay) => underlay
             .bounds()
             .map(|b| vec![b.min, b.max])
             .unwrap_or_default(),

@@ -585,6 +585,12 @@ impl Table {
     pub fn cells(&self) -> &[Vec<String>] {
         &self.cells
     }
+    pub fn evaluated_cells(&self) -> crate::table_formula::EvaluatedTable {
+        crate::table_formula::evaluate_table(self)
+    }
+    pub fn display_cells(&self) -> Vec<Vec<String>> {
+        self.evaluated_cells().display_cells()
+    }
     pub fn set_cell(
         &mut self,
         row: usize,

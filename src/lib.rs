@@ -28,16 +28,20 @@ mod modeling;
 mod multiline;
 mod named_views;
 mod offset;
+mod pdf_render;
+mod pdf_underlay;
 mod point;
 mod polyline;
 mod polyline3;
 mod polyline_arc;
+mod raster_geometry;
 mod reference;
 mod region;
 mod script;
 pub(crate) mod solid;
 mod spline;
 mod svg;
+mod table_formula;
 mod transform;
 mod trim;
 mod view;
@@ -88,6 +92,11 @@ pub use modeling::{
 pub use multiline::{MLine2, MLineElement, MLineJustification, MLineStyle};
 pub use named_views::{NamedUcs, NamedUcsCatalog, NamedView, NamedViewCatalog, NamedViewError};
 pub use offset::{Offset, OffsetLayer, OffsetOptions};
+pub use pdf_render::{
+    PdfInfo, PdfPageInfo, PdfRenderError, RgbaPreview, adjust_preview as adjust_pdf_preview,
+    pdf_info, render_pdf_page,
+};
+pub use pdf_underlay::PdfUnderlay;
 pub use point::PointEntity;
 pub use polyline::{Polyline2, PolylineSegment, PolylineWidth};
 pub use polyline3::Polyline3;
@@ -101,6 +110,7 @@ pub use script::{
 pub use solid::{Face3, Mesh3};
 pub use spline::Spline3;
 pub use svg::{SvgError, render_document_svg, render_entities_svg, render_svg};
+pub use table_formula::{CellValue, EvaluatedTable, FormulaError, copy_formula, evaluate_table};
 pub use transform::Transform;
 pub use trim::BoundaryMode;
 pub use view::{Camera3, Ucs3, ViewOrientation};
@@ -143,6 +153,7 @@ pub enum GeometryError {
     InvalidArcSweep,
     InvalidArcChord,
     NonFiniteResult,
+    UnresolvedReference,
     NonPositiveScale,
     NonPositiveOffset,
     UndefinedOffsetSide,
@@ -213,6 +224,9 @@ impl fmt::Display for GeometryError {
                 )
             }
             Self::NonFiniteResult => write!(f, "the geometry result exceeds the finite range"),
+            Self::UnresolvedReference => {
+                write!(f, "the external reference has unresolved geometry")
+            }
             Self::NonPositiveScale => write!(f, "the scale factor must be positive"),
             Self::NonPositiveOffset => write!(f, "the offset distance must be positive"),
             Self::UndefinedOffsetSide => write!(

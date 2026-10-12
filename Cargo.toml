@@ -14,9 +14,10 @@ eframe = { version = "=0.35.0", optional = true, default-features = false, featu
 rfd = { version = "=0.17.2", optional = true }
 image = { version = "=0.25.10", optional = true, default-features = false, features = ["png"] }
 serde = { version = "=1.0.229", optional = true, features = ["derive"] }
+hayro = { version = "=0.8.0", optional = true }
 
 [features]
-desktop = ["dep:eframe", "dep:rfd", "dep:image", "dep:serde", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:raw-window-handle"]
+desktop = ["dep:hayro", "dep:eframe", "dep:rfd", "dep:image", "dep:serde", "dep:objc2", "dep:objc2-app-kit", "dep:objc2-foundation", "dep:raw-window-handle"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = { version = "=0.6.5", optional = true }

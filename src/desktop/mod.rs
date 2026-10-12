@@ -15,10 +15,12 @@ mod feature_interchange;
 mod feature_layouts;
 mod feature_modify;
 mod feature_multiline;
+mod feature_pdf;
 mod feature_references;
 mod feature_regions;
 mod feature_selection;
 mod feature_solid;
+mod feature_tables;
 mod feature_utility;
 mod feature_views;
 mod joining;
@@ -621,6 +623,7 @@ impl OpenCadApp {
                 self.workspace.start = false;
                 self.remember_file(&path);
                 self.editor = Editor::new(document);
+                let pdf_warnings = resolve_pdf_underlay_sizes(&mut self.editor, path.parent());
                 self.ucs = self.editor.document().current_ucs();
                 self.camera.set_ucs(self.ucs);
                 if let Some(view) = self.editor.document().active_view().cloned() {
@@ -671,6 +674,9 @@ impl OpenCadApp {
                     ),
                     false,
                 );
+                for warning in pdf_warnings {
+                    self.message(warning, false);
+                }
             }
             Err(error) => self.message(format!("Open failed: {error}"), true),
         }
@@ -1073,6 +1079,79 @@ impl OpenCadApp {
             }
         }
     }
+}
+
+fn resolve_pdf_underlay_sizes(editor: &mut Editor, base_dir: Option<&Path>) -> Vec<String> {
+    let mut candidate = editor.document().clone();
+    let mut warnings = Vec::new();
+    let mut changed = false;
+    for index in 0..candidate.entities().len() {
+        let Some(Entity::PdfUnderlay(mut underlay)) = candidate.entities().get(index).cloned()
+        else {
+            continue;
+        };
+        let path = if underlay.path().is_absolute() {
+            underlay.path().to_owned()
+        } else {
+            base_dir.map_or_else(
+                || underlay.path().to_owned(),
+                |base| base.join(underlay.path()),
+            )
+        };
+        let data = match fs::read(&path) {
+            Ok(data) => data,
+            Err(error) => {
+                warnings.push(format!(
+                    "PDF underlay {} remains unresolved: {error}.",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let info = match crate::pdf_info(&data) {
+            Ok(info) => info,
+            Err(error) => {
+                warnings.push(format!(
+                    "PDF underlay {} remains unresolved: {error}.",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        let Some(page) = info.pages.get(underlay.page().saturating_sub(1) as usize) else {
+            warnings.push(format!(
+                "PDF underlay {} references missing page {}.",
+                path.display(),
+                underlay.page()
+            ));
+            continue;
+        };
+        if let Err(error) =
+            underlay.set_page_size([f64::from(page.width_points), f64::from(page.height_points)])
+        {
+            warnings.push(format!(
+                "PDF underlay {} page size could not be updated: {error}.",
+                path.display()
+            ));
+            continue;
+        }
+        if candidate
+            .replace_entity(index, Entity::PdfUnderlay(underlay))
+            .is_some()
+        {
+            changed = true;
+        }
+    }
+    if changed {
+        if let Err(error) = editor.replace_document(candidate) {
+            warnings.push(format!(
+                "PDF underlay page sizes were not committed: {error}."
+            ));
+        } else {
+            editor.mark_saved();
+        }
+    }
+    warnings
 }
 
 pub fn run_script_file(script: &Path, output: &Path, input: Option<&Path>) -> Result<(), String> {

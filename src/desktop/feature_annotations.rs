@@ -13,7 +13,7 @@ impl OpenCadApp {
     ) -> Option<Result<(), String>> {
         let result = match verb.to_ascii_uppercase().as_str() {
             "TEXTEDIT" => self.annotation_text_edit(rest),
-            "TABLECELL" => self.annotation_table_cell(tokens),
+            "TABLECELL" => self.annotation_table_cell(rest),
             "DIMTEXT" => self.annotation_dim_text(rest),
             "DIM" => self.annotation_dim_settings(tokens),
             "MLEADEREDIT" => self.mleader_edit(tokens),
@@ -505,7 +505,8 @@ impl OpenCadApp {
         Ok(())
     }
 
-    fn annotation_table_cell(&mut self, tokens: &[&str]) -> Result<(), String> {
+    fn annotation_table_cell(&mut self, rest: &str) -> Result<(), String> {
+        let tokens = super::commands::command_tokens(rest)?;
         if tokens.len() < 3 {
             return Err("TABLECELL syntax: TABLECELL row column text.".into());
         }
@@ -516,7 +517,14 @@ impl OpenCadApp {
             .parse::<usize>()
             .map_err(|_| "Table column must be a whole number.")?;
         let value = tokens[2..].join(" ");
-        if self.editor.selection().is_empty() {
+        if self.editor.selection().len() != 1 {
+            return Err("TABLECELL requires exactly one selected TABLE.".into());
+        }
+        let selected_index = self.editor.selection()[0];
+        if !matches!(
+            self.editor.entities().get(selected_index),
+            Some(Entity::Table(_))
+        ) {
             return Err("TABLECELL requires a selected TABLE.".into());
         }
         self.editor

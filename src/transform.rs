@@ -256,6 +256,7 @@ impl Entity {
             Self::Image(image) => Self::Image(image.transformed(transform)?),
             Self::MLine(mline) => Self::MLine(mline.transformed(transform)?),
             Self::Mesh(mesh) => Self::Mesh(mesh.transformed(transform)?),
+            Self::PdfUnderlay(underlay) => Self::PdfUnderlay(underlay.transformed(transform)?),
         })
     }
 }

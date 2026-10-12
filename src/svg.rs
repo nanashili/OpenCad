@@ -11,6 +11,8 @@ pub enum SvgError {
     BoundsTooLarge,
     Linetype(LinetypeError),
     UnresolvedInsert,
+    UnsupportedPdfUnderlay,
+    UnresolvedPdfUnderlay,
 }
 
 impl fmt::Display for SvgError {
@@ -21,6 +23,12 @@ impl fmt::Display for SvgError {
             Self::Linetype(error) => error.fmt(f),
             Self::UnresolvedInsert => {
                 write!(f, "INSERT requires a document block definition registry")
+            }
+            Self::UnsupportedPdfUnderlay => {
+                write!(f, "SVG export cannot embed PDF underlays")
+            }
+            Self::UnresolvedPdfUnderlay => {
+                write!(f, "PDF underlay page dimensions are unresolved")
             }
         }
     }
@@ -110,6 +118,16 @@ pub(crate) fn entity_bounds(entities: &[Entity]) -> Result<[f64; 4], SvgError> {
             Entity::XLine(_) | Entity::Ray(_) => continue,
             Entity::Image(image) => {
                 let b = image.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
+                [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
+            }
+            Entity::PdfUnderlay(underlay) => {
+                let b = underlay.bounds().map_err(|error| {
+                    if matches!(error, crate::GeometryError::UnresolvedReference) {
+                        SvgError::UnresolvedPdfUnderlay
+                    } else {
+                        SvgError::BoundsTooLarge
+                    }
+                })?;
                 [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
             }
             Entity::MLine(mline) => mline.bounds().map_err(|_| SvgError::BoundsTooLarge)?,
@@ -395,6 +413,7 @@ fn render_styled_entities_svg(
                     style.as_str(),
                 ),
                 Entity::Image(image) => render_image(&mut svg, image, min_x, max_y),
+                Entity::PdfUnderlay(_) => return Err(SvgError::UnsupportedPdfUnderlay),
                 Entity::MLine(mline) => {
                     for path in mline.explode().map_err(|_| SvgError::BoundsTooLarge)? {
                         for pair in path.windows(2) {
@@ -683,14 +702,18 @@ fn render_styled_entities_svg(
                         }
                     }
                 }
-                Entity::Table(table) => render_table(
-                    &mut svg,
-                    table,
-                    min_x,
-                    max_y,
-                    color.as_str(),
-                    style.as_str(),
-                ),
+                Entity::Table(table) => {
+                    let display_cells = table.display_cells();
+                    render_table(
+                        &mut svg,
+                        table,
+                        &display_cells,
+                        min_x,
+                        max_y,
+                        color.as_str(),
+                        style.as_str(),
+                    );
+                }
                 Entity::Hatch(hatch) => render_hatch(
                     &mut svg,
                     hatch,
@@ -944,6 +967,7 @@ fn render_mtext(
 fn render_table(
     svg: &mut String,
     table: &crate::Table,
+    display_cells: &[Vec<String>],
     min_x: f64,
     max_y: f64,
     color: &str,
@@ -959,7 +983,10 @@ fn render_table(
             let p = crate::Point3::new(x + *cw * 0.5, y + *rh * 0.5, table.anchor().z()).unwrap();
             render_label(
                 svg,
-                &table.cells()[r][c],
+                display_cells
+                    .get(r)
+                    .and_then(|row| row.get(c))
+                    .map_or("", String::as_str),
                 p,
                 min_x,
                 max_y,

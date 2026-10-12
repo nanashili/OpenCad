@@ -160,6 +160,13 @@ impl FeatureForm {
                 ("Pixel width", "100", "positive integer"),
                 ("Pixel height", "100", "positive integer"),
             ],
+            "PDFATTACH" => &[
+                ("PDF path", "underlay.pdf", "PDF file path"),
+                ("Page", "1", "one-based page number"),
+                ("Insertion", "0,0,0", "x,y[,z]"),
+                ("Scale", "1", "non-zero scale"),
+                ("Rotation", "0", "degrees"),
+            ],
             "XATTACH" => &[
                 ("DXF path", "reference.dxf", "DXF file path"),
                 ("Reference name", "Reference1", "optional block name"),
@@ -362,7 +369,7 @@ impl FeatureForm {
                 .map(|value| encode_command_arg(value))
                 .collect::<Vec<_>>()
                 .join(" "),
-            "IMAGEATTACH" | "PLOT" | "EXPORTPDF" => {
+            "IMAGEATTACH" | "PDFATTACH" | "PLOT" | "EXPORTPDF" => {
                 let mut encoded = values;
                 if let Some(path) = encoded.first().cloned() {
                     encoded[0] = encode_command_arg(&path);
