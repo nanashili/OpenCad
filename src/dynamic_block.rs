@@ -14,6 +14,44 @@ const MAX_VISIBILITY_STATES: usize = 256;
 const MAX_ARRAY_ITEMS: usize = 10_000;
 const MAX_LOOKUP_ROWS: usize = 256;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DynamicValueComponent {
+    Distance,
+    Angle,
+    X,
+    Y,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum DynamicValueSet {
+    Increment { step: f64, origin: f64 },
+    List(Vec<f64>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DynamicActionAxis {
+    X,
+    Y,
+    XY,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DynamicActionOptions {
+    pub distance_multiplier: f64,
+    pub angle_offset: f64,
+    pub axis: DynamicActionAxis,
+}
+
+impl Default for DynamicActionOptions {
+    fn default() -> Self {
+        Self {
+            distance_multiplier: 1.0,
+            angle_offset: 0.0,
+            axis: DynamicActionAxis::XY,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct LookupRow {
     input: f64,
@@ -135,6 +173,7 @@ pub struct DynamicParameter {
     name: String,
     parameter_type: DynamicParameterType,
     default: DynamicValue,
+    value_sets: Vec<(DynamicValueComponent, DynamicValueSet)>,
 }
 
 impl DynamicParameter {
@@ -147,6 +186,7 @@ impl DynamicParameter {
             name: name.into(),
             parameter_type,
             default,
+            value_sets: Vec::new(),
         };
         parameter.validate_definition()?;
         Ok(parameter)
@@ -162,12 +202,46 @@ impl DynamicParameter {
         &self.default
     }
 
+    pub fn value_sets(&self) -> &[(DynamicValueComponent, DynamicValueSet)] {
+        &self.value_sets
+    }
+
+    pub fn value_set(&self, component: DynamicValueComponent) -> Option<&DynamicValueSet> {
+        self.value_sets
+            .iter()
+            .find(|(candidate, _)| *candidate == component)
+            .map(|(_, set)| set)
+    }
+
+    pub fn set_value_set(
+        &mut self,
+        component: DynamicValueComponent,
+        value_set: DynamicValueSet,
+    ) -> Result<(), DynamicBlockError> {
+        let value_set =
+            retain_default_value(&self.parameter_type, &self.default, component, value_set)?;
+        if let Some((_, existing)) = self
+            .value_sets
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == component)
+        {
+            *existing = value_set;
+        } else {
+            self.value_sets.push((component, value_set));
+        }
+        Ok(())
+    }
+
     fn validate_definition(&self) -> Result<(), DynamicBlockError> {
         if self.name.trim().is_empty() || self.name.len() > 128 {
             return Err(DynamicBlockError::InvalidParameter("parameter name".into()));
         }
         validate_parameter_type(&self.parameter_type)?;
-        validate_value(&self.parameter_type, &self.default)
+        validate_parameter_value(self, &self.default)?;
+        for (component, value_set) in &self.value_sets {
+            validate_value_set(&self.parameter_type, &self.default, *component, value_set)?;
+        }
+        Ok(())
     }
 }
 
@@ -268,6 +342,7 @@ pub struct DynamicBlockDefinition {
     parameters: Vec<DynamicParameter>,
     actions: Vec<DynamicAction>,
     action_targets: Vec<Vec<u64>>,
+    action_options: Vec<DynamicActionOptions>,
     visibility_states: Vec<DynamicVisibilityState>,
 }
 
@@ -283,6 +358,9 @@ impl DynamicBlockDefinition {
     }
     pub fn action_targets(&self, action_index: usize) -> Option<&[u64]> {
         self.action_targets.get(action_index).map(Vec::as_slice)
+    }
+    pub fn action_options(&self, action_index: usize) -> Option<DynamicActionOptions> {
+        self.action_options.get(action_index).copied()
     }
     pub fn visibility_states(&self) -> &[DynamicVisibilityState] {
         &self.visibility_states
@@ -320,6 +398,65 @@ impl DynamicBlockDefinition {
         }
         self.actions.push(action);
         self.action_targets.push(Vec::new());
+        self.action_options.push(DynamicActionOptions::default());
+        Ok(())
+    }
+
+    pub fn set_action_options(
+        &mut self,
+        action_index: usize,
+        options: DynamicActionOptions,
+    ) -> Result<(), DynamicBlockError> {
+        let Some(action) = self.actions.get(action_index) else {
+            return Err(DynamicBlockError::InvalidAction("action index".into()));
+        };
+        validate_action_options(action, options, self)?;
+        let Some(existing) = self.action_options.get_mut(action_index) else {
+            return Err(DynamicBlockError::InvalidAction("action options".into()));
+        };
+        *existing = options;
+        Ok(())
+    }
+
+    pub fn set_parameter_value_set(
+        &mut self,
+        name: &str,
+        component: DynamicValueComponent,
+        value_set: DynamicValueSet,
+    ) -> Result<(), DynamicBlockError> {
+        let index = self
+            .parameters
+            .iter()
+            .position(|parameter| parameter.name == name)
+            .ok_or_else(|| DynamicBlockError::UnknownParameter(name.into()))?;
+        let mut parameter = self.parameters[index].clone();
+        parameter.set_value_set(component, value_set)?;
+        let old = std::mem::replace(&mut self.parameters[index], parameter);
+        let result = self.validate_parameter_sets();
+        if result.is_err() {
+            self.parameters[index] = old;
+        }
+        result
+    }
+
+    pub fn clear_parameter_value_set(
+        &mut self,
+        name: &str,
+        component: DynamicValueComponent,
+    ) -> Result<(), DynamicBlockError> {
+        let index = self
+            .parameters
+            .iter()
+            .position(|parameter| parameter.name == name)
+            .ok_or_else(|| DynamicBlockError::UnknownParameter(name.into()))?;
+        let old = self.parameters[index].clone();
+        self.parameters[index]
+            .value_sets
+            .retain(|(candidate, _)| *candidate != component);
+        if let Err(error) = self.validate_parameter_sets() {
+            self.parameters[index] = old;
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -386,7 +523,7 @@ impl DynamicBlockDefinition {
         let parameter = self
             .parameter(name)
             .ok_or_else(|| DynamicBlockError::UnknownParameter(name.into()))?;
-        validate_value(&parameter.parameter_type, value)
+        validate_parameter_value(parameter, value)
     }
 
     pub fn resolved_value(
@@ -769,10 +906,17 @@ impl DynamicBlockDefinition {
     pub fn prune_targets(&mut self, valid_entity_ids: &[u64]) -> Result<(), DynamicBlockError> {
         let mut actions = Vec::with_capacity(self.actions.len());
         let mut action_targets = Vec::with_capacity(self.action_targets.len());
-        for (action, targets) in self.actions.drain(..).zip(self.action_targets.drain(..)) {
+        let mut action_options = Vec::with_capacity(self.action_options.len());
+        for ((action, targets), options) in self
+            .actions
+            .drain(..)
+            .zip(self.action_targets.drain(..))
+            .zip(self.action_options.drain(..))
+        {
             if targets.is_empty() {
                 actions.push(action);
                 action_targets.push(targets);
+                action_options.push(options);
                 continue;
             }
             let retained: Vec<u64> = targets
@@ -782,10 +926,12 @@ impl DynamicBlockDefinition {
             if !retained.is_empty() {
                 actions.push(action);
                 action_targets.push(retained);
+                action_options.push(options);
             }
         }
         self.actions = actions;
         self.action_targets = action_targets;
+        self.action_options = action_options;
         for state in &mut self.visibility_states {
             state.entity_ids.retain(|id| valid_entity_ids.contains(id));
         }
@@ -897,6 +1043,27 @@ impl DynamicBlockDefinition {
                 ));
             }
             self.validate_action(action)?;
+            let options = self
+                .action_options
+                .get(action_index)
+                .copied()
+                .unwrap_or_default();
+            validate_action_options(action, options, self)?;
+        }
+        Ok(())
+    }
+
+    fn validate_parameter_sets(&self) -> Result<(), DynamicBlockError> {
+        for parameter in &self.parameters {
+            parameter.validate_definition()?;
+            if let DynamicParameterType::Lookup {
+                rows,
+                reverse,
+                input_parameters,
+            } = &parameter.parameter_type
+            {
+                self.validate_lookup_rows(&parameter.name, rows, *reverse, input_parameters)?;
+            }
         }
         Ok(())
     }
@@ -930,7 +1097,9 @@ impl DynamicBlockDefinition {
             DynamicAction::Scale { parameter, center } => {
                 if !matches!(
                     self.parameter_type(parameter)?,
-                    DynamicParameterType::Distance { .. } | DynamicParameterType::Polar { .. }
+                    DynamicParameterType::Distance { .. }
+                        | DynamicParameterType::Polar { .. }
+                        | DynamicParameterType::XY { .. }
                 ) || !finite_point(*center)
                 {
                     return Err(DynamicBlockError::InvalidAction(
@@ -1072,7 +1241,7 @@ impl DynamicBlockDefinition {
             .get(name)
             .cloned()
             .unwrap_or_else(|| parameter.default.clone());
-        validate_value(&parameter.parameter_type, &value)?;
+        validate_parameter_value(parameter, &value)?;
         Ok(value)
     }
 
@@ -1091,7 +1260,7 @@ impl DynamicBlockDefinition {
             .get(name)
             .cloned()
             .unwrap_or_else(|| parameter.default.clone());
-        validate_value(&parameter.parameter_type, &value)?;
+        validate_parameter_value(parameter, &value)?;
         Ok((value, parameter.default.clone()))
     }
 }
@@ -1196,7 +1365,8 @@ pub fn evaluate_local_entities(
             .get(action_index)
             .filter(|targets| !targets.is_empty())
             .map(Vec::as_slice);
-        apply_action(&mut entities, action, targets, dynamic, overrides)?;
+        let options = dynamic.action_options(action_index).unwrap_or_default();
+        apply_action(&mut entities, action, targets, options, dynamic, overrides)?;
     }
     apply_block_parameters(&mut entities, dynamic, overrides)?;
     Ok(entities.into_iter().map(|(_, entity)| entity).collect())
@@ -1313,10 +1483,66 @@ fn visible_entities(
         .collect())
 }
 
+fn validate_action_options(
+    action: &DynamicAction,
+    options: DynamicActionOptions,
+    dynamic: &DynamicBlockDefinition,
+) -> Result<(), DynamicBlockError> {
+    if !options.distance_multiplier.is_finite() || options.distance_multiplier <= 0.0 {
+        return Err(DynamicBlockError::InvalidAction(
+            "action distance multiplier".into(),
+        ));
+    }
+    if !options.angle_offset.is_finite() {
+        return Err(DynamicBlockError::InvalidAction(
+            "action angle offset".into(),
+        ));
+    }
+    let parameter_name = match action {
+        DynamicAction::Move { parameter, .. }
+        | DynamicAction::Scale { parameter, .. }
+        | DynamicAction::Stretch { parameter, .. }
+        | DynamicAction::PolarStretch { parameter, .. } => Some(parameter),
+        DynamicAction::Rotate { .. } | DynamicAction::Flip { .. } | DynamicAction::Array { .. } => {
+            None
+        }
+    };
+    if let Some(name) = parameter_name {
+        let parameter_type = dynamic.parameter_type(name)?;
+        if options.axis != DynamicActionAxis::XY
+            && !matches!(parameter_type, DynamicParameterType::XY { .. })
+        {
+            return Err(DynamicBlockError::InvalidAction(
+                "axis-specific action requires XY parameter".into(),
+            ));
+        }
+        if matches!(action, DynamicAction::Scale { .. }) {
+            if options.distance_multiplier != 1.0 || options.angle_offset != 0.0 {
+                return Err(DynamicBlockError::InvalidAction(
+                    "scale multiplier and angle offset are unsupported".into(),
+                ));
+            }
+            if !matches!(parameter_type, DynamicParameterType::XY { .. })
+                && options.axis != DynamicActionAxis::XY
+            {
+                return Err(DynamicBlockError::InvalidAction(
+                    "axis-specific scale requires XY parameter".into(),
+                ));
+            }
+        }
+    } else if options != DynamicActionOptions::default() {
+        return Err(DynamicBlockError::InvalidAction(
+            "action options are unsupported for this action".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn apply_action(
     entities: &mut Vec<(u64, Entity)>,
     action: &DynamicAction,
     targets: Option<&[u64]>,
+    options: DynamicActionOptions,
     dynamic: &DynamicBlockDefinition,
     overrides: &DynamicBlockOverrides,
 ) -> Result<(), DynamicBlockError> {
@@ -1333,24 +1559,20 @@ fn apply_action(
                 let value = delta_value(value, default)?;
                 move_delta_value(value, *direction)?
             };
+            let (dx, dy) = apply_action_vector(dx, dy, options)?;
             let transform = Transform::translation(dx, dy, 0.0);
             transform_entities(entities, targets, transform)
         }
         DynamicAction::Scale { parameter, center } => {
             let (value, default) = dynamic.parameter_values(parameter, overrides)?;
-            let factor = if matches!(value, DynamicValue::Polar { .. }) {
-                polar_distance_ratio(value, default)?
-            } else {
-                let (DynamicValue::Number(value), DynamicValue::Number(default)) = (value, default)
-                else {
-                    return Err(DynamicBlockError::InvalidValue("scale value".into()));
-                };
-                if default <= 0.0 {
-                    return Err(DynamicBlockError::InvalidValue("scale default".into()));
+            match prepare_scale_plan(value, default, options)? {
+                ScalePlan::Uniform(factor) => {
+                    transform_entities(entities, targets, Transform::scale(*center, factor)?)
                 }
-                value / default
-            };
-            transform_entities(entities, targets, Transform::scale(*center, factor)?)
+                ScalePlan::Axes { x, y, axis } => {
+                    apply_scale_action(entities, targets, *center, x, y, axis)
+                }
+            }
         }
         DynamicAction::Rotate { parameter, center } => {
             let (value, default) = dynamic.parameter_values(parameter, overrides)?;
@@ -1389,6 +1611,7 @@ fn apply_action(
                 min: *min,
                 max: *max,
                 direction: *direction,
+                options,
             },
             dynamic,
             overrides,
@@ -1424,6 +1647,7 @@ fn apply_action(
             if stretch_ids.is_empty() {
                 return Ok(());
             }
+            let (sx, sy) = apply_action_vector(sx, sy, options)?;
             apply_stretch_offset(entities, Some(&stretch_ids), *min, *max, sx, sy)
         }
         DynamicAction::Array {
@@ -1459,6 +1683,7 @@ struct StretchContext<'a> {
     min: Point3,
     max: Point3,
     direction: Point3,
+    options: DynamicActionOptions,
 }
 
 fn resolve_array_dimensions(
@@ -1634,6 +1859,177 @@ fn transform_entities(
     Ok(())
 }
 
+enum ScalePlan {
+    Uniform(f64),
+    Axes {
+        x: f64,
+        y: f64,
+        axis: DynamicActionAxis,
+    },
+}
+
+fn prepare_scale_plan(
+    value: DynamicValue,
+    default: DynamicValue,
+    options: DynamicActionOptions,
+) -> Result<ScalePlan, DynamicBlockError> {
+    match (value, default) {
+        (
+            DynamicValue::XY { x, y },
+            DynamicValue::XY {
+                x: default_x,
+                y: default_y,
+            },
+        ) => {
+            let (x, y) = match options.axis {
+                DynamicActionAxis::X => {
+                    if default_x == 0.0 {
+                        return Err(DynamicBlockError::InvalidValue("scale default".into()));
+                    }
+                    (x / default_x, 1.0)
+                }
+                DynamicActionAxis::Y => {
+                    if default_y == 0.0 {
+                        return Err(DynamicBlockError::InvalidValue("scale default".into()));
+                    }
+                    (1.0, y / default_y)
+                }
+                DynamicActionAxis::XY => {
+                    if default_x == 0.0 || default_y == 0.0 {
+                        return Err(DynamicBlockError::InvalidValue("scale default".into()));
+                    }
+                    (x / default_x, y / default_y)
+                }
+            };
+            validate_scale_factors(x, y, options.axis)?;
+            Ok(ScalePlan::Axes {
+                x,
+                y,
+                axis: options.axis,
+            })
+        }
+        (value @ DynamicValue::Polar { .. }, default @ DynamicValue::Polar { .. }) => {
+            let factor = polar_distance_ratio(value, default)?;
+            validate_scale_factors(factor, factor, DynamicActionAxis::XY)?;
+            Ok(ScalePlan::Uniform(factor))
+        }
+        (DynamicValue::Number(value), DynamicValue::Number(default)) => {
+            if default <= 0.0 {
+                return Err(DynamicBlockError::InvalidValue("scale default".into()));
+            }
+            let factor = value / default;
+            validate_scale_factors(factor, factor, DynamicActionAxis::XY)?;
+            Ok(ScalePlan::Uniform(factor))
+        }
+        _ => Err(DynamicBlockError::InvalidValue("scale value".into())),
+    }
+}
+
+fn validate_scale_factors(
+    x: f64,
+    y: f64,
+    axis: DynamicActionAxis,
+) -> Result<(), DynamicBlockError> {
+    if !x.is_finite()
+        || !y.is_finite()
+        || (axis != DynamicActionAxis::Y && x == 0.0)
+        || (axis != DynamicActionAxis::X && y == 0.0)
+    {
+        return Err(DynamicBlockError::InvalidValue("scale factor".into()));
+    }
+    Ok(())
+}
+
+fn apply_scale_action(
+    entities: &mut [(u64, Entity)],
+    targets: Option<&[u64]>,
+    center: Point3,
+    factor_x: f64,
+    factor_y: f64,
+    axis: DynamicActionAxis,
+) -> Result<(), DynamicBlockError> {
+    for (id, entity) in entities.iter_mut() {
+        if targets.is_some_and(|target_ids| !target_ids.contains(id)) {
+            continue;
+        }
+        scale_entity_axes(entity, center, factor_x, factor_y, axis)?;
+    }
+    Ok(())
+}
+
+fn scale_entity_axes(
+    entity: &mut Entity,
+    center: Point3,
+    factor_x: f64,
+    factor_y: f64,
+    axis: DynamicActionAxis,
+) -> Result<(), DynamicBlockError> {
+    let scale_point = |point: Point3| {
+        let x = if axis != DynamicActionAxis::Y {
+            center.x() + (point.x() - center.x()) * factor_x
+        } else {
+            point.x()
+        };
+        let y = if axis != DynamicActionAxis::X {
+            center.y() + (point.y() - center.y()) * factor_y
+        } else {
+            point.y()
+        };
+        Point3::new(x, y, point.z())
+    };
+    match entity {
+        Entity::Point(point) => {
+            *point = crate::PointEntity::new(scale_point(point.position())?);
+        }
+        Entity::Line(line) => {
+            *line = crate::Line3::new(scale_point(line.start())?, scale_point(line.end())?);
+        }
+        Entity::Polyline(polyline) => {
+            let isotropic = (factor_x - factor_y).abs() <= f64::EPSILON;
+            if !isotropic
+                && (polyline.bulges().iter().any(|bulge| *bulge != 0.0)
+                    || polyline
+                        .widths()
+                        .iter()
+                        .any(|width| width.start() != 0.0 || width.end() != 0.0))
+            {
+                return Err(DynamicBlockError::UnsupportedStretchEntity(
+                    "bulged or wide polyline scaling",
+                ));
+            }
+            let vertices = polyline
+                .vertices()
+                .iter()
+                .copied()
+                .map(scale_point)
+                .collect::<Result<Vec<_>, _>>()?;
+            polyline.set_vertices(vertices)?;
+            if isotropic {
+                let scale = factor_x.abs();
+                let widths = polyline
+                    .widths()
+                    .iter()
+                    .map(|width| {
+                        crate::PolylineWidth::new(width.start() * scale, width.end() * scale)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                polyline.set_widths(widths)?;
+            }
+        }
+        Entity::Polyline3(polyline) => {
+            let vertices = polyline
+                .vertices()
+                .iter()
+                .copied()
+                .map(scale_point)
+                .collect::<Result<Vec<_>, _>>()?;
+            *polyline = crate::Polyline3::new(vertices, polyline.is_closed())?;
+        }
+        _ => return Err(DynamicBlockError::UnsupportedStretchEntity(entity.name())),
+    }
+    Ok(())
+}
+
 fn apply_array(
     entities: &mut Vec<(u64, Entity)>,
     targets: Option<&[u64]>,
@@ -1679,7 +2075,31 @@ fn apply_stretch(
         let value = delta_value(value, default)?;
         move_delta_value(value, context.direction)?
     };
+    let (sx, sy) = apply_action_vector(sx, sy, context.options)?;
     apply_stretch_offset(entities, targets, context.min, context.max, sx, sy)
+}
+
+fn apply_action_vector(
+    dx: f64,
+    dy: f64,
+    options: DynamicActionOptions,
+) -> Result<(f64, f64), DynamicBlockError> {
+    let cosine = options.angle_offset.cos();
+    let sine = options.angle_offset.sin();
+    let rotated_x = cosine.mul_add(dx, -sine * dy) * options.distance_multiplier;
+    let rotated_y = sine.mul_add(dx, cosine * dy) * options.distance_multiplier;
+    let vector = match options.axis {
+        DynamicActionAxis::X => (rotated_x, 0.0),
+        DynamicActionAxis::Y => (0.0, rotated_y),
+        DynamicActionAxis::XY => (rotated_x, rotated_y),
+    };
+    if vector.0.is_finite() && vector.1.is_finite() {
+        Ok(vector)
+    } else {
+        Err(DynamicBlockError::InvalidValue(
+            "action displacement".into(),
+        ))
+    }
 }
 
 fn apply_stretch_offset(
@@ -1877,6 +2297,171 @@ fn dynamic_value_finite(value: &DynamicValue) -> bool {
         DynamicValue::Alignment { point, angle } => finite_point(*point) && angle.is_finite(),
         DynamicValue::Flip(_) | DynamicValue::Visibility(_) => true,
         DynamicValue::Lookup(_) => false,
+    }
+}
+
+fn retain_default_value(
+    parameter_type: &DynamicParameterType,
+    default: &DynamicValue,
+    component: DynamicValueComponent,
+    value_set: DynamicValueSet,
+) -> Result<DynamicValueSet, DynamicBlockError> {
+    validate_value_set(parameter_type, default, component, &value_set)?;
+    let Some(default_value) = component_value(default, component) else {
+        return Ok(value_set);
+    };
+    match value_set {
+        DynamicValueSet::List(mut values) => {
+            if !values
+                .iter()
+                .any(|value| value.total_cmp(&default_value).is_eq())
+            {
+                values.push(default_value);
+            }
+            validate_value_set(
+                parameter_type,
+                default,
+                component,
+                &DynamicValueSet::List(values.clone()),
+            )?;
+            Ok(DynamicValueSet::List(values))
+        }
+        increment => Ok(increment),
+    }
+}
+
+fn component_value(value: &DynamicValue, component: DynamicValueComponent) -> Option<f64> {
+    match (component, value) {
+        (DynamicValueComponent::Distance, DynamicValue::Number(value)) => Some(*value),
+        (DynamicValueComponent::Angle, DynamicValue::Number(value)) => Some(*value),
+        (DynamicValueComponent::Distance, DynamicValue::Polar { distance, .. }) => Some(*distance),
+        (DynamicValueComponent::Angle, DynamicValue::Polar { angle, .. }) => Some(*angle),
+        (DynamicValueComponent::X, DynamicValue::XY { x, .. }) => Some(*x),
+        (DynamicValueComponent::Y, DynamicValue::XY { y, .. }) => Some(*y),
+        _ => None,
+    }
+}
+
+fn validate_value_set(
+    parameter_type: &DynamicParameterType,
+    default: &DynamicValue,
+    component: DynamicValueComponent,
+    value_set: &DynamicValueSet,
+) -> Result<(), DynamicBlockError> {
+    let compatible = matches!(
+        (parameter_type, component),
+        (
+            DynamicParameterType::Distance { .. },
+            DynamicValueComponent::Distance
+        ) | (
+            DynamicParameterType::Angle { .. },
+            DynamicValueComponent::Angle
+        ) | (
+            DynamicParameterType::Polar { .. },
+            DynamicValueComponent::Distance
+        ) | (
+            DynamicParameterType::Polar { .. },
+            DynamicValueComponent::Angle
+        ) | (DynamicParameterType::XY { .. }, DynamicValueComponent::X)
+            | (DynamicParameterType::XY { .. }, DynamicValueComponent::Y)
+    );
+    if !compatible || component_value(default, component).is_none() {
+        return Err(DynamicBlockError::InvalidParameter(
+            "value set component".into(),
+        ));
+    }
+    let (min, max) = component_bounds(parameter_type, component)
+        .ok_or_else(|| DynamicBlockError::InvalidParameter("value set component range".into()))?;
+    match value_set {
+        DynamicValueSet::Increment { step, origin }
+            if step.is_finite()
+                && *step > 0.0
+                && origin.is_finite()
+                && *origin >= min
+                && *origin <= max =>
+        {
+            let default_value = component_value(default, component).unwrap_or(*origin);
+            let position = (default_value - origin) / step;
+            if !position.is_finite() || (position - position.round()).abs() > 1e-9 {
+                return Err(DynamicBlockError::InvalidParameter(
+                    "value set excludes default".into(),
+                ));
+            }
+            Ok(())
+        }
+        DynamicValueSet::List(values)
+            if !values.is_empty()
+                && values.len() <= MAX_LOOKUP_ROWS
+                && values
+                    .iter()
+                    .all(|value| value.is_finite() && *value >= min && *value <= max) =>
+        {
+            Ok(())
+        }
+        _ => Err(DynamicBlockError::InvalidParameter(
+            "value set values".into(),
+        )),
+    }
+}
+
+fn component_bounds(
+    parameter_type: &DynamicParameterType,
+    component: DynamicValueComponent,
+) -> Option<(f64, f64)> {
+    match (parameter_type, component) {
+        (DynamicParameterType::Distance { min, max }, DynamicValueComponent::Distance)
+        | (DynamicParameterType::Angle { min, max }, DynamicValueComponent::Angle) => {
+            Some((*min, *max))
+        }
+        (
+            DynamicParameterType::Polar {
+                distance_min,
+                distance_max,
+                ..
+            },
+            DynamicValueComponent::Distance,
+        ) => Some((*distance_min, *distance_max)),
+        (
+            DynamicParameterType::Polar {
+                angle_min,
+                angle_max,
+                ..
+            },
+            DynamicValueComponent::Angle,
+        ) => Some((*angle_min, *angle_max)),
+        (DynamicParameterType::XY { min, max }, DynamicValueComponent::X) => Some((min[0], max[0])),
+        (DynamicParameterType::XY { min, max }, DynamicValueComponent::Y) => Some((min[1], max[1])),
+        _ => None,
+    }
+}
+
+fn validate_parameter_value(
+    parameter: &DynamicParameter,
+    value: &DynamicValue,
+) -> Result<(), DynamicBlockError> {
+    validate_value(&parameter.parameter_type, value)?;
+    for (component, value_set) in &parameter.value_sets {
+        let Some(component_value) = component_value(value, *component) else {
+            continue;
+        };
+        if !value_set_contains(value_set, component_value) {
+            return Err(DynamicBlockError::InvalidValue(
+                "value is outside its value set".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn value_set_contains(value_set: &DynamicValueSet, value: f64) -> bool {
+    match value_set {
+        DynamicValueSet::List(values) => values
+            .iter()
+            .any(|candidate| candidate.total_cmp(&value).is_eq()),
+        DynamicValueSet::Increment { step, origin } => {
+            let index = (value - origin) / step;
+            index.is_finite() && (index - index.round()).abs() <= 1e-9
+        }
     }
 }
 

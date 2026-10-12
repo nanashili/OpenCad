@@ -1,7 +1,8 @@
 use super::commands::{number, parse_point};
 use super::*;
 use crate::{
-    DynamicAction, DynamicBlockDefinition, DynamicParameter, DynamicParameterType, DynamicValue,
+    DynamicAction, DynamicActionAxis, DynamicActionOptions, DynamicBlockDefinition,
+    DynamicParameter, DynamicParameterType, DynamicValue, DynamicValueComponent, DynamicValueSet,
     DynamicVisibilityState, Entity, LookupAssignment, LookupRow,
 };
 
@@ -17,6 +18,8 @@ impl OpenCadApp {
             "RESETBLOCK" => self.reset_block_overrides(),
             "BPARAMETER" => self.dynamic_parameter(tokens),
             "BACTION" => self.dynamic_action(tokens),
+            "BACTIONPROPERTIES" => self.dynamic_action_properties(tokens),
+            "BVALUESET" => self.dynamic_value_set(tokens),
             "BVSTATE" | "BVISIBILITY" => self.dynamic_visibility(tokens),
             "BSHOW" | "BHIDE" | "BVSHOW" | "BVHIDE" => self.dynamic_visibility_toggle(verb, tokens),
             "BLOOKUPTABLE" => self.dynamic_lookup_table(tokens),
@@ -61,6 +64,107 @@ impl OpenCadApp {
         definition
             .set_action_targets(action_index, ids.clone())
             .map_err(|error| error.to_string())
+    }
+
+    fn dynamic_action_properties(&mut self, tokens: &[&str]) -> Result<(), String> {
+        let index = tokens
+            .first()
+            .ok_or("BACTIONPROPERTIES requires a 1-based action index.")?
+            .parse::<usize>()
+            .map_err(|_| "Action index must be a positive integer.")?;
+        if index == 0 {
+            return Err("Action index is 1-based and must be positive.".into());
+        }
+        let session = self
+            .block_edit_session
+            .as_mut()
+            .ok_or("BACTIONPROPERTIES requires an active block editor session.")?;
+        let mut definition = session.dynamic_definition.clone().unwrap_or_default();
+        let action_index = index - 1;
+        let mut options = definition
+            .action_options(action_index)
+            .ok_or("Action index is outside the active block definition.")?;
+        if tokens.len() == 1 {
+            self.message(
+                format!(
+                    "Action {index}: multiplier={}, offset={}°, axis={:?}",
+                    options.distance_multiplier,
+                    options.angle_offset.to_degrees(),
+                    options.axis
+                ),
+                false,
+            );
+            return Ok(());
+        }
+        if !(tokens.len() - 1).is_multiple_of(2) {
+            return Err(
+                "BACTIONPROPERTIES options require MULTIPLIER, OFFSET, or AXIS pairs.".into(),
+            );
+        }
+        options = parse_action_property_options(tokens, options)?;
+        definition
+            .set_action_options(action_index, options)
+            .map_err(|error| error.to_string())?;
+        commit_dynamic_definition(session, definition)
+    }
+
+    fn dynamic_value_set(&mut self, tokens: &[&str]) -> Result<(), String> {
+        if tokens
+            .first()
+            .is_some_and(|value| value.eq_ignore_ascii_case("LIST"))
+        {
+            return self.list_value_sets(tokens.get(1).copied());
+        }
+        let name = tokens.first().ok_or(
+            "BVALUESET syntax: name component INCREMENT step [origin], LIST value [...], or CLEAR.",
+        )?;
+        let component = parse_value_component(
+            tokens
+                .get(1)
+                .copied()
+                .ok_or("BVALUESET requires a parameter component.")?,
+        )?;
+        let operation = tokens
+            .get(2)
+            .copied()
+            .ok_or("BVALUESET requires INCREMENT, LIST, or CLEAR.")?;
+        let session = self
+            .block_edit_session
+            .as_mut()
+            .ok_or("BVALUESET requires an active block editor session.")?;
+        let mut definition = session.dynamic_definition.clone().unwrap_or_default();
+        apply_value_set_operation(&mut definition, name, component, operation, tokens)?;
+        commit_dynamic_definition(session, definition)
+    }
+
+    fn list_value_sets(&mut self, requested: Option<&str>) -> Result<(), String> {
+        let session = self
+            .block_edit_session
+            .as_ref()
+            .ok_or("BVALUESET LIST requires an active block editor session.")?;
+        let dynamic = session
+            .dynamic_definition
+            .as_ref()
+            .ok_or("The active block has no dynamic definition.")?;
+        let mut lines = Vec::new();
+        for parameter in dynamic.parameters() {
+            if requested.is_some_and(|name| !parameter.name().eq_ignore_ascii_case(name)) {
+                continue;
+            }
+            for (component, values) in parameter.value_sets() {
+                lines.push(format!(
+                    "{} {:?}: {:?}",
+                    parameter.name(),
+                    component,
+                    values
+                ));
+            }
+        }
+        if lines.is_empty() {
+            return Err("No matching dynamic value sets are defined.".into());
+        }
+        self.message(lines.join("\n"), false);
+        Ok(())
     }
 
     fn dynamic_visibility(&mut self, tokens: &[&str]) -> Result<(), String> {
@@ -411,12 +515,148 @@ impl OpenCadApp {
     }
 }
 
+fn commit_dynamic_definition(
+    session: &mut super::feature_block_editor::BlockEditSession,
+    definition: DynamicBlockDefinition,
+) -> Result<(), String> {
+    let entity_ids = session
+        .local_entities
+        .iter()
+        .map(|mapping| mapping.local_id)
+        .collect::<Vec<_>>();
+    definition
+        .validate(&entity_ids)
+        .map_err(|error| error.to_string())?;
+    session.dynamic_definition = Some(definition);
+    Ok(())
+}
+
+fn parse_action_property_options(
+    tokens: &[&str],
+    mut options: DynamicActionOptions,
+) -> Result<DynamicActionOptions, String> {
+    let mut cursor = 1;
+    while cursor < tokens.len() {
+        let option = tokens[cursor].to_ascii_uppercase();
+        let value = tokens[cursor + 1];
+        match option.as_str() {
+            "MULTIPLIER" => {
+                options.distance_multiplier = number(value)?;
+                if options.distance_multiplier <= 0.0 {
+                    return Err("MULTIPLIER must be finite and positive.".into());
+                }
+            }
+            "OFFSET" => options.angle_offset = number(value)?.to_radians(),
+            "AXIS" => {
+                options.axis = match value.to_ascii_uppercase().as_str() {
+                    "X" => DynamicActionAxis::X,
+                    "Y" => DynamicActionAxis::Y,
+                    "XY" => DynamicActionAxis::XY,
+                    _ => return Err("AXIS must be X, Y, or XY.".into()),
+                };
+            }
+            _ => return Err("Unknown BACTIONPROPERTIES option.".into()),
+        }
+        cursor += 2;
+    }
+    Ok(options)
+}
+
+fn apply_value_set_operation(
+    definition: &mut DynamicBlockDefinition,
+    name: &str,
+    component: DynamicValueComponent,
+    operation: &str,
+    tokens: &[&str],
+) -> Result<(), String> {
+    if operation.eq_ignore_ascii_case("CLEAR") {
+        if tokens.len() != 3 {
+            return Err("BVALUESET CLEAR syntax: name component CLEAR.".into());
+        }
+        return definition
+            .clear_parameter_value_set(name, component)
+            .map_err(|error| error.to_string());
+    }
+    let parameter = definition
+        .parameter(name)
+        .ok_or_else(|| format!("Unknown dynamic parameter {name}."))?;
+    let value_set = match operation.to_ascii_uppercase().as_str() {
+        "INCREMENT" => {
+            if !(4..=5).contains(&tokens.len()) {
+                return Err(
+                    "BVALUESET INCREMENT syntax: name component INCREMENT step [origin].".into(),
+                );
+            }
+            let step = parse_component_number(tokens[3], component)?;
+            if step == 0.0 {
+                return Err("BVALUESET increment step must be nonzero.".into());
+            }
+            let origin = tokens
+                .get(4)
+                .map(|value| parse_component_number(value, component))
+                .transpose()?
+                .unwrap_or_else(|| parameter_component_min(parameter, component));
+            DynamicValueSet::Increment { step, origin }
+        }
+        "LIST" => {
+            if tokens.len() < 4 {
+                return Err("BVALUESET LIST syntax: name component LIST value [...].".into());
+            }
+            let values = tokens[3..]
+                .iter()
+                .map(|value| parse_component_number(value, component))
+                .collect::<Result<Vec<_>, _>>()?;
+            DynamicValueSet::List(values)
+        }
+        _ => return Err("BVALUESET requires INCREMENT, LIST, or CLEAR.".into()),
+    };
+    definition
+        .set_parameter_value_set(name, component, value_set)
+        .map_err(|error| error.to_string())
+}
+
 fn parse_polar_pair(value: &str) -> Result<(f64, f64), String> {
     let values: Vec<_> = value.split(',').collect();
     if values.len() != 2 {
         return Err("Polar values require distance,angle.".into());
     }
     Ok((number(values[0])?, number(values[1])?.to_radians()))
+}
+
+fn parse_value_component(value: &str) -> Result<DynamicValueComponent, String> {
+    match value.to_ascii_uppercase().as_str() {
+        "DISTANCE" => Ok(DynamicValueComponent::Distance),
+        "ANGLE" => Ok(DynamicValueComponent::Angle),
+        "X" => Ok(DynamicValueComponent::X),
+        "Y" => Ok(DynamicValueComponent::Y),
+        _ => Err("BVALUESET component must be DISTANCE, ANGLE, X, or Y.".into()),
+    }
+}
+
+fn parse_component_number(value: &str, component: DynamicValueComponent) -> Result<f64, String> {
+    let parsed = number(value)?;
+    if !parsed.is_finite() {
+        return Err("BVALUESET values must be finite.".into());
+    }
+    Ok(if component == DynamicValueComponent::Angle {
+        parsed.to_radians()
+    } else {
+        parsed
+    })
+}
+
+fn parameter_component_min(parameter: &DynamicParameter, component: DynamicValueComponent) -> f64 {
+    match (parameter.parameter_type(), component) {
+        (DynamicParameterType::Distance { min, .. }, DynamicValueComponent::Distance)
+        | (DynamicParameterType::Angle { min, .. }, DynamicValueComponent::Angle) => *min,
+        (DynamicParameterType::Polar { distance_min, .. }, DynamicValueComponent::Distance) => {
+            *distance_min
+        }
+        (DynamicParameterType::Polar { angle_min, .. }, DynamicValueComponent::Angle) => *angle_min,
+        (DynamicParameterType::XY { min, .. }, DynamicValueComponent::X) => min[0],
+        (DynamicParameterType::XY { min, .. }, DynamicValueComponent::Y) => min[1],
+        _ => 0.0,
+    }
 }
 
 fn prepare_lookup_parameter(

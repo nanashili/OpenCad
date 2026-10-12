@@ -14,8 +14,9 @@ use crate::{
 };
 use crate::{DataLink, FieldExpression, NamedField};
 use crate::{
-    DynamicAction, DynamicBlockDefinition, DynamicBlockOverrides, DynamicParameter,
-    DynamicParameterType, DynamicValue, DynamicVisibilityState, LookupAssignment, LookupRow,
+    DynamicAction, DynamicActionAxis, DynamicActionOptions, DynamicBlockDefinition,
+    DynamicBlockOverrides, DynamicParameter, DynamicParameterType, DynamicValue,
+    DynamicValueComponent, DynamicValueSet, DynamicVisibilityState, LookupAssignment, LookupRow,
 };
 use crate::{NamedUcs, NamedUcsCatalog, NamedView, NamedViewCatalog};
 use std::collections::hash_map::DefaultHasher;
@@ -7828,6 +7829,21 @@ enum DynamicOverrideRecord {
     },
 }
 
+#[derive(Clone, Debug)]
+struct DynamicValueSetRecord {
+    block: String,
+    parameter: String,
+    component: DynamicValueComponent,
+    value_set: DynamicValueSet,
+}
+
+#[derive(Clone, Debug)]
+struct DynamicActionOptionsRecord {
+    block: String,
+    action_index: usize,
+    options: DynamicActionOptions,
+}
+
 fn collect_dynamic_payloads(input: &str) -> Result<Vec<String>, DxfError> {
     let mut groups = Groups::new(input);
     let mut in_objects = false;
@@ -7865,15 +7881,21 @@ fn read_dynamic_metadata(
     let mut definitions: HashMap<String, DynamicBlockDefinition> = HashMap::new();
     let mut entity_ids: HashMap<String, Vec<u64>> = HashMap::new();
     let mut overrides: Vec<DynamicOverrideRecord> = Vec::new();
+    let mut value_sets: Vec<DynamicValueSetRecord> = Vec::new();
+    let mut action_options: Vec<DynamicActionOptionsRecord> = Vec::new();
     for payload in payloads {
         parse_dynamic_payload(
             payload.as_str(),
             &mut definitions,
             &mut entity_ids,
             &mut overrides,
+            &mut value_sets,
+            &mut action_options,
         )?;
     }
     resolve_dynamic_definitions(blocks, &mut definitions, &mut entity_ids)?;
+    apply_dynamic_value_sets(blocks, value_sets)?;
+    apply_dynamic_action_options(blocks, action_options)?;
     apply_dynamic_overrides(input, blocks, entities, records, overrides)
 }
 
@@ -7911,11 +7933,144 @@ fn resolve_dynamic_definitions(
     Ok(())
 }
 
+fn parse_dynamic_value_set(fields: &[&str]) -> Result<DynamicValueSetRecord, DxfError> {
+    if fields.len() != 6 {
+        return Err(dynamic_error());
+    }
+    let block = dynamic_decode(fields[1]).ok_or_else(dynamic_error)?;
+    let parameter = dynamic_decode(fields[2]).ok_or_else(dynamic_error)?;
+    let component = match fields[3] {
+        "D" => DynamicValueComponent::Distance,
+        "A" => DynamicValueComponent::Angle,
+        "X" => DynamicValueComponent::X,
+        "Y" => DynamicValueComponent::Y,
+        _ => return Err(dynamic_error()),
+    };
+    let values = fields[5]
+        .split(',')
+        .map(str::parse::<f64>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| dynamic_error())?;
+    if values.iter().any(|value| !value.is_finite()) {
+        return Err(dynamic_error());
+    }
+    let value_set = match fields[4] {
+        "I" if values.len() == 2 => DynamicValueSet::Increment {
+            origin: values[0],
+            step: values[1],
+        },
+        "L" if !values.is_empty() => DynamicValueSet::List(values),
+        _ => return Err(dynamic_error()),
+    };
+    Ok(DynamicValueSetRecord {
+        block,
+        parameter,
+        component,
+        value_set,
+    })
+}
+
+fn parse_dynamic_action_options(fields: &[&str]) -> Result<DynamicActionOptionsRecord, DxfError> {
+    if fields.len() != 6 {
+        return Err(dynamic_error());
+    }
+    let block = dynamic_decode(fields[1]).ok_or_else(dynamic_error)?;
+    let action_index = fields[2].parse::<usize>().map_err(|_| dynamic_error())?;
+    let distance_multiplier = fields[3].parse::<f64>().map_err(|_| dynamic_error())?;
+    let angle_offset = fields[4].parse::<f64>().map_err(|_| dynamic_error())?;
+    if !distance_multiplier.is_finite() || !angle_offset.is_finite() {
+        return Err(dynamic_error());
+    }
+    let axis = match fields[5] {
+        "X" => DynamicActionAxis::X,
+        "Y" => DynamicActionAxis::Y,
+        "XY" => DynamicActionAxis::XY,
+        _ => return Err(dynamic_error()),
+    };
+    Ok(DynamicActionOptionsRecord {
+        block,
+        action_index,
+        options: DynamicActionOptions {
+            distance_multiplier,
+            angle_offset,
+            axis,
+        },
+    })
+}
+
+fn apply_dynamic_value_sets(
+    blocks: &mut [BlockDefinition],
+    records: Vec<DynamicValueSetRecord>,
+) -> Result<(), DxfError> {
+    let mut grouped: HashMap<String, Vec<DynamicValueSetRecord>> = HashMap::new();
+    for record in records {
+        grouped
+            .entry(record.block.clone())
+            .or_default()
+            .push(record);
+    }
+    for (block_name, records) in grouped {
+        let block_index = blocks
+            .iter()
+            .position(|block| block.name() == block_name)
+            .ok_or_else(dynamic_error)?;
+        let Some(definition) = blocks[block_index].dynamic_definition().cloned() else {
+            return Err(dynamic_error());
+        };
+        let mut replacement = definition.clone();
+        for record in records {
+            replacement
+                .set_parameter_value_set(&record.parameter, record.component, record.value_set)
+                .map_err(|_| dynamic_error())?;
+        }
+        replacement
+            .validate(blocks[block_index].entity_ids())
+            .map_err(|_| dynamic_error())?;
+        blocks[block_index].set_dynamic_definition(Some(replacement));
+    }
+    Ok(())
+}
+
+fn apply_dynamic_action_options(
+    blocks: &mut [BlockDefinition],
+    records: Vec<DynamicActionOptionsRecord>,
+) -> Result<(), DxfError> {
+    let mut grouped: HashMap<String, Vec<DynamicActionOptionsRecord>> = HashMap::new();
+    for record in records {
+        grouped
+            .entry(record.block.clone())
+            .or_default()
+            .push(record);
+    }
+    for (block_name, records) in grouped {
+        let block_index = blocks
+            .iter()
+            .position(|block| block.name() == block_name)
+            .ok_or_else(dynamic_error)?;
+        let Some(definition) = blocks[block_index].dynamic_definition().cloned() else {
+            return Err(dynamic_error());
+        };
+        let mut replacement = definition;
+        for record in records {
+            replacement
+                .set_action_options(record.action_index, record.options)
+                .map_err(|_| dynamic_error())?;
+        }
+        replacement
+            .validate(blocks[block_index].entity_ids())
+            .map_err(|_| dynamic_error())?;
+        blocks[block_index].set_dynamic_definition(Some(replacement));
+    }
+    Ok(())
+}
+
 fn parse_dynamic_payload(
     payload: &str,
     definitions: &mut HashMap<String, DynamicBlockDefinition>,
     entity_ids: &mut HashMap<String, Vec<u64>>,
     overrides: &mut Vec<DynamicOverrideRecord>,
+    value_sets: &mut Vec<DynamicValueSetRecord>,
+    action_options: &mut Vec<DynamicActionOptionsRecord>,
 ) -> Result<(), DxfError> {
     let fields: Vec<_> = payload.split('|').collect();
     let Some(kind) = fields.first() else {
@@ -7946,6 +8101,17 @@ fn parse_dynamic_payload(
                 .add_parameter(parameter)
                 .map_err(|_| dynamic_error())?;
         }
+        "VALUESET" => {
+            let record = parse_dynamic_value_set(&fields)?;
+            if value_sets.iter().any(|existing| {
+                existing.block == record.block
+                    && existing.parameter == record.parameter
+                    && existing.component == record.component
+            }) {
+                return Err(dynamic_error());
+            }
+            value_sets.push(record);
+        }
         "ACTION" => {
             let expected_len = match fields.get(2).copied() {
                 Some("MOVE") | Some("FLIP") => 7,
@@ -7969,6 +8135,15 @@ fn parse_dynamic_payload(
             definition
                 .set_action_targets(definition.actions().len() - 1, targets)
                 .map_err(|_| dynamic_error())?;
+        }
+        "ACTIONOPTIONS" => {
+            let record = parse_dynamic_action_options(&fields)?;
+            if action_options.iter().any(|existing| {
+                existing.block == record.block && existing.action_index == record.action_index
+            }) {
+                return Err(dynamic_error());
+            }
+            action_options.push(record);
         }
         "VIS" if fields.len() == 4 => {
             let block = dynamic_decode(fields[1]).ok_or_else(dynamic_error)?;
@@ -8425,6 +8600,38 @@ fn dynamic_parameter_type(value: &DynamicParameterType) -> (String, String) {
     }
 }
 
+fn dynamic_value_set_fields(
+    component: DynamicValueComponent,
+    value_set: &DynamicValueSet,
+) -> (String, String) {
+    let component = match component {
+        DynamicValueComponent::Distance => "D",
+        DynamicValueComponent::Angle => "A",
+        DynamicValueComponent::X => "X",
+        DynamicValueComponent::Y => "Y",
+    };
+    let (kind, values) = match value_set {
+        DynamicValueSet::Increment { origin, step } => ("I", format!("{origin},{step}")),
+        DynamicValueSet::List(values) => (
+            "L",
+            values
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(","),
+        ),
+    };
+    (component.into(), format!("{kind}|{values}"))
+}
+
+fn dynamic_action_axis(axis: DynamicActionAxis) -> &'static str {
+    match axis {
+        DynamicActionAxis::X => "X",
+        DynamicActionAxis::Y => "Y",
+        DynamicActionAxis::XY => "XY",
+    }
+}
+
 fn dynamic_action_fields(action: &DynamicAction) -> (String, Vec<String>) {
     match action {
         DynamicAction::Move {
@@ -8541,6 +8748,15 @@ fn serialize_dynamic_block(block: &BlockDefinition, output: &mut String, handle:
         );
         output.push_str(&dynamic_record(*handle, &payload));
         *handle = handle.saturating_add(1);
+        for (component, value_set) in parameter.value_sets() {
+            let (component, values) = dynamic_value_set_fields(*component, value_set);
+            let payload = format!(
+                "VALUESET|{block_name}|{}|{component}|{values}",
+                dynamic_encode(parameter.name())
+            );
+            output.push_str(&dynamic_record(*handle, &payload));
+            *handle = handle.saturating_add(1);
+        }
     }
     for (index, action) in dynamic.actions().iter().enumerate() {
         let (kind, fields) = dynamic_action_fields(action);
@@ -8555,6 +8771,18 @@ fn serialize_dynamic_block(block: &BlockDefinition, output: &mut String, handle:
         );
         output.push_str(&dynamic_record(*handle, &payload));
         *handle = handle.saturating_add(1);
+        if let Some(options) = dynamic.action_options(index)
+            && options != DynamicActionOptions::default()
+        {
+            let payload = format!(
+                "ACTIONOPTIONS|{block_name}|{index}|{}|{}|{}",
+                options.distance_multiplier,
+                options.angle_offset,
+                dynamic_action_axis(options.axis)
+            );
+            output.push_str(&dynamic_record(*handle, &payload));
+            *handle = handle.saturating_add(1);
+        }
     }
     for state in dynamic.visibility_states() {
         let payload = format!(

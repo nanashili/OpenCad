@@ -74,9 +74,10 @@ pub use drawing_data::{
 };
 pub use dxf::{DxfDocument, DxfError, DxfErrorKind, read_dxf, write_dxf};
 pub use dynamic_block::{
-    DynamicAction, DynamicBlockDefinition, DynamicBlockError, DynamicBlockOverrides,
-    DynamicParameter, DynamicParameterType, DynamicValue, DynamicVisibilityState, LookupAssignment,
-    LookupRow, evaluate_dynamic_insert, evaluate_insert, evaluate_local_entities,
+    DynamicAction, DynamicActionAxis, DynamicActionOptions, DynamicBlockDefinition,
+    DynamicBlockError, DynamicBlockOverrides, DynamicParameter, DynamicParameterType, DynamicValue,
+    DynamicValueComponent, DynamicValueSet, DynamicVisibilityState, LookupAssignment, LookupRow,
+    evaluate_dynamic_insert, evaluate_insert, evaluate_local_entities,
 };
 pub use editor::{DrawOrder, EditError, Editor};
 pub use ellipse::Ellipse3;
