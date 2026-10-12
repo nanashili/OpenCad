@@ -859,6 +859,21 @@ impl OpenCadApp {
                     }
                 }
             }
+            Entity::Polyline3(polyline) => {
+                let points: Option<Vec<_>> = polyline
+                    .vertices()
+                    .iter()
+                    .copied()
+                    .map(|point| self.camera.screen_point(point, rect))
+                    .collect();
+                if let Some(points) = points {
+                    if polyline.is_closed() {
+                        painter.add(egui::Shape::closed_line(points, stroke));
+                    } else {
+                        painter.add(egui::Shape::line(points, stroke));
+                    }
+                }
+            }
             Entity::Point(point) => {
                 if let Some(at) = self.camera.screen_point(point.position(), rect) {
                     painter.circle_filled(at, 2.0, stroke.color);
@@ -1022,6 +1037,19 @@ impl OpenCadApp {
                         self.camera.screen_point(b, rect),
                     ) {
                         painter.line_segment([pa, pb], stroke);
+                    }
+                }
+            }
+            Entity::Mesh(mesh) => {
+                for face in mesh.faces() {
+                    let (vertices, count) = face.vertices();
+                    let points: Option<Vec<_>> = vertices[..count]
+                        .iter()
+                        .copied()
+                        .map(|point| self.camera.screen_point(point, rect))
+                        .collect();
+                    if let Some(points) = points {
+                        painter.add(egui::Shape::closed_line(points, stroke));
                     }
                 }
             }
@@ -1507,6 +1535,10 @@ impl OpenCadApp {
                     }
                     nearest
                 }
+                Entity::Polyline3(polyline) => polyline
+                    .segments()
+                    .filter_map(&line_distance)
+                    .fold(f32::INFINITY, f32::min),
                 Entity::Circle(circle) => {
                     let Some(center) =
                         self.camera
@@ -1561,6 +1593,16 @@ impl OpenCadApp {
                     .into_iter()
                     .flatten()
                     .flat_map(|path| path.into_iter())
+                    .filter_map(|point| self.camera.screen_point(point, rect))
+                    .map(|point| position.distance(point))
+                    .fold(f32::INFINITY, f32::min),
+                Entity::Mesh(mesh) => mesh
+                    .faces()
+                    .iter()
+                    .flat_map(|face| {
+                        let (vertices, count) = face.vertices();
+                        vertices[..count].to_vec()
+                    })
                     .filter_map(|point| self.camera.screen_point(point, rect))
                     .map(|point| position.distance(point))
                     .fold(f32::INFINITY, f32::min),
@@ -1664,6 +1706,7 @@ fn entity_points(entity: &Entity) -> Vec<Point3> {
         Entity::Polyline(polyline) => polyline
             .centerline_extrema()
             .unwrap_or_else(|_| polyline.vertices().to_vec()),
+        Entity::Polyline3(polyline) => polyline.vertices().to_vec(),
         Entity::Point(point) => vec![point.position()],
         Entity::Ellipse(ellipse) => ellipse.tessellate_for_svg(),
         Entity::Spline(spline) => spline.tessellate(64).unwrap_or_default(),
@@ -1701,6 +1744,14 @@ fn entity_points(entity: &Entity) -> Vec<Point3> {
             .unwrap_or_default()
             .into_iter()
             .flatten()
+            .collect(),
+        Entity::Mesh(mesh) => mesh
+            .faces()
+            .iter()
+            .flat_map(|face| {
+                let (vertices, count) = face.vertices();
+                vertices[..count].to_vec()
+            })
             .collect(),
     }
 }

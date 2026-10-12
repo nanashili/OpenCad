@@ -1,6 +1,7 @@
 use crate::{
     Arc3, Dimension, Ellipse3, Face3, GeometryError, Hatch, Insert, Leader, Line3, MLine2, MText,
-    Point3, PointEntity, Polyline2, RasterImage, Ray3, Spline3, Table, Text, XLine3,
+    Mesh3, Point3, PointEntity, Polyline2, Polyline3, RasterImage, Ray3, Spline3, Table, Text,
+    XLine3,
 };
 
 /// A finite circle in the world XY plane, at the center's Z elevation.
@@ -51,6 +52,7 @@ pub enum Entity {
     Circle(Circle3),
     Arc(Arc3),
     Polyline(Polyline2),
+    Polyline3(Polyline3),
     Ellipse(Ellipse3),
     Spline(Spline3),
     Text(Text),
@@ -65,6 +67,7 @@ pub enum Entity {
     Ray(Ray3),
     Image(RasterImage),
     MLine(MLine2),
+    Mesh(Mesh3),
 }
 
 impl Entity {
@@ -75,6 +78,7 @@ impl Entity {
             Self::Circle(_) => "CIRCLE",
             Self::Arc(_) => "ARC",
             Self::Polyline(_) => "POLYLINE",
+            Self::Polyline3(_) => "3DPOLY",
             Self::Ellipse(_) => "ELLIPSE",
             Self::Spline(_) => "SPLINE",
             Self::Text(_) => "TEXT",
@@ -89,6 +93,7 @@ impl Entity {
             Self::Ray(_) => "RAY",
             Self::Image(_) => "IMAGE",
             Self::MLine(_) => "MLINE",
+            Self::Mesh(_) => "MESH",
         }
     }
 
@@ -117,6 +122,7 @@ impl Entity {
                 )?;
                 Self::Polyline(result)
             }
+            Self::Polyline3(polyline) => Self::Polyline3(polyline.translated(dx, dy, dz)?),
             Self::Ellipse(ellipse) => Self::Ellipse(ellipse.translated(dx, dy, dz)?),
             Self::Spline(spline) => Self::Spline(spline.translated(dx, dy, dz)?),
             Self::Text(text) => {
@@ -149,6 +155,7 @@ impl Entity {
             Self::Ray(ray) => Self::Ray(ray.translated(dx, dy, dz)?),
             Self::Image(image) => Self::Image(image.translated(dx, dy, dz)?),
             Self::MLine(mline) => Self::MLine(mline.translated(dx, dy, dz)?),
+            Self::Mesh(mesh) => Self::Mesh(mesh.translated(dx, dy, dz)?),
         })
     }
 

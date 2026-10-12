@@ -207,6 +207,51 @@ impl FeatureForm {
                 ("Depth", "10", "positive number"),
                 ("Height", "10", "positive number"),
             ],
+            "SWEEP" => &[
+                (
+                    "Profile points",
+                    "0,0,0 10,0,0 10,10,0 |",
+                    "profile points | path points",
+                ),
+                ("Path points", "0,0,0 0,0,10", "path points"),
+            ],
+            "LOFT" => &[(
+                "Profiles",
+                "0,0,0 10,0,0 10,10,0 | 0,0,10 10,0,10 10,10,10",
+                "profiles separated by |",
+            )],
+            "SLICE" => &[
+                ("Mesh", "1", "mesh entity number"),
+                ("Origin", "0,0,0", "x,y,z"),
+                ("Normal", "0,0,1", "x,y,z"),
+                ("Side", "BOTH", "POSITIVE|NEGATIVE|BOTH"),
+            ],
+            "SECTION" => &[
+                ("Mesh", "1", "mesh entity number"),
+                ("Origin", "0,0,0", "x,y,z"),
+                ("Normal", "0,0,1", "x,y,z"),
+            ],
+            "HELIX" => &[
+                ("Center", "0,0,0", "x,y,z"),
+                ("Radius", "10", "positive number"),
+                ("Pitch", "5", "positive number"),
+                ("Turns", "3", "positive number"),
+                ("Height", "15", "number"),
+            ],
+            "3DARRAY" => &[
+                ("Mesh", "1", "mesh entity number"),
+                ("Count", "2", "1..1024"),
+                ("Delta X", "10", "number"),
+                ("Delta Y", "0", "number"),
+                ("Delta Z", "0", "number"),
+            ],
+            "MIRROR3D" => &[
+                ("Mesh", "1", "mesh entity number"),
+                ("Plane origin", "0,0,0", "x,y,z"),
+                ("Plane axis point", "1,0,0", "x,y,z"),
+            ],
+            "MESHREFINE" => &[("Mesh", "1", "mesh entity number"), ("Levels", "1", "0..8")],
+            "MESHTRIANGULATE" | "MESHINFO" | "MESHEDGES" => &[("Mesh", "1", "mesh entity number")],
             "SPHERE" => &[
                 ("Center", "0,0,0", "x,y[,z]"),
                 ("Radius", "10", "positive number"),

@@ -106,6 +106,56 @@ impl Mesh3 {
         }
         Self::new(faces)
     }
+    pub fn transformed(&self, transform: crate::Transform) -> Result<Self, GeometryError> {
+        let faces = self
+            .faces
+            .iter()
+            .map(|face| {
+                let (mut vertices, count) = face.vertices();
+                for vertex in vertices.iter_mut().take(count) {
+                    *vertex = transform.point(*vertex)?;
+                }
+                Face3::new(vertices, count as u8, face.invisible_edges())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(faces)
+    }
+    /// Reflect this mesh across the plane defined by a point and a second
+    /// point on its normal axis.
+    pub fn mirrored(&self, origin: Point3, axis: Point3) -> Result<Self, GeometryError> {
+        let normal = [
+            axis.x() - origin.x(),
+            axis.y() - origin.y(),
+            axis.z() - origin.z(),
+        ];
+        let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+        if !length.is_finite() {
+            return Err(GeometryError::NonFiniteResult);
+        }
+        if length <= f64::EPSILON {
+            return Err(GeometryError::DegenerateLine);
+        }
+        let unit = [normal[0] / length, normal[1] / length, normal[2] / length];
+        let faces = self
+            .faces
+            .iter()
+            .map(|face| {
+                let (mut vertices, count) = face.vertices();
+                for point in vertices.iter_mut().take(count) {
+                    let distance = (point.x() - origin.x()) * unit[0]
+                        + (point.y() - origin.y()) * unit[1]
+                        + (point.z() - origin.z()) * unit[2];
+                    *point = Point3::new(
+                        point.x() - 2.0 * distance * unit[0],
+                        point.y() - 2.0 * distance * unit[1],
+                        point.z() - 2.0 * distance * unit[2],
+                    )?;
+                }
+                Face3::new(vertices, count as u8, face.invisible_edges())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(faces)
+    }
     pub fn rotated(&self, origin: Point3, axis: Point3, angle: f64) -> Result<Self, GeometryError> {
         self.faces
             .iter()
@@ -235,7 +285,7 @@ impl Mesh3 {
             return Err(GeometryError::DegenerateCurve);
         }
         validate_resolution(segments)?;
-        let mut faces = Vec::with_capacity(segments + 2);
+        let mut faces = Vec::with_capacity(segments * 3);
         let s = segments as f64;
         for i in 0..segments {
             let a = TAU * i as f64 / s;
@@ -256,7 +306,7 @@ impl Mesh3 {
         }
         let cb = Point3::new(center.x(), center.y(), center.z())?;
         let ct = Point3::new(center.x(), center.y(), center.z() + height)?;
-        for i in 1..segments - 1 {
+        for i in 0..segments {
             let a = TAU * i as f64 / s;
             let b = TAU * (i + 1) as f64 / s;
             faces.push(Face3::triangle(

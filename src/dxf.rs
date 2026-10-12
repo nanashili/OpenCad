@@ -8,7 +8,8 @@ use crate::{
     Arc3, BlockDefinition, Circle3, CornerParameter, Dimension, DimensionKind, Entity, EntityStyle,
     EntityStyleError, Face3, GeometryError, Hatch, HatchPattern, Insert, Layer, LayerError, Leader,
     Line3, Linetype, LinetypeError, MLine2, MLineElement, MLineJustification, MLineStyle, MText,
-    Point3, Polyline2, PolylineWidth, RasterImage, Ray3, Spline3, Table, Text, XLine3,
+    Mesh3, Point3, Polyline2, Polyline3, PolylineWidth, RasterImage, Ray3, Spline3, Table, Text,
+    XLine3,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -445,7 +446,7 @@ impl DxfDocument {
                         (
                             0,
                             "SPLINE" | "TEXT" | "MTEXT" | "LEADER" | "MULTILEADER" | "TABLE"
-                            | "ACAD_TABLE" | "DIMENSION" | "HATCH" | "IMAGE" | "MLINE",
+                            | "ACAD_TABLE" | "DIMENSION" | "HATCH" | "IMAGE" | "MLINE" | "MESH",
                         ) => {
                             let (entity, record) = read_extended_entity(
                                 &mut groups,
@@ -1189,6 +1190,7 @@ impl DxfDocument {
                         | Entity::XLine(_)
                         | Entity::Ray(_)
                         | Entity::Image(_)
+                        | Entity::Polyline3(_)
                         | Entity::Polyline(_)
                 )
             {
@@ -1595,6 +1597,7 @@ impl DxfDocument {
                     | Entity::XLine(_)
                     | Entity::Ray(_)
                     | Entity::Image(_)
+                    | Entity::Mesh(_)
             )
         }) {
             output = output.replacen("$ACADVER\n1\nAC1009", "$ACADVER\n1\nAC1027", 1);
@@ -2509,7 +2512,7 @@ fn read_block_definitions(input: &str) -> Result<Vec<BlockDefinition>, DxfError>
                     read_entity(&mut groups, child, &mut handles)
                 }
                 "SPLINE" | "TEXT" | "MTEXT" | "LEADER" | "MULTILEADER" | "TABLE" | "ACAD_TABLE"
-                | "DIMENSION" | "HATCH" | "INSERT" | "IMAGE" => {
+                | "DIMENSION" | "HATCH" | "INSERT" | "IMAGE" | "MESH" => {
                     read_extended_entity(&mut groups, child, &mut handles, &[])
                 }
                 "POLYLINE" => read_polyline(&mut groups, child, &mut handles),
@@ -2692,6 +2695,7 @@ fn entity_handles(input: &str) -> HashMap<String, usize> {
                 | "POLYLINE"
                 | "LWPOLYLINE"
                 | "MLINE"
+                | "MESH"
         ) {
             continue;
         }
@@ -2979,6 +2983,249 @@ fn decode_constraint_kind(value: &str, handles: &HashMap<String, usize>) -> Opti
         )),
         _ => return None,
     })
+}
+
+fn read_mesh_fields(fields: &[Group<'_>], line: usize) -> Result<Mesh3, DxfError> {
+    if let Some(field) = fields.iter().find(|field| field.code == 71)
+        && field.value.parse::<u16>().ok() != Some(2)
+    {
+        return Err(DxfError {
+            line: field.line,
+            kind: DxfErrorKind::UnsupportedProperty(71),
+        });
+    }
+    for code in [91, 94, 95] {
+        if let Some(field) = fields.iter().find(|field| field.code == code)
+            && field.value.parse::<u32>().ok() != Some(0)
+        {
+            return Err(DxfError {
+                line: field.line,
+                kind: DxfErrorKind::UnsupportedProperty(code),
+            });
+        }
+    }
+    let xs = fields
+        .iter()
+        .filter(|field| field.code == 10)
+        .map(|field| read_number(*field))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ys = fields
+        .iter()
+        .filter(|field| field.code == 20)
+        .map(|field| read_number(*field))
+        .collect::<Result<Vec<_>, _>>()?;
+    let zs = fields
+        .iter()
+        .filter(|field| field.code == 30)
+        .map(|field| read_number(*field))
+        .collect::<Result<Vec<_>, _>>()?;
+    if xs.is_empty() || xs.len() != ys.len() || (!zs.is_empty() && zs.len() != xs.len()) {
+        return Err(DxfError {
+            line,
+            kind: DxfErrorKind::MissingField(10),
+        });
+    }
+    let vertex_header = fields
+        .iter()
+        .find(|field| field.code == 92)
+        .ok_or(DxfError {
+            line,
+            kind: DxfErrorKind::MissingField(92),
+        })?;
+    let expected = vertex_header.value.parse::<usize>().map_err(|_| DxfError {
+        line: vertex_header.line,
+        kind: DxfErrorKind::UnsupportedProperty(92),
+    })?;
+    if expected != xs.len() {
+        return Err(DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(92),
+        });
+    }
+    let vertices = xs
+        .into_iter()
+        .zip(ys)
+        .enumerate()
+        .map(|(index, (x, y))| {
+            Point3::new(x, y, zs.get(index).copied().unwrap_or(0.0)).map_err(|_| DxfError {
+                line,
+                kind: DxfErrorKind::InvalidCoordinate(10),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let list_header = fields
+        .iter()
+        .position(|field| field.code == 93)
+        .ok_or(DxfError {
+            line,
+            kind: DxfErrorKind::MissingField(93),
+        })?;
+    let expected = fields[list_header]
+        .value
+        .parse::<usize>()
+        .map_err(|_| DxfError {
+            line: fields[list_header].line,
+            kind: DxfErrorKind::UnsupportedProperty(93),
+        })?;
+    let list_end = fields[list_header + 1..]
+        .iter()
+        .position(|field| matches!(field.code, 94 | 95))
+        .map_or(fields.len(), |offset| list_header + 1 + offset);
+    let lists = fields[list_header + 1..list_end]
+        .iter()
+        .filter(|field| field.code == 90)
+        .take(expected)
+        .map(|field| {
+            let value = field.value.parse::<i64>().map_err(|_| DxfError {
+                line: field.line,
+                kind: DxfErrorKind::UnsupportedProperty(90),
+            })?;
+            usize::try_from(value).map_err(|_| DxfError {
+                line: field.line,
+                kind: DxfErrorKind::UnsupportedProperty(90),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if expected != lists.len() {
+        return Err(DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(93),
+        });
+    }
+    let mut faces = Vec::new();
+    let mut cursor = 0;
+    while cursor < lists.len() {
+        let count = lists[cursor];
+        cursor += 1;
+        if count < 3 || count > lists.len().saturating_sub(cursor) {
+            return Err(DxfError {
+                line,
+                kind: DxfErrorKind::UnsupportedProperty(90),
+            });
+        }
+        let polygon = &lists[cursor..cursor + count];
+        cursor += count;
+        let mut points = Vec::with_capacity(count);
+        for value in polygon {
+            let point = vertices.get(*value).copied().ok_or(DxfError {
+                line,
+                kind: DxfErrorKind::UnsupportedProperty(90),
+            })?;
+            points.push(point);
+        }
+        for [a, b, c] in triangulate_mesh_polygon(&points).ok_or(DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(90),
+        })? {
+            let face =
+                Face3::triangle(points[a], points[b], points[c]).map_err(|error| DxfError {
+                    line,
+                    kind: DxfErrorKind::Corner(error),
+                })?;
+            faces.push(face);
+        }
+    }
+    Mesh3::new(faces).map_err(|error| DxfError {
+        line,
+        kind: DxfErrorKind::Corner(error),
+    })
+}
+
+fn triangulate_mesh_polygon(points: &[Point3]) -> Option<Vec<[usize; 3]>> {
+    if !(3..=4096).contains(&points.len()) {
+        return None;
+    }
+    let mut normal = [0.0; 3];
+    for (a, b) in points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+    {
+        normal[0] += (a.y() - b.y()) * (a.z() + b.z());
+        normal[1] += (a.z() - b.z()) * (a.x() + b.x());
+        normal[2] += (a.x() - b.x()) * (a.y() + b.y());
+    }
+    let axis = normal
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| a.abs().total_cmp(&b.abs()))
+        .map(|(axis, _)| axis)?;
+    let project = |point: Point3| match axis {
+        0 => (point.y(), point.z()),
+        1 => (point.x(), point.z()),
+        _ => (point.x(), point.y()),
+    };
+    let projected = points.iter().copied().map(project).collect::<Vec<_>>();
+    let area = projected
+        .iter()
+        .zip(projected.iter().cycle().skip(1))
+        .take(projected.len())
+        .map(|(&(ax, ay), &(bx, by))| ax * by - bx * ay)
+        .sum::<f64>();
+    if !area.is_finite() || area.abs() <= f64::EPSILON {
+        return None;
+    }
+    let orientation = area.signum();
+    let mut remaining = (0..points.len()).collect::<Vec<_>>();
+    let mut triangles = Vec::with_capacity(points.len() - 2);
+    while remaining.len() > 3 {
+        let mut clipped = false;
+        for position in 0..remaining.len() {
+            let previous = remaining[(position + remaining.len() - 1) % remaining.len()];
+            let current = remaining[position];
+            let next = remaining[(position + 1) % remaining.len()];
+            let (ax, ay) = projected[previous];
+            let (bx, by) = projected[current];
+            let (cx, cy) = projected[next];
+            let cross = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+            if cross * orientation <= f64::EPSILON {
+                continue;
+            }
+            let contains = remaining.iter().any(|index| {
+                if *index == previous || *index == current || *index == next {
+                    return false;
+                }
+                let (px, py) = projected[*index];
+                point_in_triangle_2d((px, py), (ax, ay), (bx, by), (cx, cy), orientation)
+            });
+            if contains {
+                continue;
+            }
+            triangles.push(if orientation > 0.0 {
+                [previous, current, next]
+            } else {
+                [next, current, previous]
+            });
+            remaining.remove(position);
+            clipped = true;
+            break;
+        }
+        if !clipped {
+            return None;
+        }
+    }
+    let [a, b, c] = [remaining[0], remaining[1], remaining[2]];
+    triangles.push(if orientation > 0.0 {
+        [a, b, c]
+    } else {
+        [c, b, a]
+    });
+    Some(triangles)
+}
+
+fn point_in_triangle_2d(
+    point: (f64, f64),
+    a: (f64, f64),
+    b: (f64, f64),
+    c: (f64, f64),
+    orientation: f64,
+) -> bool {
+    let cross = |p: (f64, f64), q: (f64, f64), r: (f64, f64)| {
+        (q.0 - p.0) * (r.1 - p.1) - (q.1 - p.1) * (r.0 - p.0)
+    };
+    cross(a, b, point) * orientation >= -f64::EPSILON
+        && cross(b, c, point) * orientation >= -f64::EPSILON
+        && cross(c, a, point) * orientation >= -f64::EPSILON
 }
 
 fn read_mline_styles(input: &str) -> Vec<MLineStyle> {
@@ -4064,6 +4311,7 @@ fn read_extended_entity(
                 }
                 Entity::MLine(mline)
             }
+            "MESH" => Entity::Mesh(read_mesh_fields(&source, marker.line)?),
             "SPLINE" => {
                 let degree = field_number(&source, 71, marker.line)?.unwrap_or(1.0) as usize;
                 let knots = source
@@ -4517,7 +4765,17 @@ fn read_polyline(
     handles: &mut HashSet<u64>,
 ) -> Result<(Entity, EntityRecord), DxfError> {
     let header = record_fields(groups)?;
-    validate_polyline_fields(&header, &[10, 20, 30, 39, 40, 41, 66, 70, 210, 220, 230])?;
+    if unique_field(&header, 70)?
+        .map(read_number)
+        .transpose()?
+        .is_some_and(|flags| flags as u32 & 8 != 0)
+    {
+        return read_polyline3(&header, groups, marker, handles);
+    }
+    validate_polyline_fields(
+        &header,
+        &[10, 20, 30, 39, 40, 41, 66, 70, 100, 210, 220, 230],
+    )?;
     let properties = read_entity_properties(&header, marker.line, handles)?;
     let mut fields = [10, 20, 30]
         .into_iter()
@@ -4654,6 +4912,87 @@ fn read_polyline(
     ))
 }
 
+fn read_polyline3(
+    header: &[Group<'_>],
+    groups: &mut Groups<'_>,
+    marker: Group<'_>,
+    handles: &mut HashSet<u64>,
+) -> Result<(Entity, EntityRecord), DxfError> {
+    validate_polyline_fields(header, &[10, 20, 30, 66, 70, 100, 210, 220, 230])?;
+    let properties = read_entity_properties(header, marker.line, handles)?;
+    let flags = unique_field(header, 70)?
+        .map(read_number)
+        .transpose()?
+        .unwrap_or(8.0) as u32;
+    if flags & 8 == 0 || flags & !(1 | 8) != 0 {
+        return Err(DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::UnsupportedProperty(70),
+        });
+    }
+    let mut vertices = Vec::new();
+    let fields_end = groups.peek()?.map_or(groups.offset, |group| group.start);
+    loop {
+        let child = groups.required()?;
+        if child.code != 0 || !matches!(child.value, "VERTEX" | "SEQEND") {
+            return Err(DxfError {
+                line: child.line,
+                kind: DxfErrorKind::Expected("VERTEX or SEQEND in 3D POLYLINE"),
+            });
+        }
+        let source = record_fields(groups)?;
+        if child.value == "SEQEND" {
+            let end = groups.peek()?.map_or(groups.offset, |group| group.start);
+            let entity =
+                Entity::Polyline3(Polyline3::new(vertices, flags & 1 != 0).map_err(|error| {
+                    DxfError {
+                        line: marker.line,
+                        kind: DxfErrorKind::Corner(error),
+                    }
+                })?);
+            return Ok((
+                entity.clone(),
+                EntityRecord {
+                    original: entity,
+                    source_line: marker.line,
+                    start: marker.start,
+                    end,
+                    fields_end,
+                    fields: header
+                        .iter()
+                        .filter_map(|field| {
+                            coordinate(*field).ok().map(|value| (field.code, value))
+                        })
+                        .collect(),
+                    properties,
+                    polyline: None,
+                },
+            ));
+        }
+        validate_polyline_fields(&source, &[10, 20, 30, 70, 100])?;
+        let vertex_flags = unique_field(&source, 70)?
+            .map(read_number)
+            .transpose()?
+            .unwrap_or(32.0) as u32;
+        if vertex_flags & 32 == 0 || vertex_flags & !32 != 0 {
+            return Err(DxfError {
+                line: child.line,
+                kind: DxfErrorKind::UnsupportedProperty(70),
+            });
+        }
+        let point = Point3::new(
+            required_coordinate(&source, 10, child.line)?.value,
+            required_coordinate(&source, 20, child.line)?.value,
+            required_coordinate(&source, 30, child.line)?.value,
+        )
+        .map_err(|_| DxfError {
+            line: child.line,
+            kind: DxfErrorKind::InvalidCoordinate(10),
+        })?;
+        vertices.push(point);
+    }
+}
+
 fn read_number(group: Group<'_>) -> Result<f64, DxfError> {
     group
         .value
@@ -4744,6 +5083,45 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
                 .expect("String write");
             }
             writeln!(output, "70\n{flags}").expect("String write");
+            return;
+        }
+        Entity::Mesh(mesh) => {
+            writeln!(output, "100\nAcDbEntity").expect("String write");
+            let mut vertices = Vec::new();
+            let mut face_lists = Vec::new();
+            for face in mesh.faces().iter().take(4096) {
+                let (points, count) = face.vertices();
+                let start = vertices.len();
+                vertices.extend_from_slice(&points[..count]);
+                let mut indices = Vec::with_capacity(count + 1);
+                indices.push(count.to_string());
+                for index in 0..count {
+                    let value = start + index;
+                    indices.push(value.to_string());
+                }
+                face_lists.extend(indices);
+            }
+            writeln!(
+                output,
+                "100\nAcDbSubDMesh\n71\n2\n72\n0\n91\n0\n92\n{}",
+                vertices.len()
+            )
+            .expect("String write");
+            for point in vertices {
+                writeln!(
+                    output,
+                    "10\n{}\n20\n{}\n30\n{}",
+                    point.x(),
+                    point.y(),
+                    point.z()
+                )
+                .expect("String write");
+            }
+            writeln!(output, "93\n{}", face_lists.len()).expect("String write");
+            for value in face_lists {
+                writeln!(output, "90\n{value}").expect("String write");
+            }
+            writeln!(output, "94\n0\n95\n0\n90\n0").expect("String write");
             return;
         }
         Entity::MLine(mline) => {
@@ -5002,6 +5380,20 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
             writeln!(output, "10\n{}\n20\n{}\n30\n{}\n11\n{}\n21\n{}\n31\n{}\n12\n{}\n22\n{}\n32\n{}\n13\n{}\n23\n{}\n340\n{}", insertion.x(), insertion.y(), insertion.z(), u.x() / width_f, u.y() / width_f, u.z() / width_f, v.x() / height_f, v.y() / height_f, v.z() / height_f, width, height, image_handle(image)).expect("String write");
             return;
         }
+        Entity::Polyline3(polyline) => {
+            writeln!(
+                output,
+                "100\nAcDb3dPolyline\n66\n1\n10\n0\n20\n0\n30\n0\n70\n{}",
+                u8::from(polyline.is_closed()) | 8
+            )
+            .expect("String write");
+            for point in polyline.vertices() {
+                write_polyline3_vertex(output, *point, layer, style);
+            }
+            writeln!(output, "0\nSEQEND\n8\n{layer}").expect("String write");
+            write_style(output, style);
+            return;
+        }
         Entity::Polyline(polyline) => {
             writeln!(
                 output,
@@ -5083,6 +5475,18 @@ fn write_vertex(
             writeln!(output, "{code}\n{value}").expect("String write");
         }
     }
+}
+
+fn write_polyline3_vertex(output: &mut String, point: Point3, layer: &str, style: &EntityStyle) {
+    writeln!(
+        output,
+        "0\nVERTEX\n8\n{layer}\n100\nAcDb3dPolylineVertex\n10\n{}\n20\n{}\n30\n{}\n70\n32",
+        point.x(),
+        point.y(),
+        point.z()
+    )
+    .expect("String write");
+    write_style(output, style);
 }
 
 fn patch_entity_properties(

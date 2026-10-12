@@ -73,6 +73,65 @@ impl OpenCadApp {
         } else {
             self.explode_indices(tokens)?
         };
+        if indices.iter().any(|index| {
+            matches!(
+                self.editor.entities().get(*index),
+                Some(Entity::Polyline3(_))
+            )
+        }) {
+            if indices.iter().any(|index| {
+                !matches!(
+                    self.editor.entities().get(*index),
+                    Some(Entity::Polyline3(_))
+                )
+            }) {
+                return Err("Explode 3DPOLY selection must contain only 3DPOLY entities.".into());
+            }
+            let lines = indices
+                .iter()
+                .filter_map(|index| match self.editor.entities().get(*index) {
+                    Some(Entity::Polyline3(polyline)) => Some(polyline.explode()),
+                    _ => None,
+                })
+                .flatten()
+                .map(Entity::Line)
+                .collect();
+            self.editor.select(indices);
+            self.editor
+                .replace_selection_with_entities(lines)
+                .map_err(|error| error.to_string())?;
+            self.finish();
+            self.message("3DPOLY exploded into LINE entities.", false);
+            return Ok(());
+        }
+        if indices
+            .iter()
+            .any(|index| matches!(self.editor.entities().get(*index), Some(Entity::Mesh(_))))
+        {
+            if indices
+                .iter()
+                .any(|index| !matches!(self.editor.entities().get(*index), Some(Entity::Mesh(_))))
+            {
+                return Err("Explode mesh selection must contain only MESH entities.".into());
+            }
+            let faces = indices
+                .iter()
+                .filter_map(|index| match self.editor.entities().get(*index) {
+                    Some(Entity::Mesh(mesh)) => Some(mesh.faces()),
+                    _ => None,
+                })
+                .flatten()
+                .copied()
+                .map(Entity::Face3)
+                .collect();
+            self.editor.select(indices);
+            self.editor
+                .replace_selection_with_entities(faces)
+                .map_err(|error| error.to_string())?;
+            self.finish();
+            self.message("Mesh exploded into 3DFACE entities.", false);
+            return Ok(());
+        }
         self.finish();
         self.editor.select(indices);
         self.explode_selected()

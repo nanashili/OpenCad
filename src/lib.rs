@@ -20,10 +20,13 @@ mod layout;
 mod lengthen;
 mod line;
 mod linetype;
+mod mesh_ops;
+mod modeling;
 mod multiline;
 mod offset;
 mod point;
 mod polyline;
+mod polyline3;
 mod polyline_arc;
 mod reference;
 mod region;
@@ -59,10 +62,18 @@ pub use layout::{Layout, LayoutCollection, Orientation, PageSetup, Viewport};
 pub use lengthen::Lengthen;
 pub use line::{Bounds3, Line3, Point3};
 pub use linetype::{Linetype, LinetypeError};
+pub use mesh_ops::{
+    MeshBooleanOp, MeshOperationError, boundary_edges, mesh_area, mesh_boolean, mesh_volume,
+    scale_mesh, subdivide_mesh, transform_mesh, triangulate_mesh,
+};
+pub use modeling::{
+    ModelingError, helix_points, loft_profiles, section_mesh, slice_mesh, sweep_profile,
+};
 pub use multiline::{MLine2, MLineElement, MLineJustification, MLineStyle};
 pub use offset::{Offset, OffsetLayer, OffsetOptions};
 pub use point::PointEntity;
 pub use polyline::{Polyline2, PolylineSegment, PolylineWidth};
+pub use polyline3::Polyline3;
 pub use reference::{
     ExternalDxfReference, ExternalReferenceStatus, RasterImage, RasterTriangle, ReferenceManager,
 };

@@ -85,6 +85,22 @@ pub(crate) fn entity_bounds(entities: &[Entity]) -> Result<[f64; 4], SvgError> {
                         ]
                     },
                 ),
+            Entity::Polyline3(polyline) => polyline.vertices().iter().fold(
+                [
+                    f64::INFINITY,
+                    f64::INFINITY,
+                    f64::NEG_INFINITY,
+                    f64::NEG_INFINITY,
+                ],
+                |extent, point| {
+                    [
+                        extent[0].min(point.x()),
+                        extent[1].min(point.y()),
+                        extent[2].max(point.x()),
+                        extent[3].max(point.y()),
+                    ]
+                },
+            ),
             Entity::Point(point) => [
                 point.position().x(),
                 point.position().y(),
@@ -169,6 +185,28 @@ pub(crate) fn entity_bounds(entities: &[Entity]) -> Result<[f64; 4], SvgError> {
             Entity::Face3(face) => {
                 let (points, count) = face.vertices();
                 let points = &points[..count];
+                [
+                    points.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min),
+                    points.iter().map(|p| p.y()).fold(f64::INFINITY, f64::min),
+                    points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::NEG_INFINITY, f64::max),
+                    points
+                        .iter()
+                        .map(|p| p.y())
+                        .fold(f64::NEG_INFINITY, f64::max),
+                ]
+            }
+            Entity::Mesh(mesh) => {
+                let points = mesh
+                    .faces()
+                    .iter()
+                    .flat_map(|face| {
+                        let (vertices, count) = face.vertices();
+                        vertices[..count].to_vec()
+                    })
+                    .collect::<Vec<_>>();
                 [
                     points.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min),
                     points.iter().map(|p| p.y()).fold(f64::INFINITY, f64::min),
@@ -489,6 +527,29 @@ fn render_styled_entities_svg(
                     )
                     .expect("String write");
                 }
+                Entity::Polyline3(polyline) => {
+                    let mut points = String::new();
+                    for point in polyline.vertices() {
+                        write!(
+                            points,
+                            "{},{} ",
+                            point.x() - min_x + PADDING,
+                            max_y - point.y() + PADDING
+                        )
+                        .expect("String write");
+                    }
+                    let element = if polyline.is_closed() {
+                        "polygon"
+                    } else {
+                        "polyline"
+                    };
+                    writeln!(
+                        svg,
+                        "    <{element} points=\"{}\"{style} />",
+                        points.trim_end()
+                    )
+                    .expect("String write");
+                }
                 Entity::Ellipse(ellipse) => {
                     let points = ellipse.tessellate_for_svg();
                     let d = points
@@ -538,6 +599,19 @@ fn render_styled_entities_svg(
                         .expect("String write");
                     }
                     writeln!(svg, "    <polygon points=\"{}\" fill=\"{color}\" fill-opacity=\"0.2\"{style} />", coords.trim_end()).expect("String write");
+                }
+                Entity::Mesh(mesh) => {
+                    for face in mesh.faces() {
+                        let (points, count) = face.vertices();
+                        let coords = points[..count]
+                            .iter()
+                            .map(|p| {
+                                format!("{},{}", p.x() - min_x + PADDING, max_y - p.y() + PADDING)
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        writeln!(svg, "    <polygon points=\"{coords}\" fill=\"{color}\" fill-opacity=\"0.2\"{style} />").expect("String write");
+                    }
                 }
                 Entity::Text(text) => {
                     render_text(&mut svg, text, min_x, max_y, color.as_str(), style.as_str())

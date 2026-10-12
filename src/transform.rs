@@ -213,6 +213,15 @@ impl Entity {
                 )?;
                 Self::Polyline(result)
             }
+            Self::Polyline3(polyline) => Self::Polyline3(crate::Polyline3::new(
+                polyline
+                    .vertices()
+                    .iter()
+                    .copied()
+                    .map(|point| transform.point(point))
+                    .collect::<Result<_, _>>()?,
+                polyline.is_closed(),
+            )?),
             Self::Ellipse(ellipse) => Self::Ellipse(ellipse.translated(
                 transform.point(ellipse.center())?.x() - ellipse.center().x(),
                 transform.point(ellipse.center())?.y() - ellipse.center().y(),
@@ -245,6 +254,7 @@ impl Entity {
             Self::Ray(ray) => Self::Ray(ray.transformed(transform)?),
             Self::Image(image) => Self::Image(image.transformed(transform)?),
             Self::MLine(mline) => Self::MLine(mline.transformed(transform)?),
+            Self::Mesh(mesh) => Self::Mesh(mesh.transformed(transform)?),
         })
     }
 }

@@ -267,6 +267,15 @@ fn vector_pdf(
                     content.push_str(&format!("{x1} {y1} m {x2} {y2} l S\n"));
                 }
             }
+            Entity::Polyline3(pl) => {
+                for segment in pl.segments() {
+                    let a = segment.start();
+                    let z = segment.end();
+                    let (x1, y1) = p(a.x(), a.y());
+                    let (x2, y2) = p(z.x(), z.y());
+                    content.push_str(&format!("{x1} {y1} m {x2} {y2} l S\n"));
+                }
+            }
             Entity::Circle(c) => append_curve(
                 &mut content,
                 (0..=48).map(|i| {
@@ -326,6 +335,18 @@ fn vector_pdf(
                     content.push_str(&format!("{x} {y} l "));
                 }
                 content.push_str("h f\n");
+            }
+            Entity::Mesh(mesh) => {
+                for face in mesh.faces() {
+                    let (vs, n) = face.vertices();
+                    let (x, y) = p(vs[0].x(), vs[0].y());
+                    content.push_str(&format!("{x} {y} m "));
+                    for q in &vs[1..n] {
+                        let (x, y) = p(q.x(), q.y());
+                        content.push_str(&format!("{x} {y} l "));
+                    }
+                    content.push_str("h f\n");
+                }
             }
             Entity::Text(t) => append_text(&mut content, t.content(), t.location(), &p),
             Entity::MText(t) => {

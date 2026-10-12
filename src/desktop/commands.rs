@@ -1221,6 +1221,41 @@ impl OpenCadApp {
         verb: &str,
         tokens: &[&str],
     ) -> Option<Result<(), String>> {
+        if matches!(verb, "UNION" | "SUBTRACT" | "INTERSECT")
+            && self.editor.selection().len() == 2
+            && self
+                .editor
+                .selection()
+                .iter()
+                .all(|index| matches!(self.editor.entities().get(*index), Some(Entity::Mesh(_))))
+        {
+            let indices = self.editor.selection().to_vec();
+            let (Some(Entity::Mesh(first)), Some(Entity::Mesh(second))) = (
+                self.editor.entities().get(indices[0]),
+                self.editor.entities().get(indices[1]),
+            ) else {
+                return Some(Err("Selected mesh operands are unavailable.".into()));
+            };
+            let first = first.clone();
+            let second = second.clone();
+            let operation = match verb {
+                "UNION" => crate::MeshBooleanOp::Union,
+                "SUBTRACT" => crate::MeshBooleanOp::Subtract,
+                _ => crate::MeshBooleanOp::Intersect,
+            };
+            return Some(
+                crate::mesh_boolean(&first, &second, operation)
+                    .map_err(|error| error.to_string())
+                    .and_then(|mesh| {
+                        self.editor
+                            .replace_selection_with_entities(vec![Entity::Mesh(mesh)])
+                            .map_err(|error| error.to_string())?;
+                        self.finish();
+                        self.message(format!("{verb} completed on mesh operands."), false);
+                        Ok(())
+                    }),
+            );
+        }
         let operation = feature_regions::parse_region_command(verb, tokens)?;
         Some(operation.and_then(|operation| {
             let results = feature_regions::region_operation(
