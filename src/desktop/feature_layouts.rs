@@ -17,6 +17,7 @@ impl OpenCadApp {
             "LAYOUT" => self.layout_command(tokens),
             "PAGESETUP" => self.pagesetup_command(tokens),
             "MVIEW" => self.mview_command(tokens),
+            "VPCLIP" => self.vpclip_command(tokens),
             "PLOT" => self.plot_command(tokens),
             "EXPORTPDF" => self.plot_pdf_command(tokens),
             _ => return None,
@@ -24,7 +25,7 @@ impl OpenCadApp {
         Some(result.inspect(|_| {
             if matches!(
                 verb.to_ascii_uppercase().as_str(),
-                "LAYOUT" | "PAGESETUP" | "MVIEW"
+                "LAYOUT" | "PAGESETUP" | "MVIEW" | "VPCLIP"
             ) {
                 self.editor.set_layouts(self.layouts.clone());
             }
@@ -109,6 +110,43 @@ impl OpenCadApp {
         );
         Ok(())
     }
+    fn vpclip_command(&mut self, t: &[&str]) -> Result<(), String> {
+        if t.len() < 2 {
+            return Err("VPCLIP index POLYGON point;point;... | ON | OFF | DELETE.".into());
+        }
+        let index = t[0]
+            .parse::<usize>()
+            .map_err(|_| "VPCLIP index must be a positive integer.")?;
+        let viewport = self
+            .layouts
+            .active_mut()
+            .viewports_mut()
+            .get_mut(index.saturating_sub(1))
+            .ok_or("VPCLIP viewport index is out of range.")?;
+        match t[1].to_ascii_uppercase().as_str() {
+            "OFF" => viewport.set_clip_enabled(false).map_err(|e| e.to_string()),
+            "ON" => viewport.set_clip_enabled(true).map_err(|e| e.to_string()),
+            "DELETE" => {
+                viewport.clear_clip_boundary();
+                Ok(())
+            }
+            "POLYGON" => {
+                let mut points = Vec::new();
+                for token in &t[2..] {
+                    for point in token.split(';').filter(|value| !value.trim().is_empty()) {
+                        let p = parse_point(point.trim(), 0.0)?;
+                        points.push(
+                            crate::Point3::new(p.x(), p.y(), 0.0).map_err(|e| e.to_string())?,
+                        );
+                    }
+                }
+                viewport
+                    .set_clip_boundary(points)
+                    .map_err(|e| e.to_string())
+            }
+            _ => Err("VPCLIP option must be POLYGON, ON, OFF, or DELETE.".into()),
+        }
+    }
     fn plot_command(&mut self, t: &[&str]) -> Result<(), String> {
         if t.len() != 1 {
             return Err("PLOT output.svg.".into());
@@ -140,8 +178,33 @@ impl OpenCadApp {
         } else {
             format!("translate({} {}) scale({s} {s})", m[0], m[1])
         };
+        let (defs, clip_attr) = if let Some(v) = self
+            .layouts
+            .active()
+            .viewports()
+            .first()
+            .filter(|v| v.clip_enabled())
+        {
+            if let Some(points) = v.clip_boundary() {
+                let polygon = points
+                    .iter()
+                    .map(|p| format!("{},{}", p.x(), p.y()))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                (
+                    format!(
+                        "<defs><clipPath id=\"vpclip\"><polygon points=\"{polygon}\" /></clipPath></defs>"
+                    ),
+                    " clip-path=\"url(#vpclip)\"",
+                )
+            } else {
+                (String::new(), "")
+            }
+        } else {
+            (String::new(), "")
+        };
         let plotted = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" width=\"{w}\" height=\"{h}\" role=\"img\" aria-label=\"Plotted CAD layout\"><rect width=\"100%\" height=\"100%\" fill=\"white\"/><g transform=\"{transform}\">{body}</g></svg>\n"
+            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" width=\"{w}\" height=\"{h}\" role=\"img\" aria-label=\"Plotted CAD layout\">{defs}<rect width=\"100%\" height=\"100%\" fill=\"white\"/><g transform=\"{transform}\"{clip_attr}>{body}</g></svg>\n"
         );
         fs::write(t[0], plotted).map_err(|e| format!("Cannot write plot: {e}"))
     }
@@ -167,6 +230,18 @@ fn vector_pdf(
     let m = setup.margins();
     let scale = setup.scale();
     let mut content = String::from("1 w 0 0 0 RG\n");
+    if let Some(points) = viewports
+        .first()
+        .filter(|v| v.clip_enabled())
+        .and_then(|v| v.clip_boundary())
+    {
+        let first = points.first().expect("validated viewport clip");
+        content.push_str(&format!("{} {} m ", first.x(), first.y()));
+        for point in &points[1..] {
+            content.push_str(&format!("{} {} l ", point.x(), point.y()));
+        }
+        content.push_str("h W n\n");
+    }
     for e in &entities {
         let p = |x: f64, y: f64| {
             if let Some(v) = viewports.first() {

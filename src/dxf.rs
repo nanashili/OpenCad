@@ -2,6 +2,7 @@
 //! Geometry uses finite coordinates and named layers. Other table and block
 //! contents are retained without interpreting their contents.
 
+use crate::group::EntityGroup;
 use crate::{
     Arc3, BlockDefinition, Circle3, CornerParameter, Dimension, DimensionKind, Entity, EntityStyle,
     EntityStyleError, Face3, GeometryError, Hatch, HatchPattern, Insert, Layer, LayerError, Leader,
@@ -282,6 +283,8 @@ pub struct DxfDocument {
     imported_block_count: usize,
     block_replacements: Vec<BlockDefinition>,
     layouts: crate::LayoutCollection,
+    groups: Vec<EntityGroup>,
+    reordered: bool,
 }
 
 impl DxfDocument {
@@ -291,6 +294,7 @@ impl DxfDocument {
         let mut seen = [false; 5];
         let mut previous_section = 0;
         let mut handles = HashSet::new();
+        let clip_handles = viewport_clip_handles(input);
         let mut entities = Vec::new();
         let mut records: Vec<Option<EntityRecord>> = Vec::new();
         let mut insertion = 0;
@@ -367,6 +371,8 @@ impl DxfDocument {
                     block_definitions,
                     block_replacements: Vec::new(),
                     layouts: read_layouts(input),
+                    groups: read_groups(input),
+                    reordered: false,
                 });
             }
             if (marker.code, marker.value) != (0, "SECTION") {
@@ -451,10 +457,35 @@ impl DxfDocument {
                             // Leave their source bytes untouched and import them below.
                             let _ = record_fields(&mut groups)?;
                         }
-                        (0, "POLYLINE") => {
-                            let (entity, record) = read_polyline(&mut groups, group, &mut handles)?;
+                        (0, "LWPOLYLINE") => {
+                            let fields = record_fields(&mut groups)?;
+                            let is_clip = fields
+                                .iter()
+                                .find(|field| field.code == 5)
+                                .is_some_and(|field| clip_handles.contains(field.value));
+                            if is_clip {
+                                if let Some(handle) = fields.iter().find(|field| field.code == 5) {
+                                    read_handle(*handle, &mut handles)?;
+                                }
+                                continue;
+                            }
+                            let (entity, record) = read_lwpolyline_fields(
+                                fields,
+                                group,
+                                groups.peek()?.map_or(groups.offset, |next| next.start),
+                                &mut handles,
+                            )?;
                             entities.push(entity);
                             records.push(Some(record));
+                        }
+                        (0, "POLYLINE") => {
+                            let (entity, record) = read_polyline(&mut groups, group, &mut handles)?;
+                            if !record_handle_at(input, record.start)
+                                .is_some_and(|handle| clip_handles.contains(&handle))
+                            {
+                                entities.push(entity);
+                                records.push(Some(record));
+                            }
                         }
                         (0, name) => {
                             return Err(DxfError {
@@ -478,6 +509,123 @@ impl DxfDocument {
 
     pub fn entities(&self) -> &[Entity] {
         &self.entities
+    }
+    pub fn groups(&self) -> &[EntityGroup] {
+        &self.groups
+    }
+    pub fn create_group(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        selectable: bool,
+        members: &[usize],
+    ) -> Result<usize, DxfError> {
+        let name = name.into();
+        let mut members = members.to_vec();
+        members.sort_unstable();
+        members.dedup();
+        if members.iter().any(|index| *index >= self.entities.len()) {
+            return Err(group_error(0));
+        }
+        if self.groups.iter().any(|group| group.name() == name) {
+            return Err(group_error(2));
+        }
+        let group =
+            EntityGroup::new(name, description, selectable, members).map_err(|_| group_error(2))?;
+        self.groups.push(group);
+        Ok(self.groups.len() - 1)
+    }
+    pub fn rename_group(&mut self, index: usize, name: impl Into<String>) -> Result<(), DxfError> {
+        let name = name.into();
+        if name.trim().is_empty()
+            || self
+                .groups
+                .iter()
+                .enumerate()
+                .any(|(i, group)| i != index && group.name() == name)
+        {
+            return Err(group_error(2));
+        }
+        let group = self.groups.get_mut(index).ok_or_else(|| group_error(2))?;
+        group.set_name(name);
+        Ok(())
+    }
+    pub fn remove_group(&mut self, index: usize) -> Result<EntityGroup, DxfError> {
+        (index < self.groups.len())
+            .then(|| self.groups.remove(index))
+            .ok_or_else(|| group_error(2))
+    }
+    pub fn set_group_membership(
+        &mut self,
+        index: usize,
+        members: &[usize],
+    ) -> Result<(), DxfError> {
+        let mut members = members.to_vec();
+        members.sort_unstable();
+        members.dedup();
+        if members.iter().any(|member| *member >= self.entities.len()) {
+            return Err(group_error(340));
+        }
+        self.groups
+            .get_mut(index)
+            .ok_or_else(|| group_error(340))?
+            .set_members(members);
+        Ok(())
+    }
+    pub fn reorder_entities(&mut self, order: &[usize]) -> Result<bool, DxfError> {
+        if order.len() != self.entities.len() {
+            return Err(group_error(0));
+        }
+        let mut seen = vec![false; order.len()];
+        if order
+            .iter()
+            .any(|index| *index >= order.len() || std::mem::replace(&mut seen[*index], true))
+        {
+            return Err(group_error(0));
+        }
+        if order.iter().enumerate().all(|(new, old)| new == *old) {
+            return Ok(false);
+        }
+        let old_groups = self.groups.clone();
+        let entities = order
+            .iter()
+            .map(|index| self.entities[*index].clone())
+            .collect();
+        let records = order
+            .iter()
+            .map(|index| self.records[*index].clone())
+            .collect();
+        let layers = order
+            .iter()
+            .map(|index| self.entity_layers[*index].clone())
+            .collect();
+        let styles = order
+            .iter()
+            .map(|index| self.entity_styles[*index].clone())
+            .collect();
+        let mut inverse = vec![0; order.len()];
+        for (new, old) in order.iter().copied().enumerate() {
+            inverse[old] = new;
+        }
+        self.entities = entities;
+        self.records = records;
+        self.entity_layers = layers;
+        self.entity_styles = styles;
+        self.groups = old_groups
+            .into_iter()
+            .map(|mut group| {
+                group.set_members(
+                    group
+                        .members()
+                        .iter()
+                        .map(|member| inverse[*member])
+                        .collect(),
+                );
+                group
+            })
+            .collect();
+        self.reordered = true;
+        Ok(true)
     }
     pub fn layouts(&self) -> &crate::LayoutCollection {
         &self.layouts
@@ -796,6 +944,21 @@ impl DxfDocument {
         layer.set_locked(locked);
         Ok(layer.flags != old)
     }
+    pub fn set_layer_frozen(&mut self, name: &str, frozen: bool) -> Result<bool, LayerError> {
+        let layer = self
+            .layer_data
+            .layers
+            .iter_mut()
+            .find(|layer| layer.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| LayerError::UnknownLayer(name.into()))?;
+        let old = layer.flags;
+        if frozen {
+            layer.flags |= 1;
+        } else {
+            layer.flags &= !1;
+        }
+        Ok(layer.flags != old)
+    }
 
     /// Change an ordinary ACI color, preserving off/frozen/locked state.
     pub fn set_layer_color(&mut self, name: &str, index: i16) -> Result<bool, LayerError> {
@@ -879,7 +1042,25 @@ impl DxfDocument {
         }
         self.entity_layers.remove(index);
         self.entity_styles.remove(index);
-        Some(self.entities.remove(index))
+        let removed = self.entities.remove(index);
+        for group in &mut self.groups {
+            group.set_members(
+                group
+                    .members()
+                    .iter()
+                    .filter_map(|member| {
+                        if *member == index {
+                            None
+                        } else if *member > index {
+                            Some(*member - 1)
+                        } else {
+                            Some(*member)
+                        }
+                    })
+                    .collect(),
+            );
+        }
+        Some(removed)
     }
 
     /// Preserve original bytes except explicitly edited geometry/layer/style values.
@@ -890,15 +1071,24 @@ impl DxfDocument {
             .map(|&(start, end)| (start, end, String::new()))
             .collect();
         let mut added = String::new();
-        for (((entity, record), layer), style) in self
+        let mut object_handle = next_handle(&self.source);
+        let mut generated_handles = HashMap::new();
+        for (entity_index, (((entity, record), layer), style)) in self
             .entities
             .iter()
             .zip(&self.records)
             .zip(&self.entity_layers)
             .zip(&self.entity_styles)
+            .enumerate()
         {
             let Some(record) = record else {
-                write_entity(&mut added, entity, layer, style);
+                let mut serialized = String::new();
+                write_entity(&mut serialized, entity, layer, style);
+                let handle = format!("{:X}", object_handle);
+                insert_entity_handle(&mut serialized, &handle);
+                added.push_str(&serialized);
+                generated_handles.insert(entity_index, handle);
+                object_handle = object_handle.saturating_add(1);
                 continue;
             };
             if entity != &record.original
@@ -916,10 +1106,14 @@ impl DxfDocument {
                         | Entity::XLine(_)
                         | Entity::Ray(_)
                         | Entity::Image(_)
+                        | Entity::Polyline(_)
                 )
             {
                 let mut replacement = String::new();
                 write_entity(&mut replacement, entity, layer, style);
+                if let Some(handle) = record_handle_at(&self.source, record.start) {
+                    insert_entity_handle(&mut replacement, &handle);
+                }
                 changes.push((record.start, record.end, replacement));
                 continue;
             }
@@ -1049,6 +1243,43 @@ impl DxfDocument {
                 }
             }
         }
+        if self.reordered {
+            let (section_marker, newline) = if self
+                .source
+                .contains("\r\n0\r\nSECTION\r\n2\r\nENTITIES\r\n")
+            {
+                ("0\r\nSECTION\r\n2\r\nENTITIES\r\n", "\r\n")
+            } else {
+                ("0\nSECTION\n2\nENTITIES\n", "\n")
+            };
+            if let Some(section_start) = self.source.find(section_marker) {
+                let entity_start = section_start + section_marker.len();
+                let mut serialized = String::new();
+                for (index, (((entity, record), layer), style)) in self
+                    .entities
+                    .iter()
+                    .zip(&self.records)
+                    .zip(&self.entity_layers)
+                    .zip(&self.entity_styles)
+                    .enumerate()
+                {
+                    let mut entity_text = String::new();
+                    write_entity(&mut entity_text, entity, layer, style);
+                    let handle = generated_handles.get(&index).cloned().or_else(|| {
+                        record
+                            .as_ref()
+                            .and_then(|record| record_handle_at(&self.source, record.start))
+                    });
+                    if let Some(handle) = handle {
+                        insert_entity_handle(&mut entity_text, &handle);
+                    }
+                    serialized.push_str(&entity_text.replace('\n', newline));
+                }
+                changes.retain(|(start, end, _)| *end <= entity_start || *start >= self.insertion);
+                changes.push((entity_start, self.insertion, serialized));
+                added.clear();
+            }
+        }
         let mut tables = String::new();
         let mut header = String::new();
         self.linetype_data.write_changes(
@@ -1132,7 +1363,28 @@ impl DxfDocument {
                 }
             }
         }
-        let mut object_handle = next_handle(&self.source);
+        let source_group_spans = group_spans(&self.source);
+        let all_group_objects = serialize_groups(
+            &self.groups,
+            &self.source,
+            &generated_handles,
+            &mut object_handle,
+        );
+        let mut group_objects = all_group_objects.clone();
+        if !source_group_spans.is_empty() {
+            for (index, (start, end)) in source_group_spans.iter().copied().enumerate() {
+                changes.push((
+                    start,
+                    end,
+                    if index == 0 {
+                        all_group_objects.clone()
+                    } else {
+                        String::new()
+                    },
+                ));
+            }
+            group_objects.clear();
+        }
         let viewport_entities = if self.source.contains("\n0\nVIEWPORT\n")
             || self.source.contains("\r\n0\r\nVIEWPORT\r\n")
         {
@@ -1162,13 +1414,14 @@ impl DxfDocument {
             })
             .collect::<Vec<_>>();
         let layout_objects = serialize_layouts(&self.layouts, &self.source, &mut object_handle);
-        if !images.is_empty() || !layout_objects.is_empty() {
+        if !images.is_empty() || !layout_objects.is_empty() || !group_objects.is_empty() {
             let objects = format!(
-                "{}{}",
+                "{}{}{}",
                 images
                     .iter()
                     .map(|image| serialize_image_def(image))
                     .collect::<String>(),
+                group_objects,
                 layout_objects
             );
             let marker = if output.contains("\r\n0\r\nEOF") {
@@ -1239,6 +1492,13 @@ fn layer_field(group: Group<'_>) -> Result<Coordinate, DxfError> {
         start: group.value_start,
         end: group.value_end,
     })
+}
+
+fn group_error(code: u16) -> DxfError {
+    DxfError {
+        line: 0,
+        kind: DxfErrorKind::UnsupportedProperty(code),
+    }
 }
 
 fn coordinate(group: Group<'_>) -> Result<Coordinate, DxfError> {
@@ -2106,6 +2366,198 @@ fn read_image_def_paths(input: &str) -> HashMap<String, String> {
     paths
 }
 
+fn read_groups(input: &str) -> Vec<EntityGroup> {
+    let handles = entity_handles(input);
+    let mut groups = Groups::new(input);
+    let mut in_objects = false;
+    let mut result = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            in_objects = true;
+            continue;
+        }
+        if !in_objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "GROUP" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let Some(name) = fields
+            .iter()
+            .find(|field| field.code == 2)
+            .map(|field| field.value)
+        else {
+            continue;
+        };
+        let description = fields
+            .iter()
+            .find(|field| field.code == 300)
+            .map_or("", |field| field.value);
+        let selectable = fields
+            .iter()
+            .find(|field| field.code == 71)
+            .is_none_or(|field| field.value.trim() != "0");
+        let mut members = fields
+            .iter()
+            .filter(|field| field.code == 340)
+            .filter_map(|field| handles.get(field.value).copied())
+            .collect::<Vec<_>>();
+        members.sort_unstable();
+        members.dedup();
+        if let Ok(group) = EntityGroup::new(name, description, selectable, members) {
+            result.push(group);
+        }
+    }
+    result
+}
+
+fn group_spans(input: &str) -> Vec<(usize, usize)> {
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    let mut spans = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "GROUP" {
+            continue;
+        }
+        if record_fields(&mut groups).is_err() {
+            break;
+        }
+        let end = groups
+            .peek()
+            .ok()
+            .flatten()
+            .map_or(input.len(), |next| next.start);
+        spans.push((marker.start, end));
+    }
+    spans
+}
+
+fn entity_handles(input: &str) -> HashMap<String, usize> {
+    let mut groups = Groups::new(input);
+    let mut entities = false;
+    let mut index = 0;
+    let mut result = HashMap::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 0 && marker.value == "SECTION" {
+            if let Ok(Some(section)) = groups.next() {
+                entities = section.code == 2 && section.value == "ENTITIES";
+            }
+            continue;
+        }
+        if !entities || marker.code != 0 {
+            continue;
+        }
+        if marker.value == "ENDSEC" {
+            break;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        if !matches!(
+            marker.value,
+            "POINT"
+                | "LINE"
+                | "XLINE"
+                | "RAY"
+                | "CIRCLE"
+                | "ARC"
+                | "ELLIPSE"
+                | "3DFACE"
+                | "SPLINE"
+                | "TEXT"
+                | "MTEXT"
+                | "LEADER"
+                | "MULTILEADER"
+                | "TABLE"
+                | "ACAD_TABLE"
+                | "DIMENSION"
+                | "HATCH"
+                | "IMAGE"
+                | "INSERT"
+                | "POLYLINE"
+        ) {
+            continue;
+        }
+        if let Some(handle) = fields.iter().find(|field| field.code == 5) {
+            result.insert(handle.value.to_owned(), index);
+        }
+        index += 1;
+    }
+    result
+}
+
+fn serialize_groups(
+    groups: &[EntityGroup],
+    source: &str,
+    generated_handles: &HashMap<usize, String>,
+    handle: &mut u64,
+) -> String {
+    if groups.is_empty() {
+        return String::new();
+    }
+    let entity_handles = entity_handles(source);
+    let mut output = String::new();
+    let mut group_handles = Vec::with_capacity(groups.len());
+    for group in groups {
+        let group_handle = *handle;
+        group_handles.push((group.name(), group_handle));
+        output.push_str(&format!(
+            "0\nGROUP\n5\n{:X}\n100\nAcDbGroup\n300\n{}\n70\n0\n71\n{}\n",
+            group_handle,
+            group.description(),
+            u8::from(group.selectable())
+        ));
+        for member in group.members() {
+            if let Some(entity_handle) = generated_handles.get(member).or_else(|| {
+                entity_handles
+                    .iter()
+                    .find_map(|(value, index)| (*index == *member).then_some(value))
+            }) {
+                output.push_str(&format!("340\n{}\n", entity_handle));
+            }
+        }
+        *handle = handle.saturating_add(1);
+    }
+    let dictionary_handle = *handle;
+    output.push_str(&format!(
+        "0\nDICTIONARY\n5\n{:X}\n100\nAcDbDictionary\n280\n0\n",
+        dictionary_handle
+    ));
+    for (name, group_handle) in group_handles {
+        output.push_str(&format!("3\n{name}\n350\n{group_handle:X}\n"));
+    }
+    *handle = handle.saturating_add(1);
+    output
+}
+
+fn insert_entity_handle(output: &mut String, handle: &str) {
+    let Some(first_end) = output.find('\n') else {
+        return;
+    };
+    let name_start = first_end + 1;
+    let Some(name_end) = output[name_start..].find('\n') else {
+        return;
+    };
+    let at = name_start + name_end + 1;
+    output.insert_str(at, &format!("5\n{handle}\n"));
+}
+
 fn read_layouts(input: &str) -> crate::LayoutCollection {
     let mut layouts = crate::LayoutCollection::default();
     let mut groups = Groups::new(input);
@@ -2242,6 +2694,7 @@ fn import_viewports(input: &str, layouts: &mut crate::LayoutCollection) {
         .unwrap_or("Model")
         .to_owned();
     let mut groups = Groups::new(input);
+    let boundaries = viewport_clip_boundaries(input);
     while let Ok(Some(group)) = groups.next() {
         if group.code != 0 || group.value != "VIEWPORT" {
             continue;
@@ -2285,7 +2738,22 @@ fn import_viewports(input: &str, layouts: &mut crate::LayoutCollection) {
             cx + width / 2.0,
             cy + height / 2.0,
         ];
-        if let Ok(viewport) = crate::Viewport::new(world, paper, scale) {
+        if let Ok(mut viewport) = crate::Viewport::new(world, paper, scale) {
+            if let Some(clip_handle) = fields
+                .iter()
+                .find(|field| field.code == 340)
+                .map(|field| field.value)
+                && let Some(boundary) = boundaries.get(clip_handle)
+            {
+                let _ = viewport.set_clip_boundary(boundary.clone());
+                let _ = viewport.set_clip_enabled(
+                    fields
+                        .iter()
+                        .find(|field| field.code == 90)
+                        .and_then(|field| field.value.parse::<i64>().ok())
+                        .is_some_and(|flags| flags & 65_536 != 0),
+                );
+            }
             let previous = layouts.active().name().to_owned();
             if layouts.set_active(&target).is_ok() {
                 layouts.active_mut().add_viewport(viewport);
@@ -2316,14 +2784,157 @@ fn serialize_viewports(
             let paper_cy = (paper[1] + paper[3]) / 2.0;
             let world_cx = (world[0] + world[2]) / 2.0;
             let world_cy = (world[1] + world[3]) / 2.0;
+            let clip_handle = viewport
+                .clip_boundary()
+                .filter(|points| points.len() >= 3)
+                .map(|_| {
+                    let value = *handle;
+                    *handle = handle.saturating_add(1);
+                    value
+                });
+            if let Some(clip_handle) = clip_handle {
+                output.push_str(&format!(
+                    "0{newline}LWPOLYLINE{newline}5{newline}{clip_handle:X}{newline}100{newline}AcDbEntity{newline}8{newline}0{newline}67{newline}1{newline}410{newline}{name}{newline}100{newline}AcDbPolyline{newline}90{newline}{}{newline}70{newline}1{newline}",
+                    viewport.clip_boundary().map_or(0, |points| points.len())
+                ));
+                for point in viewport.clip_boundary().unwrap_or_default() {
+                    output.push_str(&format!(
+                        "10{newline}{}{newline}20{newline}{}{newline}",
+                        point.x(),
+                        point.y()
+                    ));
+                }
+            }
+            let clip_flags = if viewport.clip_enabled() { 65_536 } else { 0 };
+            let clip_fields = clip_handle.map_or_else(
+                || format!("90{newline}{clip_flags}{newline}"),
+                |value| format!("90{newline}{clip_flags}{newline}340{newline}{value:X}{newline}"),
+            );
             output.push_str(&format!(
-                "0{newline}VIEWPORT{newline}5{newline}{:X}{newline}100{newline}AcDbEntity{newline}8{newline}0{newline}67{newline}1{newline}410{newline}{name}{newline}100{newline}AcDbViewport{newline}10{newline}{paper_cx}{newline}20{newline}{paper_cy}{newline}40{newline}{width}{newline}41{newline}{height}{newline}12{newline}{world_cx}{newline}22{newline}{world_cy}{newline}45{newline}{world_height}{newline}69{newline}{handle}{newline}",
-                *handle
+                "0{newline}VIEWPORT{newline}5{newline}{:X}{newline}100{newline}AcDbEntity{newline}8{newline}0{newline}67{newline}1{newline}410{newline}{name}{newline}100{newline}AcDbViewport{newline}10{newline}{paper_cx}{newline}20{newline}{paper_cy}{newline}40{newline}{width}{newline}41{newline}{height}{newline}12{newline}{world_cx}{newline}22{newline}{world_cy}{newline}45{newline}{world_height}{newline}{clip_fields}69{newline}{handle}{newline}",
+                *handle,
+                clip_fields = clip_fields,
             ));
             *handle = handle.saturating_add(1);
         }
     }
     output
+}
+
+fn viewport_clip_handles(input: &str) -> HashSet<String> {
+    let mut groups = Groups::new(input);
+    let mut result = HashSet::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 0
+            && marker.value == "VIEWPORT"
+            && let Ok(fields) = record_fields(&mut groups)
+            && let Some(handle) = fields
+                .iter()
+                .find(|field| field.code == 340)
+                .map(|field| field.value.to_owned())
+        {
+            result.insert(handle);
+        }
+    }
+    result
+}
+
+fn viewport_clip_boundaries(input: &str) -> HashMap<String, Vec<Point3>> {
+    let wanted = viewport_clip_handles(input);
+    let mut groups = Groups::new(input);
+    let mut result = HashMap::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code != 0 || !matches!(marker.value, "POLYLINE" | "LWPOLYLINE") {
+            continue;
+        }
+        let Ok(header) = record_fields(&mut groups) else {
+            break;
+        };
+        let Some(handle) = header
+            .iter()
+            .find(|field| field.code == 5)
+            .map(|field| field.value.to_owned())
+        else {
+            continue;
+        };
+        if !wanted.contains(&handle) {
+            continue;
+        }
+        if marker.value == "LWPOLYLINE" {
+            let mut points = Vec::new();
+            let mut x = None;
+            for field in header {
+                match field.code {
+                    10 => x = field.value.parse::<f64>().ok(),
+                    20 => {
+                        if let Some(x) = x.take()
+                            && let Some(y) = field.value.parse::<f64>().ok()
+                            && let Ok(point) = Point3::new(x, y, 0.0)
+                        {
+                            points.push(point);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if points.len() >= 3 {
+                result.insert(handle, points);
+            }
+            continue;
+        }
+        let mut points = Vec::new();
+        while let Ok(Some(child)) = groups.next() {
+            if child.code != 0 {
+                continue;
+            }
+            if child.value == "SEQEND" {
+                let _ = record_fields(&mut groups);
+                break;
+            }
+            if child.value != "VERTEX" {
+                break;
+            }
+            let Ok(fields) = record_fields(&mut groups) else {
+                break;
+            };
+            let Some(x) = fields
+                .iter()
+                .find(|field| field.code == 10)
+                .and_then(|field| field.value.parse::<f64>().ok())
+            else {
+                continue;
+            };
+            let Some(y) = fields
+                .iter()
+                .find(|field| field.code == 20)
+                .and_then(|field| field.value.parse::<f64>().ok())
+            else {
+                continue;
+            };
+            let z = fields
+                .iter()
+                .find(|field| field.code == 30)
+                .and_then(|field| field.value.parse::<f64>().ok())
+                .unwrap_or(0.0);
+            if let Ok(point) = Point3::new(x, y, z) {
+                points.push(point);
+            }
+        }
+        if points.len() >= 3 {
+            result.insert(handle, points);
+        }
+    }
+    result
+}
+
+fn record_handle_at(input: &str, start: usize) -> Option<String> {
+    let mut groups = Groups::new(input.get(start..)?);
+    let _ = groups.next().ok()??;
+    record_fields(&mut groups)
+        .ok()?
+        .iter()
+        .find(|field| field.code == 5)
+        .map(|field| field.value.to_owned())
 }
 
 fn read_handle(group: Group<'_>, handles: &mut HashSet<u64>) -> Result<(), DxfError> {
@@ -3098,6 +3709,176 @@ fn required_coordinate(
         line,
         kind: DxfErrorKind::MissingField(code),
     })?)
+}
+
+fn read_lwpolyline_fields(
+    fields: Vec<Group<'_>>,
+    marker: Group<'_>,
+    end: usize,
+    handles: &mut HashSet<u64>,
+) -> Result<(Entity, EntityRecord), DxfError> {
+    let allowed = [10, 20, 38, 39, 40, 41, 42, 43, 70, 90, 210, 220, 230];
+    for field in &fields {
+        if !COMMON_ENTITY_CODES.contains(&field.code) && !allowed.contains(&field.code) {
+            return Err(DxfError {
+                line: field.line,
+                kind: DxfErrorKind::UnsupportedProperty(field.code),
+            });
+        }
+        if !matches!(field.code, 10 | 20 | 40 | 41 | 42) {
+            unique_field(&fields, field.code)?;
+        }
+    }
+    let properties = read_entity_properties(&fields, marker.line, handles)?;
+    let elevation = fields
+        .iter()
+        .find(|field| field.code == 38)
+        .map(|field| read_number(*field))
+        .transpose()?
+        .unwrap_or(0.0);
+    let normal = [210, 220, 230]
+        .into_iter()
+        .map(|code| {
+            fields
+                .iter()
+                .find(|field| field.code == code)
+                .map(|field| read_number(*field))
+                .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if normal[0].unwrap_or(0.0) != 0.0
+        || normal[1].unwrap_or(0.0) != 0.0
+        || normal[2].unwrap_or(1.0) != 1.0
+    {
+        return Err(DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::UnsupportedProperty(210),
+        });
+    }
+    let flags = fields
+        .iter()
+        .find(|field| field.code == 70)
+        .map(|field| read_number(*field))
+        .transpose()?
+        .unwrap_or(0.0);
+    if flags != 0.0 && flags != 1.0 {
+        return Err(DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::UnsupportedProperty(70),
+        });
+    }
+    let count = fields.iter().filter(|field| field.code == 10).count();
+    if count < 2
+        || fields.iter().filter(|field| field.code == 20).count() != count
+        || fields
+            .iter()
+            .find(|field| field.code == 90)
+            .map(|field| read_number(*field))
+            .transpose()?
+            .is_some_and(|value| value != count as f64)
+    {
+        return Err(DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::Expected("matching LWPOLYLINE vertices"),
+        });
+    }
+    let constant_width = fields
+        .iter()
+        .find(|field| field.code == 43)
+        .map(|field| read_width(*field))
+        .transpose()?
+        .map_or(0.0, |field| field.value);
+    let mut vertices = Vec::with_capacity(count);
+    let mut bulges = Vec::with_capacity(count);
+    let mut widths = Vec::with_capacity(count);
+    let mut chunks: Vec<Vec<Group<'_>>> = Vec::with_capacity(count);
+    for field in fields
+        .iter()
+        .copied()
+        .filter(|field| matches!(field.code, 10 | 20 | 40 | 41 | 42))
+    {
+        if field.code == 10 {
+            chunks.push(Vec::new());
+        }
+        if let Some(chunk) = chunks.last_mut() {
+            chunk.push(field);
+        }
+    }
+    for chunk in chunks {
+        let x = chunk
+            .iter()
+            .find(|field| field.code == 10)
+            .map(|field| read_number(*field))
+            .transpose()?
+            .ok_or(DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::MissingField(10),
+            })?;
+        let y = chunk
+            .iter()
+            .find(|field| field.code == 20)
+            .map(|field| read_number(*field))
+            .transpose()?
+            .ok_or(DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::MissingField(20),
+            })?;
+        vertices.push(Point3::new(x, y, elevation).map_err(|_| DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::InvalidCoordinate(10),
+        })?);
+        bulges.push(
+            chunk
+                .iter()
+                .find(|field| field.code == 42)
+                .map(|field| read_number(*field))
+                .transpose()?
+                .unwrap_or(0.0),
+        );
+        let start = chunk
+            .iter()
+            .find(|field| field.code == 40)
+            .map(|field| read_width(*field))
+            .transpose()?
+            .map_or(constant_width, |field| field.value);
+        let end = chunk
+            .iter()
+            .find(|field| field.code == 41)
+            .map(|field| read_width(*field))
+            .transpose()?
+            .map_or(constant_width, |field| field.value);
+        widths.push(PolylineWidth::new(start, end).map_err(|error| DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::Corner(error),
+        })?);
+    }
+    let mut polyline =
+        Polyline2::with_bulges(vertices, bulges, flags == 1.0).map_err(|error| DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::Corner(error),
+        })?;
+    polyline.set_widths(widths).map_err(|error| DxfError {
+        line: marker.line,
+        kind: DxfErrorKind::Corner(error),
+    })?;
+    let entity = Entity::Polyline(polyline);
+    let record_fields = fields
+        .iter()
+        .filter_map(|field| coordinate(*field).ok().map(|value| (field.code, value)))
+        .collect();
+    Ok((
+        entity.clone(),
+        EntityRecord {
+            original: entity,
+            source_line: marker.line,
+            start: marker.start,
+            end,
+            fields_end: end,
+            fields: record_fields,
+            properties,
+            polyline: None,
+        },
+    ))
 }
 
 fn require_zero(fields: &[Group<'_>], codes: &[u16]) -> Result<(), DxfError> {

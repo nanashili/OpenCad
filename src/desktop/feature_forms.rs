@@ -126,6 +126,11 @@ impl FeatureForm {
                 ("Minimum point", "0,0,0", "x,y[,z]"),
                 ("Maximum point", "100,100,0", "x,y[,z]"),
             ],
+            "VPCLIP" => &[
+                ("Viewport", "1", "viewport number"),
+                ("Action", "POLYGON", "POLYGON|ON|OFF|DELETE"),
+                ("Boundary", "0,0;100,0;100,100;0,100", "point;point;..."),
+            ],
             "PLOT" => &[("Output path", "plot.svg", "file path")],
             "EXPORTPDF" => &[("Output path", "plot.pdf", "file path")],
             "IMAGEATTACH" => &[
@@ -140,6 +145,28 @@ impl FeatureForm {
                 ("DXF path", "reference.dxf", "DXF file path"),
                 ("Reference name", "Reference1", "optional block name"),
             ],
+            "QSELECT" => &[
+                ("Property", "TYPE", "TYPE|LAYER|COLOR|LINETYPE"),
+                ("Value", "LINE", "matching value"),
+                ("Operator", "=", "= or !="),
+                ("Mode", "REPLACE", "REPLACE|ADD|REMOVE|INTERSECT"),
+            ],
+            "GROUP" => &[
+                (
+                    "Action",
+                    "LIST",
+                    "CREATE|SELECT|ADD|REMOVE|RENAME|DELETE|LIST",
+                ),
+                ("Name", "Group1", "group name"),
+                ("Argument", "Group", "second name or description"),
+            ],
+            "UNGROUP" => &[("Name", "Group1", "group name")],
+            "DRAWORDER" => &[
+                ("Action", "FRONT", "FRONT|BACK|ABOVE|BELOW"),
+                ("Reference", "1", "entity number for ABOVE/BELOW"),
+            ],
+            "LAYISO" | "LAYFRZ" | "LAYTHW" | "LAYOFF" | "LAYON" | "LAYLCK" | "LAYULK"
+            | "LAYCUR" | "LAYMCH" => &[("Layer", "0", "layer name")],
             "WEDGE" | "PYRAMID" => &[
                 ("Insertion point", "0,0,0", "x,y[,z]"),
                 ("Width", "10", "positive number"),
@@ -231,6 +258,13 @@ impl FeatureForm {
             }
             "SPLINE" => format!("{} {}", values[0], normalize_points_spaced(&values[1])),
             "ARRAYPOLAR" => values.join(" "),
+            "QSELECT" => format!(
+                "{} {} {} {}",
+                values[0],
+                values[2],
+                encode_command_arg(&values[1]),
+                values[3]
+            ),
             "XATTACH" => values
                 .iter()
                 .map(|value| encode_command_arg(value))
@@ -252,6 +286,12 @@ impl FeatureForm {
                 };
                 format!("{} {}", operation, arguments)
             }
+            "GROUP" | "UNGROUP" | "LAYISO" | "LAYFRZ" | "LAYTHW" | "LAYOFF" | "LAYON"
+            | "LAYLCK" | "LAYULK" | "LAYCUR" | "LAYMCH" => values
+                .iter()
+                .map(|value| encode_command_arg(value))
+                .collect::<Vec<_>>()
+                .join(" "),
             _ => values.join(" "),
         };
         format!("{} {}", self.verb, body)

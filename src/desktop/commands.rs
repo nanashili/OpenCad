@@ -135,6 +135,8 @@ impl OpenCadApp {
             .or_else(|| self.feature_construction_command(&upper, &tokens))
             .or_else(|| self.feature_reference_command(&upper, &tokens))
             .or_else(|| self.feature_region_command(&upper, &tokens))
+            .or_else(|| self.feature_selection_command(&upper, &tokens))
+            .or_else(|| self.feature_groups_command(&upper, &tokens))
             .or_else(|| self.feature_utility_command(&upper, rest, &tokens))
             .or_else(|| self.feature_modify_command(&upper, rest, &tokens))
             .or_else(|| self.feature_solid_command(&upper, rest, &tokens))

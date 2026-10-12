@@ -1,9 +1,11 @@
 use crate::{
-    BlockDefinition, BoundaryMode, Corner, CornerParameter, DxfDocument, Entity, EntityStyle,
-    EntityStyleError, GeometryError, Layer, LayerError, LayoutCollection, Lengthen, Linetype,
-    LinetypeError, Offset, OffsetLayer, OffsetOptions, Transform,
+    BlockDefinition, BoundaryMode, Corner, CornerParameter, DxfDocument, Entity, EntityGroup,
+    EntityStyle, EntityStyleError, GeometryError, Layer, LayerError, LayoutCollection, Lengthen,
+    Linetype, LinetypeError, Offset, OffsetLayer, OffsetOptions, Transform,
 };
 use std::{error::Error, fmt};
+
+type LayerState = (String, bool, bool, bool, bool);
 
 #[derive(Debug)]
 pub enum EditError {
@@ -11,6 +13,14 @@ pub enum EditError {
     Layer(LayerError),
     Style(EntityStyleError),
     Dxf(crate::DxfError),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawOrder {
+    Front,
+    Back,
+    Above(usize),
+    Below(usize),
 }
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -61,6 +71,8 @@ pub struct Editor {
     next_revision: u64,
     saved_revision: u64,
     active_layer: String,
+    layer_visibility_restore: Option<Vec<LayerState>>,
+    layer_previous_state: Option<Vec<LayerState>>,
 }
 
 impl Default for Editor {
@@ -70,6 +82,97 @@ impl Default for Editor {
 }
 
 impl Editor {
+    /// Build a new-position-to-old-position permutation for draw-order edits.
+    pub fn draw_order_permutation(
+        entity_count: usize,
+        selected: &[usize],
+        order: DrawOrder,
+    ) -> Result<Vec<usize>, EditError> {
+        let mut selected = selected.to_vec();
+        selected.sort_unstable();
+        selected.dedup();
+        if selected.iter().any(|index| *index >= entity_count) {
+            return Err(LayerError::MissingEntity(entity_count).into());
+        }
+        let is_selected = |index: usize| selected.binary_search(&index).is_ok();
+        let mut remaining = (0..entity_count)
+            .filter(|index| !is_selected(*index))
+            .collect::<Vec<_>>();
+        match order {
+            DrawOrder::Front => remaining.extend(selected),
+            DrawOrder::Back => {
+                selected.extend(remaining);
+                remaining = selected;
+            }
+            DrawOrder::Above(reference) | DrawOrder::Below(reference) => {
+                if reference >= entity_count || is_selected(reference) {
+                    return Err(LayerError::MissingEntity(reference).into());
+                }
+                let Some(position) = remaining.iter().position(|index| *index == reference) else {
+                    return Err(LayerError::MissingEntity(reference).into());
+                };
+                let insert_at = if matches!(order, DrawOrder::Above(_)) {
+                    position + 1
+                } else {
+                    position
+                };
+                remaining.splice(insert_at..insert_at, selected);
+            }
+        }
+        Ok(remaining)
+    }
+
+    /// Apply a validated entity-order permutation through a document callback
+    /// while retaining source metadata and remapping the selection in one undo
+    /// transaction. The callback is intended for DxfDocument::reorder_entities.
+    pub fn reorder_entities_with(
+        &mut self,
+        order: &[usize],
+        reorder: impl FnOnce(&mut DxfDocument, &[usize]) -> Result<bool, crate::DxfError>,
+    ) -> Result<bool, EditError> {
+        self.editable_selection()?;
+        if order.len() != self.entities().len() {
+            return Err(crate::DxfError {
+                line: 0,
+                kind: crate::DxfErrorKind::UnsupportedProperty(0),
+            }
+            .into());
+        }
+        let mut seen = vec![false; order.len()];
+        for &index in order {
+            if index >= seen.len() || seen[index] {
+                return Err(crate::DxfError {
+                    line: 0,
+                    kind: crate::DxfErrorKind::UnsupportedProperty(0),
+                }
+                .into());
+            }
+            seen[index] = true;
+        }
+        let mut candidate = self.current.document.clone();
+        if !reorder(&mut candidate, order)? {
+            return Ok(false);
+        }
+        let mut inverse = vec![0; order.len()];
+        for (new_index, old_index) in order.iter().copied().enumerate() {
+            inverse[old_index] = new_index;
+        }
+        let selection = self
+            .selection()
+            .iter()
+            .filter_map(|index| inverse.get(*index).copied())
+            .collect();
+        self.checkpoint();
+        self.current.document = candidate;
+        self.current.selection = selection;
+        Ok(true)
+    }
+
+    /// Reorder entities while retaining all parallel document metadata.
+    pub fn reorder_entities(&mut self, order: &[usize]) -> Result<bool, EditError> {
+        self.reorder_entities_with(order, |document, order| document.reorder_entities(order))
+    }
+
     pub fn new(document: DxfDocument) -> Self {
         Self {
             current: Snapshot {
@@ -83,11 +186,16 @@ impl Editor {
             next_revision: 1,
             saved_revision: 0,
             active_layer: "0".into(),
+            layer_visibility_restore: None,
+            layer_previous_state: None,
         }
     }
 
     pub fn entities(&self) -> &[Entity] {
         self.current.document.entities()
+    }
+    pub fn groups(&self) -> &[EntityGroup] {
+        self.current.document.groups()
     }
     pub fn selection(&self) -> &[usize] {
         &self.current.selection
@@ -126,6 +234,19 @@ impl Editor {
             .name()
             .into();
         Ok(())
+    }
+
+    /// Make the first selected entity's layer the current creation layer.
+    pub fn make_selection_layer_current(&mut self) -> Result<bool, LayerError> {
+        let Some(&index) = self.selection().first() else {
+            return Ok(false);
+        };
+        let layer = self
+            .entity_layer(index)
+            .ok_or(LayerError::MissingEntity(index))?
+            .to_owned();
+        self.set_current_layer(&layer)?;
+        Ok(true)
     }
     pub fn entity_layer(&self, index: usize) -> Option<&str> {
         self.current.document.entity_layer(index)
@@ -202,6 +323,8 @@ impl Editor {
         self.checkpoint();
         self.current.document = candidate;
         self.current.selection = selection;
+        self.layer_visibility_restore = None;
+        self.layer_previous_state = None;
         Ok(true)
     }
 
@@ -217,6 +340,65 @@ impl Editor {
         self.current.layouts = layouts;
         true
     }
+
+    /// Create a named group from the current selection as one undoable edit.
+    pub fn create_group_from_selection(
+        &mut self,
+        name: impl Into<String>,
+        description: impl Into<String>,
+        selectable: bool,
+    ) -> Result<bool, EditError> {
+        if self.selection().is_empty() {
+            return Err(crate::DxfError {
+                line: 0,
+                kind: crate::DxfErrorKind::MissingField(340),
+            }
+            .into());
+        }
+        self.editable_selection()?;
+        let members = self.selection().to_vec();
+        self.edit_document(|document| -> Result<bool, crate::DxfError> {
+            document.create_group(name, description, selectable, &members)?;
+            Ok(true)
+        })
+        .map_err(EditError::from)
+    }
+
+    /// Rename a group and retain the operation in the editor undo history.
+    pub fn rename_group(
+        &mut self,
+        index: usize,
+        name: impl Into<String>,
+    ) -> Result<bool, EditError> {
+        let name = name.into();
+        self.edit_document(|document| -> Result<bool, crate::DxfError> {
+            document.rename_group(index, name)?;
+            Ok(true)
+        })
+        .map_err(EditError::from)
+    }
+
+    /// Replace a group's membership as one undoable edit.
+    pub fn set_group_membership(
+        &mut self,
+        index: usize,
+        members: &[usize],
+    ) -> Result<bool, EditError> {
+        self.edit_document(|document| -> Result<bool, crate::DxfError> {
+            document.set_group_membership(index, members)?;
+            Ok(true)
+        })
+        .map_err(EditError::from)
+    }
+
+    /// Remove a group as one undoable edit, returning whether it existed.
+    pub fn remove_group(&mut self, index: usize) -> Result<bool, EditError> {
+        self.edit_document(|document| -> Result<bool, crate::DxfError> {
+            document.remove_group(index)?;
+            Ok(true)
+        })
+        .map_err(EditError::from)
+    }
     pub fn add_layer(&mut self, name: &str) -> Result<bool, LayerError> {
         self.edit_document(|document| {
             document.add_layer(name)?;
@@ -224,10 +406,20 @@ impl Editor {
         })
     }
     pub fn set_layer_visible(&mut self, name: &str, visible: bool) -> Result<bool, LayerError> {
-        self.edit_document(|document| document.set_layer_visible(name, visible))
+        let previous = self.layer_state_snapshot();
+        let changed = self.edit_document(|document| document.set_layer_visible(name, visible))?;
+        if changed && self.layer_previous_state.is_none() {
+            self.layer_previous_state = Some(previous);
+        }
+        Ok(changed)
     }
     pub fn set_layer_locked(&mut self, name: &str, locked: bool) -> Result<bool, LayerError> {
-        self.edit_document(|document| document.set_layer_locked(name, locked))
+        let previous = self.layer_state_snapshot();
+        let changed = self.edit_document(|document| document.set_layer_locked(name, locked))?;
+        if changed && self.layer_previous_state.is_none() {
+            self.layer_previous_state = Some(previous);
+        }
+        Ok(changed)
     }
     pub fn set_layer_color(&mut self, name: &str, index: i16) -> Result<bool, LayerError> {
         self.edit_document(|document| document.set_layer_color(name, index))
@@ -283,6 +475,129 @@ impl Editor {
             }
             Ok(changed)
         })
+    }
+
+    /// Match all selected entities to a named layer in one undo transaction.
+    pub fn match_selection_layer(&mut self, name: &str) -> Result<bool, LayerError> {
+        self.assign_selection_layer(name)
+    }
+
+    fn layer_state_snapshot(&self) -> Vec<LayerState> {
+        self.layers()
+            .iter()
+            .map(|layer| {
+                (
+                    layer.name().to_owned(),
+                    layer.is_visible(),
+                    layer.is_frozen(),
+                    layer.is_locked(),
+                    layer.is_off(),
+                )
+            })
+            .collect()
+    }
+
+    /// Freeze a layer while preserving its off and lock state.
+    pub fn freeze_layer(&mut self, name: &str) -> Result<bool, LayerError> {
+        let previous = self.layer_state_snapshot();
+        let changed = self.edit_document(|document| document.set_layer_frozen(name, true))?;
+        if changed && self.layer_previous_state.is_none() {
+            self.layer_previous_state = Some(previous);
+        }
+        Ok(changed)
+    }
+
+    pub fn thaw_layer(&mut self, name: &str) -> Result<bool, LayerError> {
+        let previous = self.layer_state_snapshot();
+        let changed = self.edit_document(|document| document.set_layer_frozen(name, false))?;
+        if changed && self.layer_previous_state.is_none() {
+            self.layer_previous_state = Some(previous);
+        }
+        Ok(changed)
+    }
+
+    /// Restore the layer state captured before the first LAYP-style edit.
+    /// The restored state becomes the next baseline, allowing a second call
+    /// to swap back without affecting the drawing undo stack.
+    pub fn restore_previous_layer_state(&mut self) -> Result<bool, LayerError> {
+        let Some(previous) = self.layer_previous_state.take() else {
+            return Ok(false);
+        };
+        let current = self.layer_state_snapshot();
+        let changed = self.edit_document(|document| {
+            let mut changed = false;
+            for (name, visible, frozen, locked, off) in &previous {
+                if document.layer(name).is_none() {
+                    continue;
+                }
+                changed |= document.set_layer_frozen(name, false)?;
+                changed |= document.set_layer_locked(name, *locked)?;
+                changed |= document.set_layer_visible(name, if *off { false } else { *visible })?;
+                changed |= document.set_layer_frozen(name, *frozen)?;
+            }
+            Ok(changed)
+        })?;
+        if changed {
+            self.layer_previous_state = Some(current);
+        } else {
+            self.layer_previous_state = Some(previous);
+        }
+        Ok(changed)
+    }
+
+    /// Show one layer and hide the other layers, retaining their prior
+    /// visibility for `restore_layer_visibility`.
+    pub fn isolate_layer(&mut self, name: &str) -> Result<bool, LayerError> {
+        let target = self
+            .current
+            .document
+            .layer(name)
+            .ok_or_else(|| LayerError::UnknownLayer(name.into()))?
+            .name()
+            .to_owned();
+        let previous = self.layer_state_snapshot();
+        let changed = self.edit_document(|document| {
+            let mut changed = false;
+            for layer in previous.iter().map(|(name, ..)| name) {
+                changed |=
+                    document.set_layer_visible(layer, layer.eq_ignore_ascii_case(&target))?;
+            }
+            Ok(changed)
+        })?;
+        if changed {
+            self.layer_visibility_restore = Some(previous);
+            if self.layer_previous_state.is_none() {
+                self.layer_previous_state = self.layer_visibility_restore.clone();
+            }
+        }
+        Ok(changed)
+    }
+
+    pub fn restore_layer_visibility(&mut self) -> Result<bool, LayerError> {
+        let Some(previous) = self.layer_visibility_restore.take() else {
+            return Ok(false);
+        };
+        let changed = self.edit_document(|document| {
+            let mut changed = false;
+            for (name, visible, frozen, locked, off) in &previous {
+                if document.layer(name).is_none() {
+                    continue;
+                }
+                changed |= document.set_layer_frozen(name, false)?;
+                changed |= document.set_layer_locked(name, *locked)?;
+                changed |= document.set_layer_visible(name, if *off { false } else { *visible })?;
+                changed |= document.set_layer_frozen(name, *frozen)?;
+            }
+            Ok(changed)
+        })?;
+        if !changed {
+            self.layer_visibility_restore = Some(previous);
+        }
+        Ok(changed)
+    }
+
+    pub fn unisolate_layers(&mut self) -> Result<bool, LayerError> {
+        self.restore_layer_visibility()
     }
     fn edit_selection_style(
         &mut self,

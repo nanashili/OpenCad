@@ -86,13 +86,35 @@ impl OpenCadApp {
                     ui.spacing_mut().item_spacing.x = 0.0;
                     let selected_layer = (self.editor.selection().len() == 1).then(|| self.editor.entity_layer(self.editor.selection()[0]).expect("selected entity layer").to_owned());
                     for id in ["UI_Layer_makeCurrent", "UI_Layer_previous", "UI_Layer_isolate", "UI_Layer_unisolate", "UI_Layer_freeze", "UI_Layer_off", "UI_Layer_lock"] {
-                        let enabled = selected_layer.is_some() && matches!(id, "UI_Layer_makeCurrent" | "UI_Layer_off" | "UI_Layer_lock");
-                        if self.icon_button(ui, id, 28.0, 16.0, enabled).clicked() && let Some(layer) = selected_layer.as_ref() {
+                        let enabled = match id {
+                            "UI_Layer_previous" | "UI_Layer_unisolate" => true,
+                            _ => selected_layer.is_some(),
+                        };
+                        if self.icon_button(ui, id, 28.0, 16.0, enabled).clicked() {
                             self.finish();
-                            let result = match id {
-                                "UI_Layer_makeCurrent" => self.editor.set_current_layer(layer),
-                                "UI_Layer_off" => self.editor.set_layer_visible(layer, false).map(|_| ()),
-                                _ => self.editor.set_layer_locked(layer, true).map(|_| ()),
+                            let result = match (id, selected_layer.as_deref()) {
+                                ("UI_Layer_previous", _) => {
+                                    self.editor.restore_previous_layer_state().map(|_| ())
+                                }
+                                ("UI_Layer_unisolate", _) => {
+                                    self.editor.restore_layer_visibility().map(|_| ())
+                                }
+                                ("UI_Layer_makeCurrent", Some(layer)) => {
+                                    self.editor.set_current_layer(layer)
+                                }
+                                ("UI_Layer_isolate", Some(layer)) => {
+                                    self.editor.isolate_layer(layer).map(|_| ())
+                                }
+                                ("UI_Layer_freeze", Some(layer)) => {
+                                    self.editor.freeze_layer(layer).map(|_| ())
+                                }
+                                ("UI_Layer_off", Some(layer)) => {
+                                    self.editor.set_layer_visible(layer, false).map(|_| ())
+                                }
+                                ("UI_Layer_lock", Some(layer)) => {
+                                    self.editor.set_layer_locked(layer, true).map(|_| ())
+                                }
+                                _ => Ok(()),
                             };
                             match result {
                                 Ok(()) => self.message("Layer updated.", false),

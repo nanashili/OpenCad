@@ -403,6 +403,29 @@ impl OpenCadApp {
                             Stroke::new(1.0, ACCENT),
                             egui::StrokeKind::Inside,
                         );
+                        if viewport.clip_enabled()
+                            && let Some(boundary) = viewport.clip_boundary()
+                        {
+                            for pair in boundary
+                                .iter()
+                                .zip(boundary.iter().cycle().skip(1).take(boundary.len()))
+                            {
+                                let a = rect.center()
+                                    + egui::vec2(
+                                        (pair.0.x() * self.camera.scale) as f32,
+                                        -(pair.0.y() * self.camera.scale) as f32,
+                                    );
+                                let b = rect.center()
+                                    + egui::vec2(
+                                        (pair.1.x() * self.camera.scale) as f32,
+                                        -(pair.1.y() * self.camera.scale) as f32,
+                                    );
+                                painter.line_segment(
+                                    [a, b],
+                                    Stroke::new(2.0, Color32::from_rgb(210, 90, 90)),
+                                );
+                            }
+                        }
                     }
                 }
                 let break_preview_source = self.break_preview_source();
