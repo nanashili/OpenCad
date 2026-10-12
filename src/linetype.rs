@@ -363,6 +363,7 @@ enum Mark {
 }
 
 #[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum PatternPart {
     Geometry(Entity),
     Dot(Point3),

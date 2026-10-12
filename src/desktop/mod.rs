@@ -10,6 +10,7 @@ mod feature_constraints;
 mod feature_construction;
 pub(super) mod feature_forms;
 mod feature_groups;
+mod feature_interchange;
 mod feature_layouts;
 mod feature_modify;
 mod feature_multiline;

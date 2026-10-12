@@ -357,6 +357,27 @@ fn vector_pdf(
                 l.vertices().windows(2).map(|v| (v[0], v[1])),
                 &p,
             ),
+            Entity::MLeader(l) => {
+                append_lines(
+                    &mut content,
+                    l.geometry()
+                        .unwrap_or_else(|_| l.segments())
+                        .into_iter()
+                        .map(|line| (line.start(), line.end())),
+                    &p,
+                );
+                match l.content() {
+                    crate::MLeaderContent::MText(text) => append_text(
+                        &mut content,
+                        text.text().content(),
+                        text.text().location(),
+                        &p,
+                    ),
+                    crate::MLeaderContent::Block(insert) => {
+                        append_text(&mut content, insert.block_name(), insert.insertion(), &p)
+                    }
+                }
+            }
             Entity::Table(t) => {
                 append_lines(
                     &mut content,
@@ -525,6 +546,15 @@ fn flatten_entities(document: &DxfDocument) -> Result<Vec<Entity>, String> {
                 visit(document, &expanded, depth + 1, out)?;
             } else {
                 out.push(entity.clone());
+                if let Entity::MLeader(leader) = entity
+                    && let crate::MLeaderContent::Block(insert) = leader.content()
+                {
+                    let Some(block) = document.block(insert.block_name()) else {
+                        return Err(format!("unresolved MLEADER block {}", insert.block_name()));
+                    };
+                    let expanded = insert.explode(block).map_err(|e| e.to_string())?;
+                    visit(document, &expanded, depth + 1, out)?;
+                }
             }
         }
         Ok(())

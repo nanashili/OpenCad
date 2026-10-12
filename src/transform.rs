@@ -235,6 +235,7 @@ impl Entity {
             Self::Text(text) => Self::Text(text.transformed(transform)?),
             Self::MText(text) => Self::MText(text.transformed(transform)?),
             Self::Leader(leader) => Self::Leader(leader.transformed(transform)?),
+            Self::MLeader(leader) => Self::MLeader(leader.transformed(transform)?),
             Self::Table(table) => Self::Table(table.transformed(transform)?),
             Self::Dimension(dimension) => Self::Dimension(dimension.transformed(transform)?),
             Self::Hatch(hatch) => Self::Hatch(hatch.transformed(transform)?),

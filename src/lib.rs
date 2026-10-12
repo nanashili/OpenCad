@@ -1,6 +1,7 @@
 //! Original CAD geometry, line drawing, and a limited ASCII DXF exchange path.
 
 mod annotation;
+mod annotation_styles;
 mod arc;
 mod block;
 mod breaking;
@@ -14,6 +15,7 @@ mod editor;
 mod ellipse;
 mod entity_style;
 mod group;
+mod interchange;
 mod joining;
 mod layer;
 mod layout;
@@ -30,6 +32,7 @@ mod polyline3;
 mod polyline_arc;
 mod reference;
 mod region;
+mod script;
 pub(crate) mod solid;
 mod spline;
 mod svg;
@@ -42,8 +45,10 @@ pub mod desktop;
 
 pub use annotation::{
     AnnotationBounds, Dimension, DimensionKind, DimensionPrimitive, Hatch, HatchPattern,
-    HatchPrimitive, HorizontalAlignment, Leader, MLeader, MText, Table, Text, VerticalAlignment,
+    HatchPrimitive, HorizontalAlignment, Leader, MLeader, MLeaderBranch, MLeaderContent, MText,
+    Table, Text, VerticalAlignment,
 };
+pub use annotation_styles::{DimensionStyle, MLeaderStyle, TextStyle};
 pub use arc::Arc3;
 pub use block::{Attribute, AttributeDefinition, BlockDefinition, BlockInsert, Insert};
 pub use circle::{Circle3, Entity};
@@ -57,6 +62,9 @@ pub use editor::{DrawOrder, EditError, Editor};
 pub use ellipse::Ellipse3;
 pub use entity_style::{EntityStyle, EntityStyleError};
 pub use group::EntityGroup;
+pub use interchange::{
+    InterchangeError, read_obj, read_stl, write_obj, write_stl_ascii, write_stl_binary,
+};
 pub use layer::{Layer, LayerError};
 pub use layout::{Layout, LayoutCollection, Orientation, PageSetup, Viewport};
 pub use lengthen::Lengthen;
@@ -78,6 +86,9 @@ pub use reference::{
     ExternalDxfReference, ExternalReferenceStatus, RasterImage, RasterTriangle, ReferenceManager,
 };
 pub use region::{Region2, RegionLoop};
+pub use script::{
+    ScriptCommand, ScriptError, ScriptErrorKind, ScriptRunner, parse_script, parse_script_named,
+};
 pub use solid::{Face3, Mesh3};
 pub use spline::Spline3;
 pub use svg::{SvgError, render_document_svg, render_entities_svg, render_svg};

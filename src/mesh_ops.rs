@@ -299,17 +299,80 @@ fn normalize_mesh(mesh: &Mesh3) -> Result<Mesh3, MeshOperationError> {
     if faces.is_empty() {
         return Err(MeshOperationError::DegenerateMesh);
     }
-    if signed_volume < 0.0 {
-        let mut flipped = Vec::with_capacity(faces.len());
-        for face in faces {
-            let (mut v, count) = face.vertices();
-            v[..count].reverse();
-            flipped.push(
-                Face3::new(v, count as u8, face.invisible_edges())
-                    .map_err(|_| MeshOperationError::DegenerateFace)?,
-            );
+    // Imported mesh serializers sometimes reverse individual clockwise triangles.
+    // Repair orientation from shared-edge adjacency before checking closure. This
+    // preserves the actual surface while rejecting non-manifold edge incidence.
+    let mut adjacency: HashMap<EdgeKey, Vec<(usize, bool)>> = HashMap::new();
+    for (index, face) in faces.iter().enumerate() {
+        let (vertices, count) = face.vertices();
+        for edge in 0..count {
+            let a = vertices[edge];
+            let b = vertices[(edge + 1) % count];
+            let key = EdgeKey::new(a, b, tolerance);
+            let direction = key.forward(a, b, tolerance);
+            let incident = adjacency.entry(key).or_default();
+            incident.push((index, direction));
+            if incident.len() > 2 {
+                return Err(MeshOperationError::NonManifoldEdge);
+            }
         }
-        faces = flipped;
+    }
+    let mut flipped = vec![None; faces.len()];
+    for seed in 0..faces.len() {
+        if flipped[seed].is_some() {
+            continue;
+        }
+        flipped[seed] = Some(false);
+        let mut stack = vec![seed];
+        while let Some(index) = stack.pop() {
+            let (vertices, count) = faces[index].vertices();
+            let current_flip = flipped[index].unwrap_or(false);
+            for edge in 0..count {
+                let key = EdgeKey::new(vertices[edge], vertices[(edge + 1) % count], tolerance);
+                let direction =
+                    key.forward(vertices[edge], vertices[(edge + 1) % count], tolerance);
+                let Some(neighbors) = adjacency.get(&key) else {
+                    continue;
+                };
+                for &(neighbor, neighbor_direction) in neighbors {
+                    if neighbor == index {
+                        continue;
+                    }
+                    let desired = current_flip ^ (direction == neighbor_direction);
+                    match flipped[neighbor] {
+                        Some(existing) if existing != desired => {
+                            return Err(MeshOperationError::InconsistentOrientation);
+                        }
+                        Some(_) => {}
+                        None => {
+                            flipped[neighbor] = Some(desired);
+                            stack.push(neighbor);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut repaired = Vec::with_capacity(faces.len());
+    for (index, face) in faces.into_iter().enumerate() {
+        let (mut vertices, count) = face.vertices();
+        if flipped[index].unwrap_or(false) {
+            vertices[..count].reverse();
+        }
+        repaired.push(
+            Face3::new(vertices, count as u8, face.invisible_edges())
+                .map_err(|_| MeshOperationError::DegenerateFace)?,
+        );
+    }
+    faces = repaired;
+    if signed_volume < 0.0 {
+        for face in &mut faces {
+            let (mut vertices, count) = face.vertices();
+            vertices[..count].reverse();
+            let invisible_edges = face.invisible_edges();
+            *face = Face3::new(vertices, count as u8, invisible_edges)
+                .map_err(|_| MeshOperationError::DegenerateFace)?;
+        }
     }
     Mesh3::new(faces).map_err(|_| MeshOperationError::DegenerateMesh)
 }
@@ -327,8 +390,9 @@ pub fn mesh_boolean(a: &Mesh3, b: &Mesh3, op: MeshBooleanOp) -> Result<Mesh3, Me
             left.clip_to(&mut right, &mut budget)?;
             right.clip_to(&mut left, &mut budget)?;
             right.invert(&mut budget, 0)?;
+            right.clip_to(&mut left, &mut budget)?;
+            right.invert(&mut budget, 0)?;
             left.build(right.take_polygons(&mut budget)?, 0, &mut budget)?;
-            left.invert(&mut budget, 0)?;
         }
         MeshBooleanOp::Subtract => {
             left.invert(&mut budget, 0)?;
@@ -350,7 +414,10 @@ pub fn mesh_boolean(a: &Mesh3, b: &Mesh3, op: MeshBooleanOp) -> Result<Mesh3, Me
             left.invert(&mut budget, 0)?;
         }
     }
-    node_to_mesh(left, &mut budget)
+    let result = node_to_mesh(left, &mut budget)?;
+    let normalized = normalize_mesh(&result)?;
+    validate_closed_mesh(&normalized)?;
+    Ok(normalized)
 }
 
 #[derive(Default)]

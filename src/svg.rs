@@ -166,6 +166,10 @@ pub(crate) fn entity_bounds(entities: &[Entity]) -> Result<[f64; 4], SvgError> {
                 let b = leader.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
                 [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
             }
+            Entity::MLeader(leader) => {
+                let b = leader.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
+                [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
+            }
             Entity::Table(table) => {
                 let b = table.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
                 [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
@@ -291,6 +295,21 @@ fn expand_document_entity(
 ) -> Result<Vec<Entity>, SvgError> {
     if depth >= 32 {
         return Err(SvgError::UnresolvedInsert);
+    }
+    if let Entity::MLeader(leader) = entity
+        && let crate::MLeaderContent::Block(insert) = leader.content()
+    {
+        let definition = document
+            .block(insert.block_name())
+            .ok_or(SvgError::UnresolvedInsert)?;
+        let mut result = vec![entity.clone()];
+        for child in insert
+            .explode(definition)
+            .map_err(|_| SvgError::UnresolvedInsert)?
+        {
+            result.extend(expand_document_entity(document, &child, depth + 1)?);
+        }
+        return Ok(result);
     }
     let Entity::Insert(insert) = entity else {
         return Ok(vec![entity.clone()]);
@@ -638,6 +657,32 @@ fn render_styled_entities_svg(
                         );
                     }
                 }
+                Entity::MLeader(leader) => {
+                    render_mleader_geometry(&mut svg, leader, min_x, max_y, style.as_str());
+                    match leader.content() {
+                        crate::MLeaderContent::MText(text) => render_mtext(
+                            &mut svg,
+                            text,
+                            min_x,
+                            max_y,
+                            color.as_str(),
+                            style.as_str(),
+                        ),
+                        crate::MLeaderContent::Block(insert) => {
+                            let point = insert.insertion();
+                            render_label(
+                                &mut svg,
+                                insert.block_name(),
+                                point,
+                                min_x,
+                                max_y,
+                                2.5,
+                                0.0,
+                                color.as_str(),
+                            );
+                        }
+                    }
+                }
                 Entity::Table(table) => render_table(
                     &mut svg,
                     table,
@@ -696,6 +741,97 @@ fn esc(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+fn render_mleader_geometry(
+    svg: &mut String,
+    leader: &crate::MLeader,
+    min_x: f64,
+    max_y: f64,
+    style: &str,
+) {
+    for branch in leader.branches() {
+        for pair in branch.vertices().windows(2) {
+            render_line(
+                svg,
+                crate::Line3::new(pair[0], pair[1]),
+                min_x,
+                max_y,
+                style,
+            );
+        }
+        if let Some(pair) = branch.vertices().windows(2).next() {
+            let dx = pair[1].x() - pair[0].x();
+            let dy = pair[1].y() - pair[0].y();
+            let length = (dx * dx + dy * dy).sqrt();
+            if length > f64::EPSILON {
+                let ux = dx / length;
+                let uy = dy / length;
+                let tip = pair[0];
+                if let (Ok(left), Ok(right)) = (
+                    crate::Point3::new(
+                        tip.x() + ux * leader.arrow_size() + uy * leader.arrow_size() * 0.5,
+                        tip.y() + uy * leader.arrow_size() - ux * leader.arrow_size() * 0.5,
+                        tip.z(),
+                    ),
+                    crate::Point3::new(
+                        tip.x() + ux * leader.arrow_size() - uy * leader.arrow_size() * 0.5,
+                        tip.y() + uy * leader.arrow_size() + ux * leader.arrow_size() * 0.5,
+                        tip.z(),
+                    ),
+                ) {
+                    render_line(svg, crate::Line3::new(tip, left), min_x, max_y, style);
+                    render_line(svg, crate::Line3::new(tip, right), min_x, max_y, style);
+                }
+            }
+        }
+        if let Some(pair) = branch.vertices().windows(2).last() {
+            let dx = pair[1].x() - pair[0].x();
+            let dy = pair[1].y() - pair[0].y();
+            let length = (dx * dx + dy * dy).sqrt();
+            if length > f64::EPSILON {
+                let ux = dx / length;
+                let uy = dy / length;
+                if let (Ok(start), Ok(end)) = (
+                    crate::Point3::new(
+                        pair[1].x() + ux * leader.landing_gap(),
+                        pair[1].y() + uy * leader.landing_gap(),
+                        pair[1].z(),
+                    ),
+                    crate::Point3::new(
+                        pair[1].x() + ux * (leader.landing_gap() + leader.dogleg_length()),
+                        pair[1].y() + uy * (leader.landing_gap() + leader.dogleg_length()),
+                        pair[1].z(),
+                    ),
+                ) {
+                    render_line(svg, crate::Line3::new(start, end), min_x, max_y, style);
+                }
+            }
+        }
+    }
+    if leader.text_frame()
+        && let crate::MLeaderContent::MText(text) = leader.content()
+        && let Ok(bounds) = text.bounds()
+    {
+        let corners = [
+            bounds.min,
+            crate::Point3::new(bounds.max.x(), bounds.min.y(), bounds.min.z())
+                .unwrap_or(bounds.min),
+            bounds.max,
+            crate::Point3::new(bounds.min.x(), bounds.max.y(), bounds.max.z())
+                .unwrap_or(bounds.max),
+        ];
+        let points = corners
+            .iter()
+            .map(|p| format!("{},{}", p.x() - min_x + PADDING, max_y - p.y() + PADDING))
+            .collect::<Vec<_>>()
+            .join(" ");
+        writeln!(
+            svg,
+            "    <polygon points=\"{points}\" fill=\"none\"{style} />"
+        )
+        .expect("String write");
+    }
 }
 
 fn render_line(svg: &mut String, line: crate::Line3, min_x: f64, max_y: f64, style: &str) {
@@ -791,7 +927,7 @@ fn render_text(
     let p = text.location();
     let x = p.x() - min_x + PADDING;
     let y = max_y - p.y() + PADDING;
-    writeln!(svg, "    <text x=\"{x}\" y=\"{y}\" fill=\"{color}\" font-size=\"{}\" text-anchor=\"{anchor}\" dominant-baseline=\"{baseline}\" transform=\"rotate({} {x} {y}) scale({} 1)\">{}</text>", text.height(), -text.rotation().to_degrees(), text.width_factor(), esc(text.content())).expect("String write");
+    writeln!(svg, "    <text x=\"{x}\" y=\"{y}\" fill=\"{color}\" font-size=\"{}\" text-anchor=\"{anchor}\" dominant-baseline=\"{baseline}\" transform=\"rotate({} {x} {y}) skewX({}) scale({} 1)\">{}</text>", text.height(), -text.rotation().to_degrees(), -text.oblique().to_degrees(), text.width_factor(), esc(text.content())).expect("String write");
 }
 
 fn render_mtext(

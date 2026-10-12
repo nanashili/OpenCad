@@ -1,7 +1,7 @@
 use crate::{
-    Arc3, Dimension, Ellipse3, Face3, GeometryError, Hatch, Insert, Leader, Line3, MLine2, MText,
-    Mesh3, Point3, PointEntity, Polyline2, Polyline3, RasterImage, Ray3, Spline3, Table, Text,
-    XLine3,
+    Arc3, Dimension, Ellipse3, Face3, GeometryError, Hatch, Insert, Leader, Line3, MLeader, MLine2,
+    MText, Mesh3, Point3, PointEntity, Polyline2, Polyline3, RasterImage, Ray3, Spline3, Table,
+    Text, XLine3,
 };
 
 /// A finite circle in the world XY plane, at the center's Z elevation.
@@ -58,6 +58,7 @@ pub enum Entity {
     Text(Text),
     MText(MText),
     Leader(Leader),
+    MLeader(MLeader),
     Table(Table),
     Dimension(Dimension),
     Hatch(Hatch),
@@ -84,6 +85,7 @@ impl Entity {
             Self::Text(_) => "TEXT",
             Self::MText(_) => "MTEXT",
             Self::Leader(_) => "LEADER",
+            Self::MLeader(_) => "MULTILEADER",
             Self::Table(_) => "ACAD_TABLE",
             Self::Dimension(_) => "DIMENSION",
             Self::Hatch(_) => "HATCH",
@@ -133,6 +135,9 @@ impl Entity {
             }
             Self::Leader(leader) => {
                 Self::Leader(leader.transformed(crate::Transform::translation(dx, dy, dz))?)
+            }
+            Self::MLeader(leader) => {
+                Self::MLeader(leader.transformed(crate::Transform::translation(dx, dy, dz))?)
             }
             Self::Table(table) => {
                 Self::Table(table.transformed(crate::Transform::translation(dx, dy, dz))?)

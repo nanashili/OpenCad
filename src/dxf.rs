@@ -5,11 +5,12 @@
 use crate::group::EntityGroup;
 use crate::{Anchor, ConstraintError, ConstraintKind, ConstraintRecord, ConstraintSet, LinePair};
 use crate::{
-    Arc3, BlockDefinition, Circle3, CornerParameter, Dimension, DimensionKind, Entity, EntityStyle,
-    EntityStyleError, Face3, GeometryError, Hatch, HatchPattern, Insert, Layer, LayerError, Leader,
-    Line3, Linetype, LinetypeError, MLine2, MLineElement, MLineJustification, MLineStyle, MText,
+    Arc3, BlockDefinition, Circle3, CornerParameter, Dimension, DimensionKind, DimensionStyle,
+    Entity, EntityStyle, EntityStyleError, Face3, GeometryError, Hatch, HatchPattern, Insert,
+    Layer, LayerError, Leader, Line3, Linetype, LinetypeError, MLeader, MLeaderBranch,
+    MLeaderContent, MLeaderStyle, MLine2, MLineElement, MLineJustification, MLineStyle, MText,
     Mesh3, Point3, Polyline2, Polyline3, PolylineWidth, RasterImage, Ray3, Spline3, Table, Text,
-    XLine3,
+    TextStyle, XLine3,
 };
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
@@ -289,6 +290,13 @@ pub struct DxfDocument {
     reordered: bool,
     constraints: ConstraintSet,
     mline_styles: Vec<MLineStyle>,
+    text_styles: Vec<TextStyle>,
+    dimension_styles: Vec<DimensionStyle>,
+    mleader_styles: Vec<MLeaderStyle>,
+    mleader_style_handles: HashMap<u64, String>,
+    current_text_style: String,
+    current_dimension_style: String,
+    current_mleader_style: String,
 }
 
 impl DxfDocument {
@@ -296,6 +304,11 @@ impl DxfDocument {
     pub fn parse(input: &str) -> Result<Self, DxfError> {
         let mut groups = Groups::new(input);
         let mline_styles = read_mline_styles(input);
+        let text_styles = read_text_styles(input);
+        let dimension_styles = read_dimension_styles(input);
+        let (mleader_styles, mleader_style_handles) = read_mleader_styles(input);
+        let current_styles = read_current_style_names(input);
+        let block_definitions = read_block_definitions(input)?;
         let mut seen = [false; 5];
         let mut previous_section = 0;
         let mut handles = HashSet::new();
@@ -321,7 +334,6 @@ impl DxfDocument {
                 let layer_data = read_layers(input)?;
                 let linetype_data = read_linetypes(input)?;
                 let dimension_data = read_dimensions(input)?;
-                let block_definitions = read_block_definitions(input)?;
                 let entity_layers = records
                     .iter()
                     .map(|record| {
@@ -380,6 +392,13 @@ impl DxfDocument {
                     reordered: false,
                     constraints: read_constraints(input, &entity_handles(input)),
                     mline_styles,
+                    text_styles,
+                    dimension_styles,
+                    mleader_styles,
+                    mleader_style_handles,
+                    current_text_style: current_styles.0,
+                    current_dimension_style: current_styles.1,
+                    current_mleader_style: current_styles.2,
                 });
             }
             if (marker.code, marker.value) != (0, "SECTION") {
@@ -453,6 +472,10 @@ impl DxfDocument {
                                 group,
                                 &mut handles,
                                 &mline_styles,
+                                &mleader_styles,
+                                &mleader_style_handles,
+                                &dimension_styles,
+                                &block_definitions,
                             )?;
                             entities.push(entity);
                             records.push(Some(record));
@@ -581,6 +604,99 @@ impl DxfDocument {
     }
     pub fn current_mline_style(&self) -> Option<&MLineStyle> {
         self.mline_styles.first()
+    }
+    pub fn text_styles(&self) -> &[TextStyle] {
+        &self.text_styles
+    }
+    pub fn set_text_styles(&mut self, styles: Vec<TextStyle>) -> Result<(), DxfError> {
+        validate_style_names(styles.iter().map(TextStyle::name))?;
+        if !styles
+            .iter()
+            .any(|style| style.name().eq_ignore_ascii_case(&self.current_text_style))
+        {
+            return Err(group_error(2));
+        }
+        self.text_styles = styles;
+        Ok(())
+    }
+    pub fn text_style(&self, name: &str) -> Option<&TextStyle> {
+        self.text_styles
+            .iter()
+            .find(|style| style.name().eq_ignore_ascii_case(name))
+    }
+    pub fn current_text_style(&self) -> &str {
+        &self.current_text_style
+    }
+    pub fn set_current_text_style(&mut self, name: impl Into<String>) -> Result<(), DxfError> {
+        let name = name.into();
+        if self.text_style(&name).is_none() {
+            return Err(group_error(2));
+        }
+        self.current_text_style = name;
+        Ok(())
+    }
+    pub fn dimension_styles(&self) -> &[DimensionStyle] {
+        &self.dimension_styles
+    }
+    pub fn set_dimension_styles(&mut self, styles: Vec<DimensionStyle>) -> Result<(), DxfError> {
+        validate_style_names(styles.iter().map(DimensionStyle::name))?;
+        if !styles.iter().any(|style| {
+            style
+                .name()
+                .eq_ignore_ascii_case(&self.current_dimension_style)
+        }) {
+            return Err(group_error(2));
+        }
+        self.dimension_styles = styles;
+        Ok(())
+    }
+    pub fn dimension_style(&self, name: &str) -> Option<&DimensionStyle> {
+        self.dimension_styles
+            .iter()
+            .find(|style| style.name().eq_ignore_ascii_case(name))
+    }
+    pub fn current_dimension_style(&self) -> &str {
+        &self.current_dimension_style
+    }
+    pub fn set_current_dimension_style(&mut self, name: impl Into<String>) -> Result<(), DxfError> {
+        let name = name.into();
+        if self.dimension_style(&name).is_none() {
+            return Err(group_error(2));
+        }
+        self.current_dimension_style = name;
+        Ok(())
+    }
+    pub fn mleader_styles(&self) -> &[MLeaderStyle] {
+        &self.mleader_styles
+    }
+    pub fn set_mleader_styles(&mut self, styles: Vec<MLeaderStyle>) -> Result<(), DxfError> {
+        validate_style_names(styles.iter().map(MLeaderStyle::name))?;
+        if !styles.iter().any(|style| {
+            style
+                .name()
+                .eq_ignore_ascii_case(&self.current_mleader_style)
+        }) {
+            return Err(group_error(2));
+        }
+        self.mleader_styles = styles;
+        self.mleader_style_handles.clear();
+        Ok(())
+    }
+    pub fn mleader_style(&self, name: &str) -> Option<&MLeaderStyle> {
+        self.mleader_styles
+            .iter()
+            .find(|style| style.name().eq_ignore_ascii_case(name))
+    }
+    pub fn current_mleader_style(&self) -> &str {
+        &self.current_mleader_style
+    }
+    pub fn set_current_mleader_style(&mut self, name: impl Into<String>) -> Result<(), DxfError> {
+        let name = name.into();
+        if self.mleader_style(&name).is_none() {
+            return Err(group_error(2));
+        }
+        self.current_mleader_style = name;
+        Ok(())
     }
     pub fn create_group(
         &mut self,
@@ -1182,6 +1298,7 @@ impl DxfDocument {
                         | Entity::Text(_)
                         | Entity::MText(_)
                         | Entity::Leader(_)
+                        | Entity::MLeader(_)
                         | Entity::Table(_)
                         | Entity::Dimension(_)
                         | Entity::Hatch(_)
@@ -1374,6 +1491,24 @@ impl DxfDocument {
             self.layer_data.table.as_ref(),
         );
         self.dimension_data.write_changes(&mut changes, &mut header);
+        append_header_style(
+            &mut header,
+            "$TEXTSTYLE",
+            &self.current_text_style,
+            &self.source,
+        );
+        append_header_style(
+            &mut header,
+            "$DIMSTYLE",
+            &self.current_dimension_style,
+            &self.source,
+        );
+        append_header_style(
+            &mut header,
+            "$CMLEADERSTYLE",
+            &self.current_mleader_style,
+            &self.source,
+        );
         if !header.is_empty() {
             if let Some(at) = self.linetype_data.header_end {
                 changes.push((at, at, header));
@@ -1404,6 +1539,11 @@ impl DxfDocument {
                 ));
             }
         }
+        tables.push_str(&serialize_annotation_tables(
+            &self.text_styles,
+            &self.dimension_styles,
+            "\n",
+        ));
         if !tables.is_empty() {
             if let Some(at) = self.layer_data.tables_end {
                 changes.push((at, at, tables));
@@ -1515,6 +1655,23 @@ impl DxfDocument {
         );
         let constraint_spans = constraint_spans(&self.source);
         let mut constraint_objects = constraint_objects;
+        let mut mleader_style_objects =
+            serialize_mleader_styles(&self.mleader_styles, &self.mleader_style_handles, "\n");
+        let mleader_style_spans = mleader_style_spans(&self.source);
+        if !mleader_style_spans.is_empty() {
+            for (index, (start, end)) in mleader_style_spans.iter().copied().enumerate() {
+                changes.push((
+                    start,
+                    end,
+                    if index == 0 {
+                        mleader_style_objects.clone()
+                    } else {
+                        String::new()
+                    },
+                ));
+            }
+            mleader_style_objects.clear();
+        }
         if !constraint_spans.is_empty() {
             for (index, (start, end)) in constraint_spans.iter().copied().enumerate() {
                 changes.push((
@@ -1543,16 +1700,18 @@ impl DxfDocument {
             || !layout_objects.is_empty()
             || !group_objects.is_empty()
             || !constraint_objects.is_empty()
+            || !mleader_style_objects.is_empty()
         {
             let objects = format!(
-                "{}{}{}{}",
+                "{}{}{}{}{}",
                 images
                     .iter()
                     .map(|image| serialize_image_def(image))
                     .collect::<String>(),
                 group_objects,
                 layout_objects,
-                constraint_objects
+                constraint_objects,
+                mleader_style_objects
             );
             let marker = if output.contains("\r\n0\r\nEOF") {
                 "\r\n0\r\nEOF"
@@ -1583,6 +1742,9 @@ impl DxfDocument {
                 );
             }
         }
+        replace_header_style(&mut output, "$TEXTSTYLE", &self.current_text_style);
+        replace_header_style(&mut output, "$DIMSTYLE", &self.current_dimension_style);
+        replace_header_style(&mut output, "$CMLEADERSTYLE", &self.current_mleader_style);
         if self.entities.iter().any(|entity| {
             matches!(
                 entity,
@@ -1590,6 +1752,7 @@ impl DxfDocument {
                     | Entity::Text(_)
                     | Entity::MText(_)
                     | Entity::Leader(_)
+                    | Entity::MLeader(_)
                     | Entity::Table(_)
                     | Entity::Dimension(_)
                     | Entity::Hatch(_)
@@ -2512,9 +2675,16 @@ fn read_block_definitions(input: &str) -> Result<Vec<BlockDefinition>, DxfError>
                     read_entity(&mut groups, child, &mut handles)
                 }
                 "SPLINE" | "TEXT" | "MTEXT" | "LEADER" | "MULTILEADER" | "TABLE" | "ACAD_TABLE"
-                | "DIMENSION" | "HATCH" | "INSERT" | "IMAGE" | "MESH" => {
-                    read_extended_entity(&mut groups, child, &mut handles, &[])
-                }
+                | "DIMENSION" | "HATCH" | "INSERT" | "IMAGE" | "MESH" => read_extended_entity(
+                    &mut groups,
+                    child,
+                    &mut handles,
+                    &[],
+                    &[],
+                    &HashMap::new(),
+                    &[],
+                    &[],
+                ),
                 "POLYLINE" => read_polyline(&mut groups, child, &mut handles),
                 _ => {
                     let _ = record_fields(&mut groups)?;
@@ -2985,6 +3155,147 @@ fn decode_constraint_kind(value: &str, handles: &HashMap<String, usize>) -> Opti
     })
 }
 
+fn read_mleader_fields(
+    fields: &[Group<'_>],
+    marker: Group<'_>,
+    properties: EntityProperties,
+    end: usize,
+    styles: &[MLeaderStyle],
+    style_handles: &HashMap<u64, String>,
+    block_definitions: &[BlockDefinition],
+) -> Result<(Entity, EntityRecord), DxfError> {
+    let xs = fields
+        .iter()
+        .filter(|field| field.code == 10)
+        .map(|field| read_number(*field))
+        .collect::<Result<Vec<_>, _>>()?;
+    let ys = fields
+        .iter()
+        .filter(|field| field.code == 20)
+        .map(|field| read_number(*field))
+        .collect::<Result<Vec<_>, _>>()?;
+    let zs = fields
+        .iter()
+        .filter(|field| field.code == 30)
+        .map(|field| read_number(*field))
+        .collect::<Result<Vec<_>, _>>()?;
+    if xs.len() < 2 || xs.len() != ys.len() {
+        return Err(DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::MissingField(10),
+        });
+    }
+    let vertices = xs
+        .into_iter()
+        .zip(ys)
+        .enumerate()
+        .map(|(index, (x, y))| Point3::new(x, y, zs.get(index).copied().unwrap_or(0.0)))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::InvalidCoordinate(10),
+        })?;
+    let branch = MLeaderBranch::new(vertices).map_err(|error| DxfError {
+        line: marker.line,
+        kind: DxfErrorKind::Corner(error),
+    })?;
+    let location = branch.vertices()[branch.vertices().len() - 1];
+    let content_text = fields
+        .iter()
+        .find(|field| field.code == 304)
+        .map(|field| field.value.to_owned())
+        .unwrap_or_default();
+    let text = MText::new(content_text, location, 2.5, 1.0).map_err(|error| DxfError {
+        line: marker.line,
+        kind: DxfErrorKind::Corner(error),
+    })?;
+    let mut mleader =
+        MLeader::new(branch.clone(), MLeaderContent::MText(text)).map_err(|error| DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::Corner(error),
+        })?;
+    if fields
+        .iter()
+        .find(|field| field.code == 296)
+        .and_then(|field| field.value.parse::<i32>().ok())
+        == Some(1)
+        && let Some(handle) = fields
+            .iter()
+            .find(|field| field.code == 341)
+            .and_then(|field| u64::from_str_radix(field.value.trim(), 16).ok())
+        && let Some(block) = block_definitions
+            .iter()
+            .find(|block| block_handle(block.name()) == handle)
+    {
+        let position = point_fields(fields, 15, 25, 35, marker.line).unwrap_or(location);
+        let mut insert = Insert::new(block.name(), position);
+        if let Some(scale) = fields
+            .iter()
+            .find(|field| field.code == 16)
+            .and_then(|field| field.value.parse::<f64>().ok())
+        {
+            insert.set_scale([scale; 3]).map_err(|_| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::InvalidCoordinate(16),
+            })?;
+        }
+        let matrix = fields
+            .iter()
+            .filter(|field| field.code == 47)
+            .map(|field| {
+                field.value.parse::<f64>().map_err(|_| DxfError {
+                    line: field.line,
+                    kind: DxfErrorKind::InvalidCoordinate(47),
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if matrix.len() >= 16 {
+            insert
+                .set_scale([matrix[0], matrix[5], matrix[10]])
+                .map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::InvalidCoordinate(47),
+                })?;
+        }
+        if let Some(rotation) = fields
+            .iter()
+            .find(|field| field.code == 46)
+            .and_then(|field| field.value.parse::<f64>().ok())
+        {
+            insert.set_rotation(rotation).map_err(|_| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::InvalidCoordinate(46),
+            })?;
+        }
+        mleader =
+            MLeader::new(branch, MLeaderContent::Block(insert)).map_err(|error| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::Corner(error),
+            })?;
+    }
+    if let Some(handle) = fields
+        .iter()
+        .find(|field| field.code == 340)
+        .and_then(|field| u64::from_str_radix(field.value.trim(), 16).ok())
+        && let Some(name) = style_handles.get(&handle).map(String::as_str).or_else(|| {
+            styles
+                .iter()
+                .find(|style| mleader_style_handle(style.name()) == handle)
+                .map(MLeaderStyle::name)
+        })
+    {
+        mleader.set_style_name(name).map_err(|error| DxfError {
+            line: marker.line,
+            kind: DxfErrorKind::Corner(error),
+        })?;
+    }
+    let entity = Entity::MLeader(mleader);
+    Ok((
+        entity.clone(),
+        extended_record(&entity, marker, properties, end),
+    ))
+}
+
 fn read_mesh_fields(fields: &[Group<'_>], line: usize) -> Result<Mesh3, DxfError> {
     if let Some(field) = fields.iter().find(|field| field.code == 71)
         && field.value.parse::<u16>().ok() != Some(2)
@@ -3191,11 +3502,10 @@ fn triangulate_mesh_polygon(points: &[Point3]) -> Option<Vec<[usize; 3]>> {
             if contains {
                 continue;
             }
-            triangles.push(if orientation > 0.0 {
-                [previous, current, next]
-            } else {
-                [next, current, previous]
-            });
+            // Keep the authored polygon winding.  `orientation` is only used
+            // to identify convex ears; reversing here silently changes the
+            // surface normal of clockwise mesh faces.
+            triangles.push([previous, current, next]);
             remaining.remove(position);
             clipped = true;
             break;
@@ -3205,11 +3515,7 @@ fn triangulate_mesh_polygon(points: &[Point3]) -> Option<Vec<[usize; 3]>> {
         }
     }
     let [a, b, c] = [remaining[0], remaining[1], remaining[2]];
-    triangles.push(if orientation > 0.0 {
-        [a, b, c]
-    } else {
-        [c, b, a]
-    });
+    triangles.push([a, b, c]);
     Some(triangles)
 }
 
@@ -3295,6 +3601,246 @@ fn read_mline_styles(input: &str) -> Vec<MLineStyle> {
     result
 }
 
+fn read_text_styles(input: &str) -> Vec<TextStyle> {
+    let mut groups = Groups::new(input);
+    let mut tables = false;
+    let mut result = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "TABLES" {
+            tables = true;
+            continue;
+        }
+        if !tables {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "STYLE" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let Some(name) = fields
+            .iter()
+            .find(|field| field.code == 2)
+            .map(|field| field.value)
+        else {
+            continue;
+        };
+        let Ok(mut style) = TextStyle::new(name) else {
+            continue;
+        };
+        if let Some(value) = fields
+            .iter()
+            .find(|field| field.code == 40)
+            .and_then(|field| field.value.parse().ok())
+        {
+            let _ = style.set_height(value);
+        }
+        if let Some(value) = fields
+            .iter()
+            .find(|field| field.code == 41)
+            .and_then(|field| field.value.parse().ok())
+        {
+            let _ = style.set_width_factor(value);
+        }
+        if let Some(value) = fields
+            .iter()
+            .find(|field| field.code == 50)
+            .and_then(|field| field.value.parse().ok())
+        {
+            let _ = style.set_oblique(value);
+        }
+        if let Some(value) = fields.iter().find(|field| field.code == 3) {
+            let _ = style.set_font(value.value);
+        }
+        result.push(style);
+    }
+    result
+}
+
+type DimensionStyleSetter = fn(&mut DimensionStyle, f64) -> bool;
+type MLeaderStyleSetter = fn(&mut MLeaderStyle, f64) -> bool;
+
+fn read_dimension_styles(input: &str) -> Vec<DimensionStyle> {
+    let mut groups = Groups::new(input);
+    let mut tables = false;
+    let mut result = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "TABLES" {
+            tables = true;
+            continue;
+        }
+        if !tables {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "DIMSTYLE" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let Some(name) = fields
+            .iter()
+            .find(|field| field.code == 2)
+            .map(|field| field.value)
+        else {
+            continue;
+        };
+        let Ok(mut style) = DimensionStyle::new(name) else {
+            continue;
+        };
+        let setters: &[(u16, DimensionStyleSetter)] = &[
+            (140, |s: &mut DimensionStyle, v: f64| {
+                s.set_text_height(v).is_ok()
+            }),
+            (41, |s: &mut DimensionStyle, v: f64| {
+                s.set_arrow_size(v).is_ok()
+            }),
+            (40, |s: &mut DimensionStyle, v: f64| {
+                s.set_overall_scale(v).is_ok()
+            }),
+            (144, |s: &mut DimensionStyle, v: f64| {
+                s.set_linear_scale(v).is_ok()
+            }),
+            (147, |s: &mut DimensionStyle, v: f64| s.set_gap(v).is_ok()),
+            (42, |s: &mut DimensionStyle, v: f64| {
+                s.set_extension_offset(v).is_ok()
+            }),
+        ];
+        for &(code, setter) in setters {
+            if let Some(value) = fields
+                .iter()
+                .find(|field| field.code == code)
+                .and_then(|field| field.value.parse().ok())
+            {
+                let _ = setter(&mut style, value);
+            }
+        }
+        if let Some(value) = fields
+            .iter()
+            .find(|field| field.code == 271)
+            .and_then(|field| field.value.parse().ok())
+        {
+            let _ = style.set_precision(value);
+        }
+        result.push(style);
+    }
+    result
+}
+
+fn read_mleader_styles(input: &str) -> (Vec<MLeaderStyle>, HashMap<u64, String>) {
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    let mut result = Vec::new();
+    let mut handles = HashMap::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "MLEADERSTYLE" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let Some(name) = fields
+            .iter()
+            .find(|field| field.code == 2)
+            .map(|field| field.value)
+        else {
+            continue;
+        };
+        if let Some(handle) = fields
+            .iter()
+            .find(|field| field.code == 5)
+            .and_then(|field| u64::from_str_radix(field.value.trim(), 16).ok())
+        {
+            handles.insert(handle, name.to_owned());
+        }
+        let Ok(mut style) = MLeaderStyle::new(name) else {
+            continue;
+        };
+        let setters: &[(u16, MLeaderStyleSetter)] = &[
+            (40, |s: &mut MLeaderStyle, v: f64| {
+                s.set_text_height(v).is_ok()
+            }),
+            (42, |s: &mut MLeaderStyle, v: f64| {
+                s.set_arrow_size(v).is_ok()
+            }),
+            (43, |s: &mut MLeaderStyle, v: f64| {
+                s.set_landing_gap(v).is_ok()
+            }),
+            (44, |s: &mut MLeaderStyle, v: f64| {
+                s.set_dogleg_length(v).is_ok()
+            }),
+        ];
+        for &(code, setter) in setters {
+            if let Some(value) = fields
+                .iter()
+                .find(|field| field.code == code)
+                .and_then(|field| field.value.parse().ok())
+            {
+                let _ = setter(&mut style, value);
+            }
+        }
+        if let Some(value) = fields
+            .iter()
+            .find(|field| field.code == 290)
+            .and_then(|field| field.value.parse::<i32>().ok())
+        {
+            style.set_text_frame(value != 0);
+        }
+        result.push(style);
+    }
+    (result, handles)
+}
+
+fn read_current_style_names(input: &str) -> (String, String, String) {
+    let mut groups = Groups::new(input);
+    let mut header = false;
+    let mut text = "Standard".to_owned();
+    let mut dimension = "Standard".to_owned();
+    let mut mleader = "Standard".to_owned();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "HEADER" {
+            header = true;
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            header = false;
+        }
+        if !header || marker.code != 9 {
+            continue;
+        }
+        let Ok(Some(value)) = groups.next() else {
+            continue;
+        };
+        if value.code != 1 {
+            continue;
+        }
+        match marker.value {
+            "$TEXTSTYLE" => text = value.value.to_owned(),
+            "$DIMSTYLE" => dimension = value.value.to_owned(),
+            "$MLEADERSTYLE" | "$CMLEADERSTYLE" => mleader = value.value.to_owned(),
+            _ => {}
+        }
+    }
+    (text, dimension, mleader)
+}
+
 fn serialize_mline_styles(styles: &[MLineStyle], newline: &str) -> String {
     if styles.is_empty() {
         return String::new();
@@ -3319,6 +3865,109 @@ fn serialize_mline_style_records(styles: &[MLineStyle], newline: &str) -> String
     output
 }
 
+fn serialize_annotation_tables(
+    text_styles: &[TextStyle],
+    dimension_styles: &[DimensionStyle],
+    newline: &str,
+) -> String {
+    let mut output = String::new();
+    if !text_styles.is_empty() {
+        output.push_str(&format!(
+            "0{newline}TABLE{newline}2{newline}STYLE{newline}70{newline}{}{newline}",
+            text_styles.len()
+        ));
+        for style in text_styles {
+            output.push_str(&format!("0{newline}STYLE{newline}2{newline}{}{newline}40{newline}{}{newline}41{newline}{}{newline}50{newline}{}{newline}3{newline}{}{newline}", style.name(), style.height(), style.width_factor(), style.oblique(), style.font()));
+        }
+        output.push_str(&format!("0{newline}ENDTAB{newline}"));
+    }
+    if !dimension_styles.is_empty() {
+        output.push_str(&format!(
+            "0{newline}TABLE{newline}2{newline}DIMSTYLE{newline}70{newline}{}{newline}",
+            dimension_styles.len()
+        ));
+        for style in dimension_styles {
+            output.push_str(&format!("0{newline}DIMSTYLE{newline}2{newline}{}{newline}105{newline}{:X}{newline}140{newline}{}{newline}41{newline}{}{newline}40{newline}{}{newline}144{newline}{}{newline}271{newline}{}{newline}147{newline}{}{newline}42{newline}{}{newline}", style.name(), style.name().bytes().map(u64::from).sum::<u64>(), style.text_height(), style.arrow_size(), style.overall_scale(), style.linear_scale(), style.precision(), style.gap(), style.extension_offset()));
+        }
+        output.push_str(&format!("0{newline}ENDTAB{newline}"));
+    }
+    output
+}
+
+fn append_header_style(header: &mut String, variable: &str, value: &str, source: &str) {
+    if source.contains(variable) || header.contains(variable) {
+        return;
+    }
+    header.push_str(&format!("9\n{variable}\n1\n{value}\n"));
+}
+
+fn validate_style_names<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<(), DxfError> {
+    let mut seen = HashSet::new();
+    for name in names {
+        if name.trim().is_empty() || !seen.insert(name.to_ascii_lowercase()) {
+            return Err(group_error(2));
+        }
+    }
+    Ok(())
+}
+
+fn replace_header_style(output: &mut String, variable: &str, value: &str) {
+    for ending in ["\r\n", "\n"] {
+        let marker = format!("{ending}{variable}{ending}1{ending}");
+        let Some(start) = output.find(&marker) else {
+            continue;
+        };
+        let value_start = start + marker.len();
+        let value_end = output[value_start..]
+            .find(ending)
+            .map_or(output.len(), |offset| value_start + offset);
+        output.replace_range(value_start..value_end, value);
+        return;
+    }
+}
+
+fn serialize_mleader_styles(
+    styles: &[MLeaderStyle],
+    handles: &HashMap<u64, String>,
+    newline: &str,
+) -> String {
+    styles
+        .iter()
+        .map(|style| {
+            format!(
+                "0{newline}MLEADERSTYLE{newline}5{newline}{:X}{newline}100{newline}AcDbMLeaderStyle{newline}2{newline}{}{newline}40{newline}{}{newline}42{newline}{}{newline}43{newline}{}{newline}44{newline}{}{newline}290{newline}{}{newline}",
+                handles
+                    .iter()
+                    .find_map(|(handle, name)| {
+                        name.eq_ignore_ascii_case(style.name()).then_some(*handle)
+                    })
+                    .unwrap_or_else(|| mleader_style_handle(style.name())),
+                style.name(),
+                style.text_height(),
+                style.arrow_size(),
+                style.landing_gap(),
+                style.dogleg_length(),
+                i32::from(style.text_frame())
+            )
+        })
+        .collect()
+}
+
+/// Deterministic handles for authored MLEADERSTYLE records. Imported records are
+/// resolved by their native handle when available; authored records use this stable
+/// value so the entity 340 reference remains valid after a save and reopen.
+fn mleader_style_handle(name: &str) -> u64 {
+    name.bytes().fold(0xB000_u64, |hash, byte| {
+        hash.wrapping_mul(33).wrapping_add(u64::from(byte))
+    })
+}
+
+fn block_handle(name: &str) -> u64 {
+    name.bytes().fold(0xC000_u64, |hash, byte| {
+        hash.wrapping_mul(33).wrapping_add(u64::from(byte))
+    })
+}
+
 fn mline_style_spans(input: &str) -> Vec<(usize, usize)> {
     let mut groups = Groups::new(input);
     let mut tables = false;
@@ -3335,6 +3984,37 @@ fn mline_style_spans(input: &str) -> Vec<(usize, usize)> {
             break;
         }
         if marker.code != 0 || marker.value != "MLINESTYLE" {
+            continue;
+        }
+        if record_fields(&mut groups).is_err() {
+            break;
+        }
+        let end = groups
+            .peek()
+            .ok()
+            .flatten()
+            .map_or(input.len(), |next| next.start);
+        spans.push((marker.start, end));
+    }
+    spans
+}
+
+fn mleader_style_spans(input: &str) -> Vec<(usize, usize)> {
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    let mut spans = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "MLEADERSTYLE" {
             continue;
         }
         if record_fields(&mut groups).is_err() {
@@ -4063,7 +4743,8 @@ fn read_insert_entity(
     marker: Group<'_>,
     handles: &mut HashSet<u64>,
 ) -> Result<(Entity, EntityRecord), DxfError> {
-    let (mut entity, mut record) = read_extended_entity(groups, marker, handles, &[])?;
+    let (mut entity, mut record) =
+        read_extended_entity(groups, marker, handles, &[], &[], &HashMap::new(), &[], &[])?;
     let Entity::Insert(ref mut insert) = entity else {
         return Ok((entity, record));
     };
@@ -4103,11 +4784,16 @@ fn read_insert_entity(
 /// Read modern entities while retaining their complete source record.  Their source bytes
 /// remain authoritative when an imported entity is written back; newly created entities are
 /// emitted by `write_entity` below.
+#[allow(clippy::too_many_arguments)]
 fn read_extended_entity(
     groups: &mut Groups<'_>,
     marker: Group<'_>,
     handles: &mut HashSet<u64>,
     mline_styles: &[MLineStyle],
+    mleader_styles: &[MLeaderStyle],
+    mleader_style_handles: &HashMap<u64, String>,
+    dimension_styles: &[DimensionStyle],
+    block_definitions: &[BlockDefinition],
 ) -> Result<(Entity, EntityRecord), DxfError> {
     let source = record_fields(groups)?;
     let properties = read_entity_properties(&source, marker.line, handles)?;
@@ -4137,6 +4823,12 @@ fn read_extended_entity(
                         kind: DxfErrorKind::InvalidCoordinate(41),
                     })?;
                 }
+                if let Some(style) = field_text(&source, 7)? {
+                    text.set_style_name(style).map_err(|_| DxfError {
+                        line: marker.line,
+                        kind: DxfErrorKind::InvalidCoordinate(7),
+                    })?;
+                }
                 Entity::Text(text)
             }
             "MTEXT" => {
@@ -4158,9 +4850,28 @@ fn read_extended_entity(
                             kind: DxfErrorKind::InvalidCoordinate(50),
                         })?;
                 }
+                if let Some(style) = field_text(&source, 7)? {
+                    text.text_mut()
+                        .set_style_name(style)
+                        .map_err(|_| DxfError {
+                            line: marker.line,
+                            kind: DxfErrorKind::InvalidCoordinate(7),
+                        })?;
+                }
                 Entity::MText(text)
             }
             "LEADER" | "MULTILEADER" => {
+                if marker.value == "MULTILEADER" {
+                    return read_mleader_fields(
+                        &source,
+                        marker,
+                        properties,
+                        end,
+                        mleader_styles,
+                        mleader_style_handles,
+                        block_definitions,
+                    );
+                }
                 let xs: Vec<f64> = source
                     .iter()
                     .filter(|g| g.code == 10)
@@ -4446,6 +5157,21 @@ fn read_extended_entity(
                     kind: DxfErrorKind::InvalidCoordinate(10),
                 })?;
                 d.set_text_override(field_text(&source, 1)?);
+                if let Some(style_name) = field_text(&source, 3)? {
+                    if let Some(style) = dimension_styles
+                        .iter()
+                        .find(|style| style.name().eq_ignore_ascii_case(&style_name))
+                    {
+                        d.apply_style(style).map_err(|_| DxfError {
+                            line: marker.line,
+                            kind: DxfErrorKind::InvalidCoordinate(3),
+                        })?;
+                    }
+                    d.set_style_name(style_name).map_err(|_| DxfError {
+                        line: marker.line,
+                        kind: DxfErrorKind::InvalidCoordinate(3),
+                    })?;
+                }
                 if let Some(v) = field_number(&source, 40, marker.line)? {
                     d.set_text_height(v).ok();
                 }
@@ -5025,9 +5751,10 @@ fn serialize_block(block: &BlockDefinition, newline: &str) -> String {
         0
     };
     let mut output = format!(
-        "0{n}BLOCK{n}2{n}{name}{n}70{n}{flags}{n}10{n}{x}{n}20{n}{y}{n}30{n}{z}{n}",
+        "0{n}BLOCK{n}2{n}{name}{n}5{n}{handle:X}{n}70{n}{flags}{n}10{n}{x}{n}20{n}{y}{n}30{n}{z}{n}",
         n = newline,
         name = block.name(),
+        handle = block_handle(block.name()),
         flags = flags,
         x = base.x(),
         y = base.y(),
@@ -5155,12 +5882,13 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
             let p = text.location();
             writeln!(
                 output,
-                "10\n{}\n20\n{}\n30\n{}\n40\n{}\n1\n{}\n50\n{}\n41\n{}",
+                "10\n{}\n20\n{}\n30\n{}\n40\n{}\n1\n{}\n7\n{}\n50\n{}\n41\n{}",
                 p.x(),
                 p.y(),
                 p.z(),
                 text.height(),
                 text.content(),
+                text.style_name(),
                 text.rotation().to_degrees(),
                 text.width_factor()
             )
@@ -5207,13 +5935,14 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
             let p = text.text().location();
             writeln!(
                 output,
-                "10\n{}\n20\n{}\n30\n{}\n40\n{}\n41\n{}\n1\n{}\n50\n{}",
+                "10\n{}\n20\n{}\n30\n{}\n40\n{}\n41\n{}\n1\n{}\n7\n{}\n50\n{}",
                 p.x(),
                 p.y(),
                 p.z(),
                 text.text().height(),
                 text.width(),
                 text.text().content(),
+                text.text().style_name(),
                 text.text().rotation().to_degrees()
             )
             .expect("String write");
@@ -5227,6 +5956,59 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
             }
             if let Some(text) = leader.annotation() {
                 writeln!(output, "3\n{text}").expect("String write");
+            }
+            return;
+        }
+        Entity::MLeader(mleader) => {
+            writeln!(
+                output,
+                "100\nAcDbMLeader\n340\n{:X}\n",
+                mleader_style_handle(mleader.style_name())
+            )
+            .expect("String write");
+            if let MLeaderContent::Block(insert) = mleader.content() {
+                let p = insert.insertion();
+                let scale = insert.scale();
+                writeln!(
+                    output,
+                    "296\n1\n341\n{:X}\n15\n{}\n25\n{}\n35\n{}\n16\n{}\n46\n{}",
+                    block_handle(insert.block_name()),
+                    p.x(),
+                    p.y(),
+                    p.z(),
+                    scale[0],
+                    insert.rotation()
+                )
+                .expect("String write");
+                if scale
+                    .iter()
+                    .any(|value| (*value - scale[0]).abs() > f64::EPSILON)
+                {
+                    let matrix = [
+                        scale[0], 0.0, 0.0, 0.0, 0.0, scale[1], 0.0, 0.0, 0.0, 0.0, scale[2], 0.0,
+                        0.0, 0.0, 0.0, 1.0,
+                    ];
+                    for value in matrix {
+                        writeln!(output, "47\n{value}").expect("String write");
+                    }
+                }
+            }
+            for branch in mleader.branches() {
+                writeln!(output, "302\nCONTEXT_DATA\n290\n1\n").expect("String write");
+                for point in branch.vertices() {
+                    writeln!(
+                        output,
+                        "10\n{}\n20\n{}\n30\n{}",
+                        point.x(),
+                        point.y(),
+                        point.z()
+                    )
+                    .expect("String write");
+                }
+                writeln!(output, "303\nCONTEXT_DATA\n").expect("String write");
+            }
+            if let MLeaderContent::MText(text) = mleader.content() {
+                writeln!(output, "304\n{}", text.text().content()).expect("String write");
             }
             return;
         }
@@ -5298,7 +6080,7 @@ fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &Entit
                     second,
                 } => (center, first, second, 2),
             };
-            writeln!(output,"70\n{flags}\n10\n{}\n20\n{}\n30\n{}\n13\n{}\n23\n{}\n33\n{}\n14\n{}\n24\n{}\n34\n{}",first.x(),first.y(),first.z(),second.x(),second.y(),second.z(),offset.x(),offset.y(),offset.z()).expect("String write");
+            writeln!(output,"70\n{flags}\n3\n{}\n10\n{}\n20\n{}\n30\n{}\n13\n{}\n23\n{}\n33\n{}\n14\n{}\n24\n{}\n34\n{}",dimension.style_name(),first.x(),first.y(),first.z(),second.x(),second.y(),second.z(),offset.x(),offset.y(),offset.z()).expect("String write");
             return;
         }
         Entity::Hatch(hatch) => {

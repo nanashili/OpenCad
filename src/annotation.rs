@@ -3,7 +3,10 @@
 //! These types intentionally keep annotation data separate from `Entity`: callers can
 //! render or export the generated primitives without introducing recursive entity variants.
 
-use crate::{Arc3, GeometryError, Line3, Point3, Transform};
+use crate::{
+    Arc3, GeometryError, Insert, Line3, Point3, Transform,
+    annotation_styles::{DimensionStyle, MLeaderStyle, TextStyle},
+};
 use std::f64::consts::{PI, TAU};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,6 +53,8 @@ pub struct Text {
     height: f64,
     rotation: f64,
     width_factor: f64,
+    oblique: f64,
+    style_name: String,
     horizontal: HorizontalAlignment,
     vertical: VerticalAlignment,
 }
@@ -66,6 +71,8 @@ impl Text {
             height: 0.0,
             rotation: 0.0,
             width_factor: 1.0,
+            oblique: 0.0,
+            style_name: "Standard".to_owned(),
             horizontal: HorizontalAlignment::Left,
             vertical: VerticalAlignment::Bottom,
         };
@@ -87,8 +94,35 @@ impl Text {
     pub fn rotation(&self) -> f64 {
         self.rotation
     }
+    pub fn oblique(&self) -> f64 {
+        self.oblique
+    }
     pub fn width_factor(&self) -> f64 {
         self.width_factor
+    }
+    pub fn style_name(&self) -> &str {
+        &self.style_name
+    }
+    pub fn set_style_name(&mut self, value: impl Into<String>) -> Result<(), GeometryError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(GeometryError::NotEnoughVertices);
+        }
+        self.style_name = value;
+        Ok(())
+    }
+    pub fn apply_style(&mut self, style: &TextStyle) -> Result<(), GeometryError> {
+        self.set_style_name(style.name().to_owned())?;
+        self.set_height(style.height())?;
+        self.set_width_factor(style.width_factor())?;
+        self.set_oblique(style.oblique())
+    }
+    pub fn set_oblique(&mut self, value: f64) -> Result<(), GeometryError> {
+        if !value.is_finite() {
+            return Err(GeometryError::NonFiniteAngle);
+        }
+        self.oblique = value;
+        Ok(())
     }
     pub fn alignment(&self) -> (HorizontalAlignment, VerticalAlignment) {
         (self.horizontal, self.vertical)
@@ -121,7 +155,9 @@ impl Text {
     pub fn bounds(&self) -> Result<AnnotationBounds, GeometryError> {
         rotated_box(
             self.location,
-            self.content.chars().count() as f64 * self.height * 0.6 * self.width_factor,
+            self.content.chars().count() as f64
+                * self.height
+                * (0.6 * self.width_factor + self.oblique.tan().abs()),
             self.height,
             self.rotation,
             self.horizontal,
@@ -239,7 +275,270 @@ impl Leader {
         })
     }
 }
-pub type MLeader = Leader;
+#[derive(Clone, Debug, PartialEq)]
+pub struct MLeaderBranch {
+    vertices: Vec<Point3>,
+}
+impl MLeaderBranch {
+    pub fn new(vertices: Vec<Point3>) -> Result<Self, GeometryError> {
+        if vertices.len() < 2 {
+            return Err(GeometryError::NotEnoughVertices);
+        }
+        if vertices.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(GeometryError::DegenerateLine);
+        }
+        Ok(Self { vertices })
+    }
+    pub fn vertices(&self) -> &[Point3] {
+        &self.vertices
+    }
+    pub fn segments(&self) -> Vec<Line3> {
+        self.vertices
+            .windows(2)
+            .map(|p| Line3::new(p[0], p[1]))
+            .collect()
+    }
+    fn transformed(&self, transform: Transform) -> Result<Self, GeometryError> {
+        Self::new(
+            self.vertices
+                .iter()
+                .copied()
+                .map(|p| transform.point(p))
+                .collect::<Result<_, _>>()?,
+        )
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MLeaderContent {
+    MText(MText),
+    Block(Insert),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MLeader {
+    branches: Vec<MLeaderBranch>,
+    content: MLeaderContent,
+    style_name: String,
+    arrow_size: f64,
+    landing_gap: f64,
+    dogleg_length: f64,
+    text_frame: bool,
+}
+impl MLeader {
+    pub fn new(branch: MLeaderBranch, content: MLeaderContent) -> Result<Self, GeometryError> {
+        Self::with_branches(vec![branch], content)
+    }
+    pub fn with_branches(
+        branches: Vec<MLeaderBranch>,
+        content: MLeaderContent,
+    ) -> Result<Self, GeometryError> {
+        if branches.is_empty() {
+            return Err(GeometryError::NotEnoughVertices);
+        }
+        Ok(Self {
+            branches,
+            content,
+            style_name: "Standard".to_owned(),
+            arrow_size: 1.0,
+            landing_gap: 1.0,
+            dogleg_length: 5.0,
+            text_frame: false,
+        })
+    }
+    pub fn branches(&self) -> &[MLeaderBranch] {
+        &self.branches
+    }
+    pub fn add_branch(&mut self, branch: MLeaderBranch) {
+        self.branches.push(branch);
+    }
+    pub fn remove_branch(&mut self, index: usize) -> Result<MLeaderBranch, GeometryError> {
+        if self.branches.len() == 1 {
+            return Err(GeometryError::NotEnoughVertices);
+        }
+        (index < self.branches.len())
+            .then(|| self.branches.remove(index))
+            .ok_or(GeometryError::InvalidVertexIndex)
+    }
+    pub fn content(&self) -> &MLeaderContent {
+        &self.content
+    }
+    pub fn content_mut(&mut self) -> &mut MLeaderContent {
+        &mut self.content
+    }
+    pub fn segments(&self) -> Vec<Line3> {
+        self.branches
+            .iter()
+            .flat_map(MLeaderBranch::segments)
+            .collect()
+    }
+    pub fn geometry(&self) -> Result<Vec<Line3>, GeometryError> {
+        let mut lines = self.segments();
+        for branch in &self.branches {
+            let vertices = branch.vertices();
+            append_arrow_lines(&mut lines, vertices[0], vertices[1], self.arrow_size)?;
+            let last = vertices[vertices.len() - 1];
+            let before = vertices[vertices.len() - 2];
+            let path = Line3::new(before, last);
+            let length = path.length()?;
+            if length > f64::EPSILON {
+                let dogleg = path.point_at_fraction(1.0 + self.dogleg_length / length)?;
+                lines.push(Line3::new(last, dogleg));
+                let anchor = self.content_location();
+                let connector = Line3::new(dogleg, anchor);
+                let connector_length = connector.length()?;
+                if connector_length > f64::EPSILON {
+                    let landing = connector
+                        .point_at_fraction((self.landing_gap / connector_length).min(1.0))?;
+                    lines.push(Line3::new(dogleg, landing));
+                }
+            }
+        }
+        if self.text_frame {
+            let bounds = self.content_bounds()?;
+            let a = Point3::new(bounds.min.x(), bounds.min.y(), bounds.min.z())?;
+            let b = Point3::new(bounds.max.x(), bounds.min.y(), bounds.min.z())?;
+            let c = Point3::new(bounds.max.x(), bounds.max.y(), bounds.max.z())?;
+            let d = Point3::new(bounds.min.x(), bounds.max.y(), bounds.max.z())?;
+            lines.extend([
+                Line3::new(a, b),
+                Line3::new(b, c),
+                Line3::new(c, d),
+                Line3::new(d, a),
+            ]);
+        }
+        Ok(lines)
+    }
+    pub fn style_name(&self) -> &str {
+        &self.style_name
+    }
+    pub fn set_style_name(&mut self, value: impl Into<String>) -> Result<(), GeometryError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(GeometryError::NotEnoughVertices);
+        }
+        self.style_name = value;
+        Ok(())
+    }
+    pub fn arrow_size(&self) -> f64 {
+        self.arrow_size
+    }
+    pub fn landing_gap(&self) -> f64 {
+        self.landing_gap
+    }
+    pub fn dogleg_length(&self) -> f64 {
+        self.dogleg_length
+    }
+    pub fn text_frame(&self) -> bool {
+        self.text_frame
+    }
+    pub fn set_arrow_size(&mut self, value: f64) -> Result<(), GeometryError> {
+        self.arrow_size = positive(value)?;
+        Ok(())
+    }
+    pub fn set_landing_gap(&mut self, value: f64) -> Result<(), GeometryError> {
+        self.landing_gap = positive(value)?;
+        Ok(())
+    }
+    pub fn set_dogleg_length(&mut self, value: f64) -> Result<(), GeometryError> {
+        self.dogleg_length = positive(value)?;
+        Ok(())
+    }
+    pub fn set_text_frame(&mut self, value: bool) {
+        self.text_frame = value;
+    }
+    pub fn apply_style(&mut self, style: &MLeaderStyle) -> Result<(), GeometryError> {
+        self.set_style_name(style.name().to_owned())?;
+        self.set_arrow_size(style.arrow_size())?;
+        self.set_landing_gap(style.landing_gap())?;
+        self.set_dogleg_length(style.dogleg_length())?;
+        self.text_frame = style.text_frame();
+        if let MLeaderContent::MText(text) = &mut self.content {
+            text.text_mut().set_height(style.text_height())?;
+            text.text_mut()
+                .set_style_name(style.text_style().to_owned())?;
+        }
+        Ok(())
+    }
+    pub fn bounds(&self) -> Result<AnnotationBounds, GeometryError> {
+        self.bounds_with_content_bounds(self.content_bounds()?)
+    }
+    pub fn bounds_with_content_bounds(
+        &self,
+        content_bounds: AnnotationBounds,
+    ) -> Result<AnnotationBounds, GeometryError> {
+        let points = self
+            .geometry()?
+            .iter()
+            .flat_map(|line| [line.start(), line.end()])
+            .collect::<Vec<_>>();
+        let mut bounds = AnnotationBounds::from_points(&points)?;
+        bounds.include(content_bounds)?;
+        Ok(bounds)
+    }
+    pub fn transformed(&self, transform: Transform) -> Result<Self, GeometryError> {
+        let content = match &self.content {
+            MLeaderContent::MText(text) => MLeaderContent::MText(text.transformed(transform)?),
+            MLeaderContent::Block(insert) => {
+                let point = transform.point(insert.insertion())?;
+                let mut value = Insert::new(insert.block_name(), point);
+                value.set_scale(insert.scale())?;
+                value.set_rotation(insert.rotation())?;
+                MLeaderContent::Block(value)
+            }
+        };
+        Ok(Self {
+            branches: self
+                .branches
+                .iter()
+                .map(|b| b.transformed(transform))
+                .collect::<Result<_, _>>()?,
+            content,
+            ..self.clone()
+        })
+    }
+    fn content_location(&self) -> Point3 {
+        match &self.content {
+            MLeaderContent::MText(text) => text.text().location(),
+            MLeaderContent::Block(insert) => insert.insertion(),
+        }
+    }
+    fn content_bounds(&self) -> Result<AnnotationBounds, GeometryError> {
+        match &self.content {
+            MLeaderContent::MText(text) => text.bounds(),
+            MLeaderContent::Block(insert) => AnnotationBounds::from_points(&[insert.insertion()]),
+        }
+    }
+}
+
+fn positive(value: f64) -> Result<f64, GeometryError> {
+    if value.is_finite() && value > 0.0 {
+        Ok(value)
+    } else {
+        Err(GeometryError::NonPositiveScale)
+    }
+}
+
+fn append_arrow_lines(
+    lines: &mut Vec<Line3>,
+    tip: Point3,
+    toward: Point3,
+    size: f64,
+) -> Result<(), GeometryError> {
+    let angle = (toward.y() - tip.y()).atan2(toward.x() - tip.x());
+    let left = Point3::new(
+        tip.x() + size * (angle + 2.6).cos(),
+        tip.y() + size * (angle + 2.6).sin(),
+        tip.z(),
+    )?;
+    let right = Point3::new(
+        tip.x() + size * (angle - 2.6).cos(),
+        tip.y() + size * (angle - 2.6).sin(),
+        tip.z(),
+    )?;
+    lines.extend([Line3::new(tip, left), Line3::new(tip, right)]);
+    Ok(())
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Table {
@@ -380,6 +679,12 @@ pub struct Dimension {
     text_override: Option<String>,
     text_height: f64,
     arrow_size: f64,
+    style_name: String,
+    overall_scale: f64,
+    linear_scale: f64,
+    precision: usize,
+    gap: f64,
+    extension_offset: f64,
 }
 impl Dimension {
     pub fn new(kind: DimensionKind) -> Result<Self, GeometryError> {
@@ -388,6 +693,12 @@ impl Dimension {
             text_override: None,
             text_height: 2.5,
             arrow_size: 1.0,
+            style_name: "Standard".to_owned(),
+            overall_scale: 1.0,
+            linear_scale: 1.0,
+            precision: 3,
+            gap: 0.625,
+            extension_offset: 1.25,
         })
     }
     pub fn kind(&self) -> DimensionKind {
@@ -413,8 +724,54 @@ impl Dimension {
         self.arrow_size = v;
         Ok(())
     }
+    pub fn style_name(&self) -> &str {
+        &self.style_name
+    }
+    pub fn set_style_name(&mut self, value: impl Into<String>) -> Result<(), GeometryError> {
+        let value = value.into();
+        if value.trim().is_empty() {
+            return Err(GeometryError::NotEnoughVertices);
+        }
+        self.style_name = value;
+        Ok(())
+    }
+    pub fn apply_style(&mut self, style: &DimensionStyle) -> Result<(), GeometryError> {
+        self.style_name = style.name().to_owned();
+        self.text_height = positive(style.text_height() * style.overall_scale())?;
+        self.arrow_size = positive(style.arrow_size() * style.overall_scale())?;
+        self.overall_scale = style.overall_scale();
+        self.linear_scale = style.linear_scale();
+        self.precision = style.precision();
+        self.gap = style.gap();
+        self.extension_offset = style.extension_offset();
+        Ok(())
+    }
     pub fn geometry(&self) -> Result<Vec<DimensionPrimitive>, GeometryError> {
         generate_dimension(self)
+    }
+    pub fn measurement(&self) -> Result<f64, GeometryError> {
+        let value = match self.kind {
+            DimensionKind::Linear { first, second, .. }
+            | DimensionKind::Aligned { first, second, .. }
+            | DimensionKind::Diametric { first, second } => Line3::new(first, second).length()?,
+            DimensionKind::Radial { center, definition } => {
+                Line3::new(center, definition).length()?
+            }
+            DimensionKind::Angular {
+                center,
+                first,
+                second,
+            } => {
+                let a = (first.y() - center.y()).atan2(first.x() - center.x());
+                let b = (second.y() - center.y()).atan2(second.x() - center.x());
+                (b - a).rem_euclid(TAU).to_degrees()
+            }
+        };
+        if value.is_finite() {
+            Ok(value)
+        } else {
+            Err(GeometryError::NonFiniteResult)
+        }
     }
     pub fn bounds(&self) -> Result<AnnotationBounds, GeometryError> {
         let pts = self
@@ -645,8 +1002,13 @@ fn generate_dimension(d: &Dimension) -> Result<Vec<DimensionPrimitive>, Geometry
             second,
             offset,
         } => {
-            o.push(DimensionPrimitive::Line(Line3::new(first, offset)));
-            o.push(DimensionPrimitive::Line(Line3::new(second, offset)));
+            let first_extension = extend_toward(first, offset, d.extension_offset)?;
+            let second_extension = extend_toward(second, offset, d.extension_offset)?;
+            o.push(DimensionPrimitive::Line(Line3::new(first, first_extension)));
+            o.push(DimensionPrimitive::Line(Line3::new(
+                second,
+                second_extension,
+            )));
             o.push(DimensionPrimitive::Line(Line3::new(
                 offset,
                 Point3::new(
@@ -655,17 +1017,22 @@ fn generate_dimension(d: &Dimension) -> Result<Vec<DimensionPrimitive>, Geometry
                     offset.z(),
                 )?,
             )));
+            let baseline_end = Point3::new(
+                offset.x() + second.x() - first.x(),
+                offset.y() + second.y() - first.y(),
+                offset.z(),
+            )?;
+            append_arrowheads(&mut o, offset, baseline_end, d.arrow_size)?;
+            append_arrowheads(&mut o, baseline_end, offset, d.arrow_size)?;
             let mid = Line3::new(first, second).point_at_fraction(0.5)?;
-            o.push(DimensionPrimitive::Text(Text::new(
-                d.text_override.clone().unwrap_or_else(|| {
-                    format!(
-                        "{:.3}",
-                        first.x().hypot(first.y()) - second.x().hypot(second.y())
-                    )
-                }),
-                mid,
-                d.text_height,
-            )?));
+            let mid = Point3::new(mid.x(), mid.y() + d.gap, mid.z())?;
+            let label = match &d.text_override {
+                Some(value) => value.clone(),
+                None => format_measurement(d.measurement()? * d.linear_scale, d.precision),
+            };
+            let mut text = Text::new(label, mid, d.text_height)?;
+            text.set_style_name(d.style_name.clone())?;
+            o.push(DimensionPrimitive::Text(text));
         }
         DimensionKind::Radial { center, definition }
         | DimensionKind::Diametric {
@@ -673,11 +1040,16 @@ fn generate_dimension(d: &Dimension) -> Result<Vec<DimensionPrimitive>, Geometry
             second: definition,
         } => {
             o.push(DimensionPrimitive::Line(Line3::new(center, definition)));
+            append_arrowheads(&mut o, definition, center, d.arrow_size)?;
             let r = Line3::new(center, definition).length()?;
             let a = (definition.y() - center.y()).atan2(definition.x() - center.x());
             if matches!(d.kind, DimensionKind::Radial { .. }) {
                 o.push(DimensionPrimitive::Arc(Arc3::new(center, r, a, a + PI)?));
             }
+            let label = format_measurement(d.measurement()? * d.linear_scale, d.precision);
+            let mut text = Text::new(label, definition, d.text_height)?;
+            text.set_style_name(d.style_name.clone())?;
+            o.push(DimensionPrimitive::Text(text));
         }
         DimensionKind::Angular {
             center,
@@ -688,7 +1060,49 @@ fn generate_dimension(d: &Dimension) -> Result<Vec<DimensionPrimitive>, Geometry
             let b = (second.y() - center.y()).atan2(second.x() - center.x());
             let r = Line3::new(center, first).length()?;
             o.push(DimensionPrimitive::Arc(Arc3::new(center, r, a, b)?));
+            let mut text = Text::new(
+                format_measurement(d.measurement()?, d.precision),
+                center,
+                d.text_height,
+            )?;
+            text.set_style_name(d.style_name.clone())?;
+            o.push(DimensionPrimitive::Text(text));
         }
     }
     Ok(o)
+}
+
+fn format_measurement(value: f64, precision: usize) -> String {
+    format!("{:.*}", precision, value)
+}
+
+fn extend_toward(from: Point3, toward: Point3, distance: f64) -> Result<Point3, GeometryError> {
+    let line = Line3::new(from, toward);
+    let length = line.length()?;
+    if length <= f64::EPSILON {
+        return Ok(from);
+    }
+    line.point_at_fraction((distance / length).min(1.0))
+}
+
+fn append_arrowheads(
+    primitives: &mut Vec<DimensionPrimitive>,
+    tip: Point3,
+    toward: Point3,
+    size: f64,
+) -> Result<(), GeometryError> {
+    let angle = (toward.y() - tip.y()).atan2(toward.x() - tip.x());
+    let left = Point3::new(
+        tip.x() + size * (angle + 2.6).cos(),
+        tip.y() + size * (angle + 2.6).sin(),
+        tip.z(),
+    )?;
+    let right = Point3::new(
+        tip.x() + size * (angle - 2.6).cos(),
+        tip.y() + size * (angle - 2.6).sin(),
+        tip.z(),
+    )?;
+    primitives.push(DimensionPrimitive::Line(Line3::new(tip, left)));
+    primitives.push(DimensionPrimitive::Line(Line3::new(tip, right)));
+    Ok(())
 }

@@ -138,6 +138,7 @@ impl OpenCadApp {
             .or_else(|| self.feature_region_command(&upper, &tokens))
             .or_else(|| self.feature_selection_command(&upper, &tokens))
             .or_else(|| self.feature_groups_command(&upper, &tokens))
+            .or_else(|| self.feature_interchange_command(&upper, rest, &tokens))
             .or_else(|| self.feature_utility_command(&upper, rest, &tokens))
             .or_else(|| self.feature_modify_command(&upper, rest, &tokens))
             .or_else(|| self.feature_solid_command(&upper, rest, &tokens))
@@ -399,20 +400,35 @@ impl OpenCadApp {
                 let height = number(args.next().ok_or("TEXT requires a height.")?)?;
                 let content = args.next().unwrap_or_default();
                 let entity = if verb.eq_ignore_ascii_case("MTEXT") {
-                    Entity::MText(
-                        crate::MText::new(content, point, height, height * 20.0)
-                            .map_err(|e| e.to_string())?,
-                    )
+                    let mut text = crate::MText::new(content, point, height, height * 20.0)
+                        .map_err(|e| e.to_string())?;
+                    if let Some(style) = self
+                        .editor
+                        .document()
+                        .text_style(self.editor.document().current_text_style())
+                    {
+                        text.text_mut()
+                            .apply_style(style)
+                            .map_err(|e| e.to_string())?;
+                    }
+                    Entity::MText(text)
                 } else {
-                    Entity::Text(
-                        crate::Text::new(content, point, height).map_err(|e| e.to_string())?,
-                    )
+                    let mut text =
+                        crate::Text::new(content, point, height).map_err(|e| e.to_string())?;
+                    if let Some(style) = self
+                        .editor
+                        .document()
+                        .text_style(self.editor.document().current_text_style())
+                    {
+                        text.apply_style(style).map_err(|e| e.to_string())?;
+                    }
+                    Entity::Text(text)
                 };
                 self.add_entities(vec![entity])?;
                 self.finish();
                 self.message("Text created.", false);
             }
-            "LEADER" | "MLEADER" => {
+            "LEADER" => {
                 let points = rest
                     .split(';')
                     .map(|v| parse_point(v.trim(), self.drawing_elevation()))
@@ -422,6 +438,34 @@ impl OpenCadApp {
                 )])?;
                 self.finish();
                 self.message("Leader created.", false);
+            }
+            "MLEADER" => {
+                let (point_text, content_text) = rest
+                    .split_once('|')
+                    .map_or((rest, "Multileader"), |parts| parts);
+                let points = point_text
+                    .split(';')
+                    .map(|v| parse_point(v.trim(), self.drawing_elevation()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let branch = crate::MLeaderBranch::new(points).map_err(|e| e.to_string())?;
+                let anchor = *branch
+                    .vertices()
+                    .last()
+                    .ok_or("MLEADER requires vertices.")?;
+                let text = crate::MText::new(content_text.trim(), anchor, 2.5, 50.0)
+                    .map_err(|e| e.to_string())?;
+                let mut leader = crate::MLeader::new(branch, crate::MLeaderContent::MText(text))
+                    .map_err(|e| e.to_string())?;
+                if let Some(style) = self
+                    .editor
+                    .document()
+                    .mleader_style(self.editor.document().current_mleader_style())
+                {
+                    leader.apply_style(style).map_err(|e| e.to_string())?;
+                }
+                self.add_entities(vec![Entity::MLeader(leader)])?;
+                self.finish();
+                self.message("Multileader created.", false);
             }
             "DIMLINEAR" | "DIMALIGNED" => {
                 let points = rest
@@ -444,9 +488,15 @@ impl OpenCadApp {
                         offset: points[2],
                     }
                 };
-                self.add_entities(vec![Entity::Dimension(
-                    crate::Dimension::new(kind).map_err(|e| e.to_string())?,
-                )])?;
+                let mut dimension = crate::Dimension::new(kind).map_err(|e| e.to_string())?;
+                if let Some(style) = self
+                    .editor
+                    .document()
+                    .dimension_style(self.editor.document().current_dimension_style())
+                {
+                    dimension.apply_style(style).map_err(|e| e.to_string())?;
+                }
+                self.add_entities(vec![Entity::Dimension(dimension)])?;
                 self.finish();
                 self.message("Dimension created.", false);
             }
@@ -485,9 +535,15 @@ impl OpenCadApp {
                         }
                     }
                 };
-                self.add_entities(vec![Entity::Dimension(
-                    crate::Dimension::new(kind).map_err(|e| e.to_string())?,
-                )])?;
+                let mut dimension = crate::Dimension::new(kind).map_err(|e| e.to_string())?;
+                if let Some(style) = self
+                    .editor
+                    .document()
+                    .dimension_style(self.editor.document().current_dimension_style())
+                {
+                    dimension.apply_style(style).map_err(|e| e.to_string())?;
+                }
+                self.add_entities(vec![Entity::Dimension(dimension)])?;
                 self.finish();
                 self.message("Dimension created.", false);
             }

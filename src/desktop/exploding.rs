@@ -73,6 +73,45 @@ impl OpenCadApp {
         } else {
             self.explode_indices(tokens)?
         };
+        if indices
+            .iter()
+            .any(|index| matches!(self.editor.entities().get(*index), Some(Entity::MLeader(_))))
+        {
+            if indices.iter().any(|index| {
+                !matches!(self.editor.entities().get(*index), Some(Entity::MLeader(_)))
+            }) {
+                return Err(
+                    "Explode MULTILEADER selection must contain only MULTILEADER entities.".into(),
+                );
+            }
+            let mut entities = Vec::new();
+            for index in &indices {
+                if let Some(Entity::MLeader(leader)) = self.editor.entities().get(*index) {
+                    entities.extend(
+                        leader
+                            .geometry()
+                            .unwrap_or_else(|_| leader.segments())
+                            .into_iter()
+                            .map(Entity::Line),
+                    );
+                    match leader.content() {
+                        crate::MLeaderContent::MText(text) => {
+                            entities.push(Entity::MText(text.clone()))
+                        }
+                        crate::MLeaderContent::Block(insert) => {
+                            entities.push(Entity::Insert(insert.clone()))
+                        }
+                    }
+                }
+            }
+            self.editor.select(indices);
+            self.editor
+                .replace_selection_with_entities(entities)
+                .map_err(|error| error.to_string())?;
+            self.finish();
+            self.message("MULTILEADER exploded into leader lines and content.", false);
+            return Ok(());
+        }
         if indices.iter().any(|index| {
             matches!(
                 self.editor.entities().get(*index),

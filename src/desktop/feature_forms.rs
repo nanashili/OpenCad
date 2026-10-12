@@ -57,6 +57,16 @@ impl FeatureForm {
                 ),
                 ("Value", "1", "scale for SCALE or style name for STYLE"),
             ],
+            "MLEADEREDIT" => &[
+                ("Operation", "LIST", "ADD|REMOVE|LIST"),
+                ("Value", "2,2", "branch index or point;point"),
+            ],
+            "STYLE" | "DIMSTYLE" | "MLEADERSTYLE" => &[
+                ("Operation", "LIST", "LIST|CREATE|SET|APPLY|EDIT"),
+                ("Name", "Standard", "style name"),
+            ],
+            "MLEADERALIGN" => &[("Landing point", "10,5,0", "x,y[,z]")],
+            "MLEADERCOLLECT" => &[],
             "TABLE" => &[
                 ("Anchor", "0,0,0", "x,y[,z]"),
                 ("Rows", "2", "positive integer"),

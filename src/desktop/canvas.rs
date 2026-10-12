@@ -913,6 +913,21 @@ impl OpenCadApp {
                     }
                 }
             }
+            Entity::MLeader(leader) => {
+                self.draw_mleader_geometry(painter, leader, rect, stroke);
+                match leader.content() {
+                    crate::MLeaderContent::MText(text) => {
+                        self.draw_text(painter, text.text(), rect, stroke)
+                    }
+                    crate::MLeaderContent::Block(insert) => self.draw_entity_at_depth(
+                        painter,
+                        &Entity::Insert(insert.clone()),
+                        rect,
+                        stroke,
+                        depth + 1,
+                    ),
+                }
+            }
             Entity::Table(table) => {
                 if let Ok(lines) = table.grid_lines() {
                     for line in lines {
@@ -1192,6 +1207,24 @@ impl OpenCadApp {
                 let mut closed = points.clone();
                 closed.push(points[0]);
                 painter.add(egui::Shape::line(closed, stroke));
+            }
+        }
+    }
+
+    fn draw_mleader_geometry(
+        &self,
+        painter: &Painter,
+        leader: &crate::MLeader,
+        rect: Rect,
+        stroke: Stroke,
+    ) {
+        let lines = leader.geometry().unwrap_or_else(|_| leader.segments());
+        for line in lines {
+            if let (Some(a), Some(b)) = (
+                self.camera.screen_point(line.start(), rect),
+                self.camera.screen_point(line.end(), rect),
+            ) {
+                painter.line_segment([a, b], stroke);
             }
         }
     }
@@ -1550,6 +1583,27 @@ impl OpenCadApp {
                         .abs()
                 }
                 Entity::Arc(arc) => arc_distance(*arc).unwrap_or(f32::INFINITY),
+                Entity::MLeader(leader) => leader
+                    .geometry()
+                    .unwrap_or_else(|_| leader.segments())
+                    .into_iter()
+                    .filter_map(&line_distance)
+                    .chain(match leader.content() {
+                        crate::MLeaderContent::MText(text) => text
+                            .bounds()
+                            .ok()
+                            .and_then(|bounds| self.camera.screen_point(bounds.min, rect))
+                            .into_iter()
+                            .map(|point| position.distance(point))
+                            .collect::<Vec<_>>(),
+                        crate::MLeaderContent::Block(insert) => self
+                            .camera
+                            .screen_point(insert.insertion(), rect)
+                            .into_iter()
+                            .map(|point| position.distance(point))
+                            .collect::<Vec<_>>(),
+                    })
+                    .fold(f32::INFINITY, f32::min),
                 Entity::Point(point) => self
                     .camera
                     .screen_point(point.position(), rect)
@@ -1711,6 +1765,12 @@ fn entity_points(entity: &Entity) -> Vec<Point3> {
         Entity::Ellipse(ellipse) => ellipse.tessellate_for_svg(),
         Entity::Spline(spline) => spline.tessellate(64).unwrap_or_default(),
         Entity::Leader(leader) => leader.vertices().to_vec(),
+        Entity::MLeader(leader) => leader
+            .geometry()
+            .unwrap_or_else(|_| leader.segments())
+            .into_iter()
+            .flat_map(|line| [line.start(), line.end()])
+            .collect(),
         Entity::Table(table) => table
             .bounds()
             .map(|b| vec![b.min, b.max])
