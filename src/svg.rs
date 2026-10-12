@@ -269,6 +269,30 @@ pub fn render_entities_svg(entities: &[Entity]) -> Result<String, SvgError> {
 
 /// Export visible document entities with resolved styles on a white background.
 pub fn render_document_svg(document: &DxfDocument) -> Result<String, SvgError> {
+    render_document_svg_with_bounds(document).map(|(svg, _)| svg)
+}
+
+/// Export visible document entities and return the bounds used for SVG normalization.
+pub(crate) fn render_document_svg_with_bounds(
+    document: &DxfDocument,
+) -> Result<(String, [f64; 4]), SvgError> {
+    let prepared = prepare_document_svg(document)?;
+    let bounds = entity_bounds(&prepared.entities)?;
+    let svg = render_styled_entities_svg(
+        &prepared.entities,
+        Some(&prepared.colors),
+        Some(&prepared.patterns),
+    )?;
+    Ok((svg, bounds))
+}
+
+struct PreparedDocumentSvg {
+    entities: Vec<Entity>,
+    colors: Vec<[u8; 3]>,
+    patterns: Vec<Vec<PatternPart>>,
+}
+
+fn prepare_document_svg(document: &DxfDocument) -> Result<PreparedDocumentSvg, SvgError> {
     let mut entities = Vec::new();
     let mut colors = Vec::new();
     let mut parents = Vec::new();
@@ -305,7 +329,11 @@ pub fn render_document_svg(document: &DxfDocument) -> Result<String, SvgError> {
                 .map_err(SvgError::Linetype)
         })
         .collect::<Result<Vec<_>, _>>()?;
-    render_styled_entities_svg(&entities, Some(&colors), Some(&patterns))
+    Ok(PreparedDocumentSvg {
+        entities,
+        colors,
+        patterns,
+    })
 }
 
 fn expand_document_entity(

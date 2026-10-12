@@ -89,7 +89,7 @@ pub use interchange::{
 pub use layer::{Layer, LayerError};
 pub use layout::{
     Layout, LayoutCollection, NamedPageSetup, NamedPageSetupCatalog, Orientation, PageSetup,
-    PageSetupError, Viewport,
+    PageSetupError, PlotArea, PlotTransform, Viewport,
 };
 pub use lengthen::Lengthen;
 pub use line::{Bounds3, Line3, Point3};

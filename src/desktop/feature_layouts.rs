@@ -2,7 +2,7 @@ use super::commands::{number, parse_point};
 use super::*;
 use crate::{
     DxfDocument, Entity,
-    layout::{Layout, Orientation, PageSetup, Viewport},
+    layout::{Layout, Orientation, PageSetup, PlotTransform, Viewport},
 };
 use std::{
     fs,
@@ -100,7 +100,11 @@ impl OpenCadApp {
         } else {
             return Err("Orientation must be PORTRAIT or LANDSCAPE.".into());
         });
-        s.set_scale(number(t[3])?).map_err(|e| e.to_string())?;
+        if t[3].eq_ignore_ascii_case("FIT") {
+            s.set_fit_to_paper(true);
+        } else {
+            s.set_scale(number(t[3])?).map_err(|e| e.to_string())?;
+        }
         self.layouts.active_mut().set_setup(s);
         Ok(())
     }
@@ -159,61 +163,16 @@ impl OpenCadApp {
         if t.len() != 1 {
             return Err("PLOT output.svg.".into());
         };
-        let inner =
-            crate::render_document_svg(self.editor.document()).map_err(|e| e.to_string())?;
+        let (inner, plot_bounds) =
+            crate::svg::render_document_svg_with_bounds(self.editor.document())
+                .map_err(|e| e.to_string())?;
         let setup = self.layouts.active().setup();
-        let [w, h] = setup.dimensions();
-        let m = setup.margins();
-        let s = setup.scale();
-        let body = inner
-            .lines()
-            .skip(1)
-            .take_while(|line| !line.trim_start().starts_with("</svg>"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let transform = if let Some(v) = self.layouts.active().viewports().first() {
-            let q = v.world();
-            let p = v.paper();
-            format!(
-                "translate({} {}) scale({} {}) translate({} {})",
-                p[0],
-                p[1],
-                v.scale(),
-                v.scale(),
-                -q[0],
-                -q[1]
-            )
-        } else {
-            format!("translate({} {}) scale({s} {s})", m[0], m[1])
-        };
-        let (defs, clip_attr) = if let Some(v) = self
-            .layouts
-            .active()
-            .viewports()
-            .first()
-            .filter(|v| v.clip_enabled())
-        {
-            if let Some(points) = v.clip_boundary() {
-                let polygon = points
-                    .iter()
-                    .map(|p| format!("{},{}", p.x(), p.y()))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                (
-                    format!(
-                        "<defs><clipPath id=\"vpclip\"><polygon points=\"{polygon}\" /></clipPath></defs>"
-                    ),
-                    " clip-path=\"url(#vpclip)\"",
-                )
-            } else {
-                (String::new(), "")
-            }
-        } else {
-            (String::new(), "")
-        };
-        let plotted = format!(
-            "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" width=\"{w}\" height=\"{h}\" role=\"img\" aria-label=\"Plotted CAD layout\">{defs}<rect width=\"100%\" height=\"100%\" fill=\"white\"/><g transform=\"{transform}\"{clip_attr}>{body}</g></svg>\n"
-        );
+        let plotted = render_svg_plot(
+            &inner,
+            plot_bounds,
+            setup,
+            self.layouts.active().viewports(),
+        )?;
         fs::write(t[0], plotted).map_err(|e| format!("Cannot write plot: {e}"))
     }
     fn plot_pdf_command(&mut self, t: &[&str]) -> Result<(), String> {
@@ -230,6 +189,131 @@ impl OpenCadApp {
         .map_err(|e| e.to_string())?;
         fs::write(t[0], bytes).map_err(|e| format!("Cannot write PDF: {e}"))
     }
+}
+
+fn render_svg_plot(
+    inner: &str,
+    plot_bounds: [f64; 4],
+    setup: PageSetup,
+    viewports: &[Viewport],
+) -> Result<String, String> {
+    let [w, h] = setup.dimensions();
+    let body = inner
+        .lines()
+        .skip(1)
+        .take_while(|line| !line.trim_start().starts_with("</svg>"))
+        .filter(|line| !line.contains("<rect width=\"100%\" height=\"100%\" fill=\"white\""))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let plot_transform = setup
+        .plot_transform(plot_source_bounds(plot_bounds, viewports))
+        .map_err(|e| e.to_string())?;
+    let mut defs = String::new();
+    let mut groups = String::new();
+    append_svg_page_clip(&mut defs, plot_transform, h);
+    if viewports.is_empty() {
+        append_svg_plot_group(
+            &mut groups,
+            &body,
+            plot_transform,
+            plot_bounds,
+            None,
+            h,
+            None,
+        );
+    } else {
+        for (index, viewport) in viewports.iter().enumerate() {
+            append_svg_viewport_clips(&mut defs, plot_transform, viewport, index, h);
+            append_svg_plot_group(
+                &mut groups,
+                &body,
+                plot_transform,
+                plot_bounds,
+                Some(viewport),
+                h,
+                Some(index),
+            );
+        }
+    }
+    Ok(format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" width=\"{w}\" height=\"{h}\" role=\"img\" aria-label=\"Plotted CAD layout\"><defs>{defs}</defs><rect width=\"100%\" height=\"100%\" fill=\"white\"/>{groups}</svg>\n"
+    ))
+}
+
+fn append_svg_page_clip(defs: &mut String, transform: PlotTransform, page_height: f64) {
+    let rect = transform.clip_rect();
+    defs.push_str(&format!(
+        "<clipPath id=\"plotclip\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" /></clipPath>",
+        rect[0],
+        page_height - rect[3],
+        rect[2] - rect[0],
+        rect[3] - rect[1]
+    ));
+}
+
+fn append_svg_viewport_clips(
+    defs: &mut String,
+    transform: PlotTransform,
+    viewport: &Viewport,
+    index: usize,
+    page_height: f64,
+) {
+    let rect = transformed_rect(transform, viewport.paper());
+    let clip_id = format!("vpclip{index}");
+    defs.push_str(&format!(
+        "<clipPath id=\"{clip_id}\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" /></clipPath>",
+        rect[0],
+        page_height - rect[3],
+        rect[2] - rect[0],
+        rect[3] - rect[1]
+    ));
+    if !viewport.clip_enabled() {
+        return;
+    }
+    let Some(points) = viewport.clip_boundary() else {
+        return;
+    };
+    let polygon_id = format!("vppolygon{index}");
+    let polygon = points
+        .iter()
+        .map(|point| {
+            let mapped = transform.map([point.x(), point.y()]);
+            format!("{},{}", mapped[0], page_height - mapped[1])
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    defs.push_str(&format!(
+        "<clipPath id=\"{polygon_id}\"><polygon points=\"{polygon}\" /></clipPath>"
+    ));
+}
+
+fn append_svg_plot_group(
+    groups: &mut String,
+    body: &str,
+    transform: PlotTransform,
+    bounds: [f64; 4],
+    viewport: Option<&Viewport>,
+    page_height: f64,
+    index: Option<usize>,
+) {
+    let body_transform = svg_body_transform(transform, bounds, viewport, page_height);
+    let has_polygon_clip =
+        viewport.is_some_and(|value| value.clip_enabled() && value.clip_boundary().is_some());
+    groups.push_str("<g clip-path=\"url(#plotclip)\">");
+    if let Some(index) = index {
+        groups.push_str(&format!("<g clip-path=\"url(#vpclip{index})\">"));
+        if has_polygon_clip {
+            groups.push_str(&format!("<g clip-path=\"url(#vppolygon{index})\">"));
+        }
+    }
+    groups.push_str(&format!("<g transform=\"{body_transform}\">{body}</g>"));
+    if index.is_some() {
+        if has_polygon_clip {
+            groups.push_str("</g>");
+        }
+        groups.push_str("</g>");
+    }
+    groups.push_str("</g>");
 }
 
 fn vector_pdf(
@@ -279,29 +363,106 @@ fn render_pdf_page(
     let entities = &prepared.entities;
     let b = prepared.bounds;
     let [w, h] = setup.dimensions();
-    let m = setup.margins();
-    let scale = setup.scale();
+    let source_bounds = plot_source_bounds(b, viewports);
+    let plot_transform = setup
+        .plot_transform(source_bounds)
+        .map_err(|error| error.to_string())?;
     let mut content = String::from("1 w 0 0 0 RG\n");
     let mut xobjects = Vec::new();
-    if let Some(points) = viewports
-        .first()
-        .filter(|v| v.clip_enabled())
-        .and_then(|v| v.clip_boundary())
-    {
-        let first = points.first().expect("validated viewport clip");
-        content.push_str(&format!("{} {} m ", first.x(), first.y()));
-        for point in &points[1..] {
-            content.push_str(&format!("{} {} l ", point.x(), point.y()));
-        }
-        content.push_str("h W n\n");
+    let viewport_passes = if viewports.is_empty() {
+        1
+    } else {
+        viewports.len()
+    };
+    for viewport_index in 0..viewport_passes {
+        let active_viewport = viewports.get(viewport_index);
+        let construction_bounds = active_viewport.map_or(b, Viewport::world);
+        let mut pass = PdfEntityPass {
+            active_viewport,
+            plot_transform,
+            construction_bounds,
+            document_path,
+            pdf,
+            content: &mut content,
+            xobjects: &mut xobjects,
+        };
+        render_pdf_viewport_pass(entities, &mut pass)?;
     }
+    let xobject_dict = xobjects
+        .iter()
+        .map(|resource| format!("/{} {} 0 R", resource.name, resource.object_id))
+        .collect::<Vec<_>>()
+        .join(" ");
+    Ok(PdfPage {
+        width: w,
+        height: h,
+        content,
+        xobjects: xobject_dict,
+    })
+}
+
+struct PdfEntityPass<'a> {
+    active_viewport: Option<&'a Viewport>,
+    plot_transform: PlotTransform,
+    construction_bounds: [f64; 4],
+    document_path: Option<&'a Path>,
+    pdf: &'a mut PdfWriter,
+    content: &'a mut String,
+    xobjects: &'a mut Vec<PdfImageResource>,
+}
+
+fn render_pdf_viewport_pass(
+    entities: &[Entity],
+    pass: &mut PdfEntityPass<'_>,
+) -> Result<(), String> {
+    let [clip_x0, clip_y0, clip_x1, clip_y1] = pass.plot_transform.clip_rect();
+    pass.content.push_str(&format!(
+        "q {clip_x0} {clip_y0} {} {} re W n\n",
+        clip_x1 - clip_x0,
+        clip_y1 - clip_y0
+    ));
+    if let Some(viewport) = pass.active_viewport {
+        let [x0, y0, x1, y1] = transformed_rect(pass.plot_transform, viewport.paper());
+        pass.content
+            .push_str(&format!("q {x0} {y0} {} {} re W n\n", x1 - x0, y1 - y0));
+        if let Some(points) = viewport.clip_boundary().filter(|_| viewport.clip_enabled()) {
+            let first = points.first().expect("validated viewport clip");
+            let first = pass.plot_transform.map([first.x(), first.y()]);
+            pass.content
+                .push_str(&format!("{} {} m ", first[0], first[1]));
+            for point in &points[1..] {
+                let mapped = pass.plot_transform.map([point.x(), point.y()]);
+                pass.content
+                    .push_str(&format!("{} {} l ", mapped[0], mapped[1]));
+            }
+            pass.content.push_str("h W n\n");
+        }
+    }
+    render_pdf_entity_pass(entities, pass)?;
+    if pass.active_viewport.is_some() {
+        pass.content.push_str("Q\n");
+    }
+    pass.content.push_str("Q\n");
+    Ok(())
+}
+
+fn render_pdf_entity_pass(entities: &[Entity], pass: &mut PdfEntityPass<'_>) -> Result<(), String> {
+    let active_viewport = pass.active_viewport;
+    let plot_transform = pass.plot_transform;
+    let construction_bounds = pass.construction_bounds;
+    let document_path = pass.document_path;
+    let pdf = &mut *pass.pdf;
+    let content = &mut *pass.content;
+    let xobjects = &mut *pass.xobjects;
     for e in entities {
         let p = |x: f64, y: f64| {
-            if let Some(v) = viewports.first() {
+            if let Some(v) = active_viewport {
                 let q = v.map([x, y]);
-                (q[0], q[1])
+                let mapped = plot_transform.map(q);
+                (mapped[0], mapped[1])
             } else {
-                ((x - b[0]) * scale + m[0], (y - b[1]) * scale + m[1])
+                let mapped = plot_transform.map([x, y]);
+                (mapped[0], mapped[1])
             }
         };
         match e {
@@ -330,7 +491,7 @@ fn render_pdf_page(
                 }
             }
             Entity::Circle(c) => append_curve(
-                &mut content,
+                content,
                 (0..=48).map(|i| {
                     let a = std::f64::consts::TAU * f64::from(i) / 48.0;
                     (
@@ -341,7 +502,7 @@ fn render_pdf_page(
                 &p,
             ),
             Entity::Arc(a) => append_curve(
-                &mut content,
+                content,
                 (0..=32)
                     .map(|i| {
                         a.point_at_fraction(f64::from(i) / 32.0)
@@ -353,7 +514,7 @@ fn render_pdf_page(
                 &p,
             ),
             Entity::Ellipse(e) => append_curve(
-                &mut content,
+                content,
                 (0..=64)
                     .map(|i| {
                         e.point_at_fraction(f64::from(i) / 64.0)
@@ -367,7 +528,7 @@ fn render_pdf_page(
             Entity::Spline(s) => {
                 let (lo, hi) = s.parameter_range();
                 append_curve(
-                    &mut content,
+                    content,
                     (0..=96)
                         .map(|i| {
                             s.point_at(lo + (hi - lo) * f64::from(i) / 96.0)
@@ -401,18 +562,14 @@ fn render_pdf_page(
                     content.push_str("h f\n");
                 }
             }
-            Entity::Text(t) => append_text(&mut content, t.content(), t.location(), &p),
-            Entity::MText(t) => {
-                append_text(&mut content, t.text().content(), t.text().location(), &p)
+            Entity::Text(t) => append_text(content, t.content(), t.location(), &p),
+            Entity::MText(t) => append_text(content, t.text().content(), t.text().location(), &p),
+            Entity::Leader(l) => {
+                append_lines(content, l.vertices().windows(2).map(|v| (v[0], v[1])), &p)
             }
-            Entity::Leader(l) => append_lines(
-                &mut content,
-                l.vertices().windows(2).map(|v| (v[0], v[1])),
-                &p,
-            ),
             Entity::MLeader(l) => {
                 append_lines(
-                    &mut content,
+                    content,
                     l.geometry()
                         .unwrap_or_else(|_| l.segments())
                         .into_iter()
@@ -420,21 +577,18 @@ fn render_pdf_page(
                     &p,
                 );
                 match l.content() {
-                    crate::MLeaderContent::MText(text) => append_text(
-                        &mut content,
-                        text.text().content(),
-                        text.text().location(),
-                        &p,
-                    ),
+                    crate::MLeaderContent::MText(text) => {
+                        append_text(content, text.text().content(), text.text().location(), &p)
+                    }
                     crate::MLeaderContent::Block(insert) => {
-                        append_text(&mut content, insert.block_name(), insert.insertion(), &p)
+                        append_text(content, insert.block_name(), insert.insertion(), &p)
                     }
                 }
             }
             Entity::Table(t) => {
                 let display_cells = t.display_cells();
                 append_lines(
-                    &mut content,
+                    content,
                     t.grid_lines()
                         .map_err(|e| e.to_string())?
                         .into_iter()
@@ -446,7 +600,7 @@ fn render_pdf_page(
                     let mut x = t.anchor().x();
                     for (cell, width) in cells.iter().zip(t.column_widths()) {
                         append_text(
-                            &mut content,
+                            content,
                             cell,
                             crate::Point3::new(
                                 x + *width * 0.1,
@@ -465,10 +619,10 @@ fn render_pdf_page(
                 for primitive in d.geometry().map_err(|e| e.to_string())? {
                     match primitive {
                         crate::DimensionPrimitive::Line(l) => {
-                            append_lines(&mut content, std::iter::once((l.start(), l.end())), &p)
+                            append_lines(content, std::iter::once((l.start(), l.end())), &p)
                         }
                         crate::DimensionPrimitive::Arc(a) => append_curve(
-                            &mut content,
+                            content,
                             (0..=32)
                                 .map(|i| {
                                     a.point_at_fraction(f64::from(i) / 32.0)
@@ -480,27 +634,27 @@ fn render_pdf_page(
                             &p,
                         ),
                         crate::DimensionPrimitive::Text(t) => {
-                            append_text(&mut content, t.content(), t.location(), &p)
+                            append_text(content, t.content(), t.location(), &p)
                         }
                     }
                 }
             }
             Entity::Hatch(h) => {
-                append_hatch(&mut content, h.boundaries(), &p);
+                append_hatch(content, h.boundaries(), &p);
             }
             Entity::XLine(line) => append_construction(
-                &mut content,
+                content,
                 line.origin(),
                 line.direction(),
-                [b[0], b[1], b[2], b[3]],
+                construction_bounds,
                 false,
                 &p,
             ),
             Entity::Ray(ray) => append_construction(
-                &mut content,
+                content,
                 ray.origin(),
                 ray.direction(),
-                [b[0], b[1], b[2], b[3]],
+                construction_bounds,
                 true,
                 &p,
             ),
@@ -508,35 +662,17 @@ fn render_pdf_page(
                 if !image.visible() {
                     continue;
                 }
-                append_raster_plot_image(
-                    pdf,
-                    &mut content,
-                    &mut xobjects,
-                    image,
-                    document_path,
-                    &p,
-                )?;
+                append_raster_plot_image(pdf, content, xobjects, image, document_path, &p)?;
             }
             Entity::PdfUnderlay(underlay) => {
-                append_pdf_underlay(
-                    pdf,
-                    &mut content,
-                    &mut xobjects,
-                    underlay,
-                    document_path,
-                    &p,
-                )?;
+                append_pdf_underlay(pdf, content, xobjects, underlay, document_path, &p)?;
             }
             Entity::MLine(mline) => {
                 for path in mline.explode().map_err(|e| e.to_string())? {
-                    append_lines(
-                        &mut content,
-                        path.windows(2).map(|pair| (pair[0], pair[1])),
-                        &p,
-                    );
+                    append_lines(content, path.windows(2).map(|pair| (pair[0], pair[1])), &p);
                 }
                 append_lines(
-                    &mut content,
+                    content,
                     mline
                         .cap_lines()
                         .map_err(|e| e.to_string())?
@@ -565,17 +701,7 @@ fn render_pdf_page(
             }
         }
     }
-    let xobject_dict = xobjects
-        .iter()
-        .map(|resource| format!("/{} {} 0 R", resource.name, resource.object_id))
-        .collect::<Vec<_>>()
-        .join(" ");
-    Ok(PdfPage {
-        width: w,
-        height: h,
-        content,
-        xobjects: xobject_dict,
-    })
+    Ok(())
 }
 
 fn append_pdf_underlay(
@@ -688,6 +814,69 @@ fn append_raster_plot_image(
 struct PreparedPdfEntities {
     entities: Vec<Entity>,
     bounds: [f64; 4],
+}
+
+fn plot_source_bounds(entity_bounds: [f64; 4], viewports: &[Viewport]) -> [f64; 4] {
+    let Some(first) = viewports.first() else {
+        return entity_bounds;
+    };
+    viewports
+        .iter()
+        .skip(1)
+        .fold(first.paper(), |bounds, viewport| {
+            let paper = viewport.paper();
+            [
+                bounds[0].min(paper[0]),
+                bounds[1].min(paper[1]),
+                bounds[2].max(paper[2]),
+                bounds[3].max(paper[3]),
+            ]
+        })
+}
+
+fn transformed_rect(transform: PlotTransform, rect: [f64; 4]) -> [f64; 4] {
+    let a = transform.map([rect[0], rect[1]]);
+    let b = transform.map([rect[2], rect[3]]);
+    [
+        a[0].min(b[0]),
+        a[1].min(b[1]),
+        a[0].max(b[0]),
+        a[1].max(b[1]),
+    ]
+}
+
+fn svg_body_transform(
+    plot_transform: PlotTransform,
+    bounds: [f64; 4],
+    viewport: Option<&Viewport>,
+    page_height: f64,
+) -> String {
+    let (scale, translation) = if let Some(viewport) = viewport {
+        let world = viewport.world();
+        let paper = viewport.paper();
+        let scale = plot_transform.scale() * viewport.scale();
+        let translation = [
+            plot_transform.translation()[0]
+                + plot_transform.scale()
+                    * (paper[0] + viewport.scale() * (bounds[0] - 10.0 - world[0])),
+            page_height
+                - plot_transform.translation()[1]
+                - plot_transform.scale()
+                    * (paper[1] + viewport.scale() * (bounds[3] + 10.0 - world[1])),
+        ];
+        (scale, translation)
+    } else {
+        let scale = plot_transform.scale();
+        let translation = [
+            plot_transform.translation()[0] + scale * (bounds[0] - 10.0),
+            page_height - plot_transform.translation()[1] - scale * (bounds[3] + 10.0),
+        ];
+        (scale, translation)
+    };
+    format!(
+        "translate({} {}) scale({scale} {scale})",
+        translation[0], translation[1]
+    )
 }
 
 fn prepare_pdf_entities(

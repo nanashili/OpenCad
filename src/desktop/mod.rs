@@ -18,6 +18,7 @@ mod feature_layouts;
 mod feature_modify;
 mod feature_multiline;
 mod feature_pdf;
+mod feature_plot_settings;
 mod feature_publish;
 mod feature_references;
 mod feature_regions;

@@ -5139,71 +5139,227 @@ fn read_layouts(input: &str) -> crate::LayoutCollection {
             let Ok(fields) = record_fields(&mut groups) else {
                 break;
             };
-            let Some(name) = fields
+            let layout_fields = subclass_fields(&fields, "AcDbLayout").unwrap_or(&fields);
+            let plot_fields = subclass_fields(&fields, "AcDbPlotSettings").unwrap_or(&fields);
+            let Some(name) = layout_fields
                 .iter()
                 .find(|field| field.code == 1)
                 .map(|field| field.value.to_owned())
             else {
                 continue;
             };
-            if name != "Model" {
-                let width = field_number(&fields, 44, group.line)
-                    .ok()
-                    .flatten()
-                    .filter(|v| *v > 0.0)
-                    .unwrap_or(210.0);
-                let height = field_number(&fields, 45, group.line)
-                    .ok()
-                    .flatten()
-                    .filter(|v| *v > 0.0)
-                    .unwrap_or(297.0);
-                let Ok(mut setup) = crate::PageSetup::new(width, height) else {
-                    continue;
-                };
-                let margins = [
-                    field_number(&fields, 40, group.line)
-                        .ok()
-                        .flatten()
-                        .unwrap_or(0.0),
-                    field_number(&fields, 41, group.line)
-                        .ok()
-                        .flatten()
-                        .unwrap_or(0.0),
-                    field_number(&fields, 42, group.line)
-                        .ok()
-                        .flatten()
-                        .unwrap_or(0.0),
-                    field_number(&fields, 43, group.line)
-                        .ok()
-                        .flatten()
-                        .unwrap_or(0.0),
-                ];
-                let _ = setup.set_margins(margins);
-                if fields
-                    .iter()
-                    .find(|field| field.code == 73)
-                    .and_then(|field| field.value.parse::<i32>().ok())
-                    .is_some_and(|rotation| rotation % 2 != 0)
-                {
-                    setup.set_orientation(crate::Orientation::Landscape);
-                }
-                let numerator = field_number(&fields, 140, group.line)
-                    .ok()
-                    .flatten()
-                    .unwrap_or(1.0);
-                let denominator = field_number(&fields, 141, group.line)
-                    .ok()
-                    .flatten()
-                    .unwrap_or(1.0);
-                if denominator.abs() > f64::EPSILON {
-                    let _ = setup.set_scale((numerator / denominator).abs().max(f64::EPSILON));
-                }
+            let Some(setup) = parse_native_page_setup(plot_fields, group.line) else {
+                continue;
+            };
+            if name == "Model" {
+                layouts.active_mut().set_setup(setup);
+            } else {
                 let _ = layouts.create(name, setup);
             }
         }
     }
     import_viewports(input, &mut layouts);
     layouts
+}
+
+fn subclass_fields<'a>(fields: &'a [Group<'a>], marker: &str) -> Option<&'a [Group<'a>]> {
+    let start = fields
+        .iter()
+        .position(|field| field.code == 100 && field.value == marker)?;
+    let end = fields[start + 1..]
+        .iter()
+        .position(|field| field.code == 100)
+        .map_or(fields.len(), |offset| start + 1 + offset);
+    Some(&fields[start + 1..end])
+}
+
+fn parse_native_page_setup(plot: &[Group<'_>], line: usize) -> Option<crate::PageSetup> {
+    let width = native_optional_number(plot, 44, line)
+        .ok()?
+        .unwrap_or(210.0);
+    let height = native_optional_number(plot, 45, line)
+        .ok()?
+        .unwrap_or(297.0);
+    let mut setup = crate::PageSetup::new(width, height).ok()?;
+    let rotation = plot
+        .iter()
+        .find(|field| field.code == 73)
+        .map(|field| field.value.parse::<i32>())
+        .transpose()
+        .ok()?;
+    if rotation.is_some_and(|value| value % 2 != 0) {
+        setup.set_orientation(crate::Orientation::Landscape);
+    }
+    let margins = [
+        native_optional_number(plot, 40, line).ok()?.unwrap_or(0.0),
+        native_optional_number(plot, 41, line).ok()?.unwrap_or(0.0),
+        native_optional_number(plot, 42, line).ok()?.unwrap_or(0.0),
+        native_optional_number(plot, 43, line).ok()?.unwrap_or(0.0),
+    ];
+    setup.set_margins(margins).ok()?;
+    let controls = import_native_plot_controls(plot, line, setup);
+    Some(controls.unwrap_or(setup))
+}
+
+fn native_optional_number(plot: &[Group<'_>], code: u16, line: usize) -> Result<Option<f64>, ()> {
+    field_number(plot, code, line).map_err(|_| ())
+}
+
+fn native_required_number(plot: &[Group<'_>], code: u16, line: usize) -> Result<f64, ()> {
+    native_optional_number(plot, code, line)?.ok_or(())
+}
+
+fn import_native_plot_controls(
+    plot: &[Group<'_>],
+    line: usize,
+    setup: crate::PageSetup,
+) -> Result<crate::PageSetup, ()> {
+    let setup = parse_native_plot_area(plot, line, setup)?;
+    let setup = parse_native_plot_offset(plot, line, setup)?;
+    let setup = parse_native_plot_scale(plot, line, setup)?;
+    let mut candidate = setup;
+    let flags = match plot.iter().find(|field| field.code == 70) {
+        Some(field) => field.value.parse::<i32>().map_err(|_| ())?,
+        None => 0,
+    };
+    candidate.set_centered(flags & 4 != 0).map_err(|_| ())?;
+    Ok(candidate)
+}
+
+fn parse_native_plot_area(
+    plot: &[Group<'_>],
+    line: usize,
+    setup: crate::PageSetup,
+) -> Result<crate::PageSetup, ()> {
+    let Some(field) = plot.iter().find(|field| field.code == 74) else {
+        return Ok(setup);
+    };
+    let mut candidate = setup;
+    match field.value.parse::<i32>().map_err(|_| ())? {
+        1 => candidate.set_plot_area(crate::PlotArea::Extents),
+        4 => candidate.set_plot_area(crate::PlotArea::Window([
+            native_required_number(plot, 48, line)?,
+            native_required_number(plot, 49, line)?,
+            native_required_number(plot, 140, line)?,
+            native_required_number(plot, 141, line)?,
+        ])),
+        5 => candidate.set_plot_area(crate::PlotArea::Layout),
+        _ => return Err(()),
+    }
+    .map_err(|_| ())?;
+    Ok(candidate)
+}
+
+fn parse_native_plot_offset(
+    plot: &[Group<'_>],
+    line: usize,
+    setup: crate::PageSetup,
+) -> Result<crate::PageSetup, ()> {
+    let x = native_optional_number(plot, 46, line)?;
+    let y = native_optional_number(plot, 47, line)?;
+    let Some((x, y)) = x.zip(y) else {
+        return if x.is_none() && y.is_none() {
+            Ok(setup)
+        } else {
+            Err(())
+        };
+    };
+    let mut candidate = setup;
+    candidate.set_plot_offset([x, y]).map_err(|_| ())?;
+    Ok(candidate)
+}
+
+fn parse_native_plot_scale(
+    plot: &[Group<'_>],
+    line: usize,
+    setup: crate::PageSetup,
+) -> Result<crate::PageSetup, ()> {
+    let flags = match plot.iter().find(|field| field.code == 70) {
+        Some(field) => field.value.parse::<i32>().map_err(|_| ())?,
+        None => 0,
+    };
+    let use_standard = flags & 16 != 0;
+    let Some(scale_field) = plot.iter().find(|field| field.code == 75) else {
+        if use_standard {
+            return Ok(setup);
+        }
+        return parse_native_custom_scale(plot, line, setup);
+    };
+    let scale_kind = scale_field.value.parse::<i32>().map_err(|_| ())?;
+    if use_standard {
+        if scale_kind == 0 {
+            let mut candidate = setup;
+            candidate.set_fit_to_paper(true);
+            return Ok(candidate);
+        }
+        let scale = native_standard_scale(scale_kind).ok_or(())?;
+        let mut candidate = setup;
+        candidate.set_scale(scale).map_err(|_| ())?;
+        return Ok(candidate);
+    }
+    parse_native_custom_scale(plot, line, setup)
+}
+
+fn parse_native_custom_scale(
+    plot: &[Group<'_>],
+    line: usize,
+    setup: crate::PageSetup,
+) -> Result<crate::PageSetup, ()> {
+    let numerator = native_optional_number(plot, 142, line)?;
+    let denominator = native_optional_number(plot, 143, line)?;
+    let Some((numerator, denominator)) = numerator.zip(denominator) else {
+        return if numerator.is_none() && denominator.is_none() {
+            Ok(setup)
+        } else {
+            Err(())
+        };
+    };
+    if numerator <= 0.0 || denominator <= 0.0 {
+        return Err(());
+    }
+    let mut candidate = setup;
+    candidate
+        .set_scale(numerator / denominator)
+        .map_err(|_| ())?;
+    Ok(candidate)
+}
+
+fn native_standard_scale(value: i32) -> Option<f64> {
+    match value {
+        1 => Some(1.0 / 1536.0),
+        2 => Some(1.0 / 768.0),
+        3 => Some(1.0 / 384.0),
+        4 => Some(1.0 / 192.0),
+        5 => Some(1.0 / 128.0),
+        6 => Some(1.0 / 96.0),
+        7 => Some(1.0 / 64.0),
+        8 => Some(1.0 / 48.0),
+        9 => Some(1.0 / 32.0),
+        10 => Some(1.0 / 24.0),
+        11 => Some(1.0 / 16.0),
+        12 => Some(1.0 / 12.0),
+        13 => Some(1.0 / 4.0),
+        14 => Some(0.5),
+        15 => Some(1.0),
+        16 => Some(1.0),
+        17 => Some(0.5),
+        18 => Some(0.25),
+        19 => Some(0.125),
+        20 => Some(0.1),
+        21 => Some(0.0625),
+        22 => Some(0.05),
+        23 => Some(1.0 / 30.0),
+        24 => Some(0.025),
+        25 => Some(0.02),
+        26 => Some(0.01),
+        27 => Some(2.0),
+        28 => Some(4.0),
+        29 => Some(8.0),
+        30 => Some(10.0),
+        31 => Some(100.0),
+        32 => Some(1000.0),
+        _ => None,
+    }
 }
 
 #[derive(Clone)]
@@ -5238,7 +5394,51 @@ fn read_page_setup_metadata(
             )
             .map_err(|_| dynamic_error())?;
     }
+    import_native_page_setups(input, layouts);
     Ok(())
+}
+
+fn import_native_page_setups(input: &str, layouts: &mut crate::LayoutCollection) {
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "PLOTSETTINGS" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let plot = subclass_fields(&fields, "AcDbPlotSettings").unwrap_or(&fields);
+        let Some(name) = plot
+            .iter()
+            .find(|field| field.code == 1)
+            .map(|field| field.value.to_owned())
+        else {
+            continue;
+        };
+        if layouts.page_setups().get(&name).is_ok() {
+            continue;
+        }
+        let Some(setup) = parse_native_page_setup(plot, marker.line) else {
+            continue;
+        };
+        let Ok(entry) = crate::NamedPageSetup::new(name, setup) else {
+            continue;
+        };
+        if layouts.page_setups_mut().insert_or_replace(entry).is_err() {
+            continue;
+        }
+    }
 }
 
 fn collect_page_setup_metadata(input: &str) -> Result<PageSetupMetadataState, DxfError> {
@@ -5271,7 +5471,7 @@ fn collect_page_setup_metadata(input: &str) -> Result<PageSetupMetadataState, Dx
             };
             match kind {
                 "CATALOG" => {
-                    if values.len() != 10 {
+                    if values.len() != 10 && values.len() != 20 {
                         return Err(dynamic_error());
                     }
                     let name = dynamic_decode(values[1]).ok_or_else(dynamic_error)?;
@@ -5279,7 +5479,7 @@ fn collect_page_setup_metadata(input: &str) -> Result<PageSetupMetadataState, Dx
                     page_setups.push((name, setup));
                 }
                 "LAYOUT" => {
-                    if values.len() != 11 {
+                    if values.len() != 11 && values.len() != 21 {
                         return Err(dynamic_error());
                     }
                     let layout = dynamic_decode(values[1]).ok_or_else(dynamic_error)?;
@@ -5311,7 +5511,7 @@ fn collect_page_setup_metadata(input: &str) -> Result<PageSetupMetadataState, Dx
 }
 
 fn parse_page_setup_values(values: &[&str], line: usize) -> Result<crate::PageSetup, DxfError> {
-    if values.len() != 8 {
+    if values.len() != 8 && values.len() != 18 {
         return Err(DxfError {
             line,
             kind: DxfErrorKind::UnsupportedProperty(1000),
@@ -5341,7 +5541,60 @@ fn parse_page_setup_values(values: &[&str], line: usize) -> Result<crate::PageSe
         .set_margins([numbers[2], numbers[3], numbers[4], numbers[5]])
         .map_err(|_| dynamic_error())?;
     setup.set_scale(numbers[6]).map_err(|_| dynamic_error())?;
+    if values.len() == 18 {
+        if values[8] != "PLOT2" {
+            return Err(dynamic_error());
+        }
+        let bounds = parse_page_setup_numbers(&values[14..18], line)?;
+        let area = match values[9] {
+            "E" => crate::PlotArea::Extents,
+            "L" => crate::PlotArea::Layout,
+            "W" => crate::PlotArea::Window([bounds[0], bounds[1], bounds[2], bounds[3]]),
+            _ => return Err(dynamic_error()),
+        };
+        setup.set_plot_area(area).map_err(|_| dynamic_error())?;
+        let fit = parse_page_setup_bool(values[10], line)?;
+        setup.set_fit_to_paper(fit);
+        let offset = parse_page_setup_numbers(&values[11..13], line)?;
+        setup
+            .set_plot_offset([offset[0], offset[1]])
+            .map_err(|_| dynamic_error())?;
+        let centered = parse_page_setup_bool(values[13], line)?;
+        setup.set_centered(centered).map_err(|_| dynamic_error())?;
+    }
     Ok(setup)
+}
+
+fn parse_page_setup_numbers(values: &[&str], line: usize) -> Result<Vec<f64>, DxfError> {
+    values
+        .iter()
+        .map(|value| value.parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(1000),
+        })
+        .and_then(|numbers| {
+            if numbers.iter().all(|value| value.is_finite()) {
+                Ok(numbers)
+            } else {
+                Err(DxfError {
+                    line,
+                    kind: DxfErrorKind::UnsupportedProperty(1000),
+                })
+            }
+        })
+}
+
+fn parse_page_setup_bool(value: &str, line: usize) -> Result<bool, DxfError> {
+    match value {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        _ => Err(DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(1000),
+        }),
+    }
 }
 
 fn serialize_page_setup_metadata(layouts: &crate::LayoutCollection, handle: &mut u64) -> String {
@@ -5396,7 +5649,7 @@ fn page_setup_values(setup: crate::PageSetup) -> String {
     let paper = setup.paper();
     let margins = setup.margins();
     let orientation = matches!(setup.orientation(), crate::Orientation::Landscape) as u8;
-    format!(
+    let legacy = format!(
         "{}|{}|{}|{}|{}|{}|{}|{}",
         paper[0],
         paper[1],
@@ -5406,6 +5659,30 @@ fn page_setup_values(setup: crate::PageSetup) -> String {
         margins[3],
         setup.scale(),
         orientation
+    );
+    let default_area = matches!(setup.plot_area(), crate::PlotArea::Extents);
+    let default_controls = default_area
+        && !setup.fit_to_paper()
+        && setup.plot_offset() == [0.0, 0.0]
+        && !setup.centered();
+    if default_controls {
+        return legacy;
+    }
+    let (area, bounds) = match setup.plot_area() {
+        crate::PlotArea::Extents => ("E", [0.0; 4]),
+        crate::PlotArea::Layout => ("L", [0.0; 4]),
+        crate::PlotArea::Window(bounds) => ("W", bounds),
+    };
+    format!(
+        "{legacy}|PLOT2|{area}|{}|{}|{}|{}|{}|{}|{}|{}",
+        setup.fit_to_paper() as u8,
+        setup.plot_offset()[0],
+        setup.plot_offset()[1],
+        setup.centered() as u8,
+        bounds[0],
+        bounds[1],
+        bounds[2],
+        bounds[3]
     )
 }
 
@@ -5516,11 +5793,35 @@ fn serialize_layouts(layouts: &crate::LayoutCollection, source: &str, handle: &m
             let margins = setup.margins();
             let (numerator, denominator) = (setup.scale(), 1.0);
             let rotation = matches!(setup.orientation(), crate::Orientation::Landscape) as u8;
+            let flags = setup.centered() as u8 * 4 + setup.fit_to_paper() as u8 * 16;
+            let (area, window) = match setup.plot_area() {
+                crate::PlotArea::Extents => (1, [0.0; 4]),
+                crate::PlotArea::Window(bounds) => (4, bounds),
+                crate::PlotArea::Layout => (5, [0.0; 4]),
+            };
             let result = format!(
-                "0\nLAYOUT\n5\n{:X}\n100\nAcDbPlotSettings\n40\n{}\n41\n{}\n42\n{}\n43\n{}\n44\n{}\n45\n{}\n73\n{}\n140\n{}\n141\n{}\n100\nAcDbLayout\n1\n{}\n70\n0\n71\n{}\n",
+                "0\nLAYOUT\n5\n{:X}\n100\nAcDbPlotSettings\n40\n{}\n41\n{}\n42\n{}\n43\n{}\n44\n{}\n45\n{}\n46\n{}\n47\n{}\n48\n{}\n49\n{}\n140\n{}\n141\n{}\n70\n{}\n73\n{}\n74\n{}\n75\n{}\n72\n1\n142\n{}\n143\n{}\n147\n1.0\n100\nAcDbLayout\n1\n{}\n70\n0\n71\n{}\n",
                 *handle,
-                margins[0], margins[1], margins[2], margins[3], paper[0], paper[1],
-                rotation, numerator, denominator, name, index
+                margins[0],
+                margins[1],
+                margins[2],
+                margins[3],
+                paper[0],
+                paper[1],
+                setup.plot_offset()[0],
+                setup.plot_offset()[1],
+                window[0],
+                window[1],
+                window[2],
+                window[3],
+                flags,
+                rotation,
+                area,
+                if setup.fit_to_paper() { 0 } else { 1 },
+                numerator,
+                denominator,
+                name,
+                index
             );
             *handle = handle.saturating_add(1);
             Some(result)
@@ -5549,7 +5850,8 @@ fn source_layout_names(source: &str) -> Vec<String> {
         let Ok(fields) = record_fields(&mut groups) else {
             break;
         };
-        if let Some(name) = fields
+        let layout_fields = subclass_fields(&fields, "AcDbLayout").unwrap_or(&fields);
+        if let Some(name) = layout_fields
             .iter()
             .find(|field| field.code == 1)
             .map(|field| field.value.to_owned())

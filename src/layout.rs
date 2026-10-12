@@ -10,11 +10,50 @@ pub enum Orientation {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlotArea {
+    Extents,
+    Window([f64; 4]),
+    Layout,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlotTransform {
+    scale: f64,
+    translation: [f64; 2],
+    clip_rect: [f64; 4],
+}
+
+impl PlotTransform {
+    pub fn scale(self) -> f64 {
+        self.scale
+    }
+
+    pub fn translation(self) -> [f64; 2] {
+        self.translation
+    }
+
+    pub fn clip_rect(self) -> [f64; 4] {
+        self.clip_rect
+    }
+
+    pub fn map(self, point: [f64; 2]) -> [f64; 2] {
+        [
+            point[0] * self.scale + self.translation[0],
+            point[1] * self.scale + self.translation[1],
+        ]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PageSetup {
     paper: [f64; 2],
     margins: [f64; 4],
     orientation: Orientation,
     scale: f64,
+    plot_area: PlotArea,
+    fit_to_paper: bool,
+    plot_offset: [f64; 2],
+    centered: bool,
 }
 impl PageSetup {
     pub fn new(width: f64, height: f64) -> Result<Self, GeometryError> {
@@ -23,6 +62,10 @@ impl PageSetup {
             margins: [0.0; 4],
             orientation: Orientation::Portrait,
             scale: 1.0,
+            plot_area: PlotArea::Extents,
+            fit_to_paper: false,
+            plot_offset: [0.0; 2],
+            centered: false,
         };
         p.set_paper(width, height)?;
         Ok(p)
@@ -38,6 +81,18 @@ impl PageSetup {
     }
     pub fn scale(self) -> f64 {
         self.scale
+    }
+    pub fn plot_area(self) -> PlotArea {
+        self.plot_area
+    }
+    pub fn fit_to_paper(self) -> bool {
+        self.fit_to_paper
+    }
+    pub fn plot_offset(self) -> [f64; 2] {
+        self.plot_offset
+    }
+    pub fn centered(self) -> bool {
+        self.centered
     }
     pub fn set_paper(&mut self, w: f64, h: f64) -> Result<(), GeometryError> {
         if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
@@ -74,6 +129,36 @@ impl PageSetup {
             return Err(GeometryError::NonPositiveScale);
         };
         self.scale = s;
+        self.fit_to_paper = false;
+        Ok(())
+    }
+    pub fn set_plot_area(&mut self, area: PlotArea) -> Result<(), GeometryError> {
+        let area = match area {
+            PlotArea::Window(bounds) => PlotArea::Window(normalized_bounds(bounds, false)?),
+            area => area,
+        };
+        if matches!(area, PlotArea::Layout) {
+            self.centered = false;
+        }
+        self.plot_area = area;
+        Ok(())
+    }
+    pub fn set_fit_to_paper(&mut self, fit: bool) {
+        self.fit_to_paper = fit;
+    }
+    pub fn set_plot_offset(&mut self, offset: [f64; 2]) -> Result<(), GeometryError> {
+        if offset.iter().any(|value| !value.is_finite()) {
+            return Err(GeometryError::NonFiniteCoordinate);
+        }
+        self.plot_offset = offset;
+        self.centered = false;
+        Ok(())
+    }
+    pub fn set_centered(&mut self, centered: bool) -> Result<(), GeometryError> {
+        if centered && matches!(self.plot_area, PlotArea::Layout) {
+            return Err(GeometryError::NonFiniteParameter);
+        }
+        self.centered = centered;
         Ok(())
     }
     pub fn dimensions(self) -> [f64; 2] {
@@ -94,8 +179,206 @@ impl PageSetup {
         {
             return Err(GeometryError::NonPositiveScale);
         }
+        if self.plot_offset.iter().any(|value| !value.is_finite()) {
+            return Err(GeometryError::NonFiniteCoordinate);
+        }
+        if let PlotArea::Window(bounds) = self.plot_area {
+            normalized_bounds(bounds, false)?;
+        }
+        if self.centered && matches!(self.plot_area, PlotArea::Layout) {
+            return Err(GeometryError::NonFiniteParameter);
+        }
         Ok(())
     }
+
+    pub fn plot_transform(self, source_bounds: [f64; 4]) -> Result<PlotTransform, GeometryError> {
+        self.validate()?;
+        let printable = printable_rect(self.dimensions(), self.margins);
+        let printable_width = printable[2] - printable[0];
+        let printable_height = printable[3] - printable[1];
+        let (scale, source) =
+            self.plot_source_and_scale(source_bounds, printable_width, printable_height)?;
+        let translation = self.plot_translation(source, scale, printable)?;
+        if !scale.is_finite() || scale <= 0.0 || translation.iter().any(|value| !value.is_finite())
+        {
+            return Err(GeometryError::NonFiniteResult);
+        }
+
+        let mapped_source = map_bounds(source, scale, translation)?;
+        let clip_rect = match self.plot_area {
+            PlotArea::Window(_) => intersect_rect(printable, mapped_source),
+            _ => printable,
+        };
+        if clip_rect.iter().any(|value| !value.is_finite()) {
+            return Err(GeometryError::NonFiniteResult);
+        }
+        Ok(PlotTransform {
+            scale,
+            translation,
+            clip_rect,
+        })
+    }
+
+    fn plot_source_and_scale(
+        self,
+        source_bounds: [f64; 4],
+        printable_width: f64,
+        printable_height: f64,
+    ) -> Result<(f64, [f64; 4]), GeometryError> {
+        match self.plot_area {
+            PlotArea::Layout => Ok((1.0, [0.0; 4])),
+            PlotArea::Extents => {
+                let source = normalized_bounds(source_bounds, true)?;
+                let scale = self.plot_scale(source, printable_width, printable_height)?;
+                Ok((scale, source))
+            }
+            PlotArea::Window(source) => {
+                let source = normalized_bounds(source, false)?;
+                let scale = self.plot_scale(source, printable_width, printable_height)?;
+                Ok((scale, source))
+            }
+        }
+    }
+
+    fn plot_translation(
+        self,
+        source: [f64; 4],
+        scale: f64,
+        printable: [f64; 4],
+    ) -> Result<[f64; 2], GeometryError> {
+        if matches!(self.plot_area, PlotArea::Layout) {
+            return Ok([
+                printable[0] + self.plot_offset[0],
+                printable[1] + self.plot_offset[1],
+            ]);
+        }
+
+        let printable_width = printable[2] - printable[0];
+        let printable_height = printable[3] - printable[1];
+        let source_center = [
+            source[0] * 0.5 + source[2] * 0.5,
+            source[1] * 0.5 + source[3] * 0.5,
+        ];
+        let printable_center = [
+            printable[0] + printable_width * 0.5,
+            printable[1] + printable_height * 0.5,
+        ];
+        let anchor = if self.centered {
+            printable_center
+        } else {
+            [printable[0], printable[1]]
+        };
+        let source_anchor = if self.centered {
+            source_center
+        } else {
+            [source[0], source[1]]
+        };
+        let offset = if self.centered {
+            [0.0, 0.0]
+        } else {
+            self.plot_offset
+        };
+        let translation = [
+            anchor[0] - source_anchor[0] * scale + offset[0],
+            anchor[1] - source_anchor[1] * scale + offset[1],
+        ];
+        if translation.iter().all(|value| value.is_finite()) {
+            Ok(translation)
+        } else {
+            Err(GeometryError::NonFiniteResult)
+        }
+    }
+
+    fn plot_scale(
+        self,
+        source: [f64; 4],
+        printable_width: f64,
+        printable_height: f64,
+    ) -> Result<f64, GeometryError> {
+        if !self.fit_to_paper {
+            return Ok(self.scale);
+        }
+        let source_width = source[2] - source[0];
+        let source_height = source[3] - source[1];
+        let fit_width = if source_width > 0.0 {
+            printable_width / source_width
+        } else {
+            f64::INFINITY
+        };
+        let fit_height = if source_height > 0.0 {
+            printable_height / source_height
+        } else {
+            f64::INFINITY
+        };
+        let scale = if source_width == 0.0 && source_height == 0.0 {
+            1.0
+        } else {
+            fit_width.min(fit_height)
+        };
+        if scale.is_finite() && scale > 0.0 {
+            Ok(scale)
+        } else {
+            Err(GeometryError::NonFiniteResult)
+        }
+    }
+}
+
+fn normalized_bounds(bounds: [f64; 4], allow_zero_span: bool) -> Result<[f64; 4], GeometryError> {
+    if bounds.iter().any(|value| !value.is_finite()) {
+        return Err(GeometryError::NonFiniteCoordinate);
+    }
+    let normalized = [
+        bounds[0].min(bounds[2]),
+        bounds[1].min(bounds[3]),
+        bounds[0].max(bounds[2]),
+        bounds[1].max(bounds[3]),
+    ];
+    let width = normalized[2] - normalized[0];
+    let height = normalized[3] - normalized[1];
+    if !width.is_finite() || !height.is_finite() {
+        return Err(GeometryError::NonFiniteResult);
+    }
+    if (!allow_zero_span && (width <= 0.0 || height <= 0.0))
+        || (allow_zero_span && (width < 0.0 || height < 0.0))
+    {
+        return Err(GeometryError::DegenerateCurve);
+    }
+    Ok(normalized)
+}
+
+fn printable_rect(dimensions: [f64; 2], margins: [f64; 4]) -> [f64; 4] {
+    [
+        margins[0],
+        margins[1],
+        dimensions[0] - margins[2],
+        dimensions[1] - margins[3],
+    ]
+}
+
+fn map_bounds(
+    bounds: [f64; 4],
+    scale: f64,
+    translation: [f64; 2],
+) -> Result<[f64; 4], GeometryError> {
+    let mapped = [
+        bounds[0] * scale + translation[0],
+        bounds[1] * scale + translation[1],
+        bounds[2] * scale + translation[0],
+        bounds[3] * scale + translation[1],
+    ];
+    if mapped.iter().all(|value| value.is_finite()) {
+        Ok(mapped)
+    } else {
+        Err(GeometryError::NonFiniteResult)
+    }
+}
+
+fn intersect_rect(left: [f64; 4], right: [f64; 4]) -> [f64; 4] {
+    let x_min = left[0].max(right[0]);
+    let y_min = left[1].max(right[1]);
+    let x_max = left[2].min(right[2]).max(x_min);
+    let y_max = left[3].min(right[3]).max(y_min);
+    [x_min, y_min, x_max, y_max]
 }
 
 const MAX_PAGE_SETUP_NAME: usize = 255;
