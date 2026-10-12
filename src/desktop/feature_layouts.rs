@@ -2,7 +2,7 @@ use super::commands::{number, parse_point};
 use super::*;
 use crate::{
     DxfDocument, Entity,
-    layout::{Orientation, PageSetup, Viewport},
+    layout::{Layout, Orientation, PageSetup, Viewport},
 };
 use std::{
     fs,
@@ -12,6 +12,7 @@ use std::{
 
 const MAX_PLOT_REFERENCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PLOT_IMAGE_PIXELS: u64 = 16_000_000;
+const MAX_PDF_LAYOUT_PAGES: usize = 128;
 
 impl OpenCadApp {
     pub(super) fn feature_layout_command(
@@ -237,19 +238,50 @@ fn vector_pdf(
     viewports: &[Viewport],
     document_path: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
-    let mut entities = flatten_entities(document)?;
-    entities.retain(|entity| match entity {
-        Entity::Image(image) => image.visible(),
-        Entity::PdfUnderlay(underlay) => underlay.display_enabled(),
-        _ => true,
-    });
-    resolve_underlay_sizes(&mut entities, document_path)?;
-    let b = crate::layout::world_bounds(&entities).map_err(|e| e.to_string())?;
+    let mut pdf = PdfWriter::new();
+    let page = render_pdf_page(document, setup, viewports, document_path, &mut pdf)?;
+    pdf.finish_pages(vec![page])
+}
+
+pub(super) fn vector_pdf_layouts(
+    document: &DxfDocument,
+    layouts: &[Layout],
+    document_path: Option<&Path>,
+) -> Result<Vec<u8>, String> {
+    if layouts.is_empty() {
+        return Err("EXPORTPDF requires at least one layout.".into());
+    }
+    if layouts.len() > MAX_PDF_LAYOUT_PAGES {
+        return Err("EXPORTPDF exceeds the supported page count.".into());
+    }
+    let mut pdf = PdfWriter::new();
+    let mut pages = Vec::with_capacity(layouts.len());
+    for layout in layouts {
+        pages.push(render_pdf_page(
+            document,
+            layout.setup(),
+            layout.viewports(),
+            document_path,
+            &mut pdf,
+        )?);
+    }
+    pdf.finish_pages(pages)
+}
+
+fn render_pdf_page(
+    document: &DxfDocument,
+    setup: PageSetup,
+    viewports: &[Viewport],
+    document_path: Option<&Path>,
+    pdf: &mut PdfWriter,
+) -> Result<PdfPage, String> {
+    let prepared = prepare_pdf_entities(document, document_path)?;
+    let entities = &prepared.entities;
+    let b = prepared.bounds;
     let [w, h] = setup.dimensions();
     let m = setup.margins();
     let scale = setup.scale();
     let mut content = String::from("1 w 0 0 0 RG\n");
-    let mut pdf = PdfWriter::new();
     let mut xobjects = Vec::new();
     if let Some(points) = viewports
         .first()
@@ -263,7 +295,7 @@ fn vector_pdf(
         }
         content.push_str("h W n\n");
     }
-    for e in &entities {
+    for e in entities {
         let p = |x: f64, y: f64| {
             if let Some(v) = viewports.first() {
                 let q = v.map([x, y]);
@@ -477,7 +509,7 @@ fn vector_pdf(
                     continue;
                 }
                 append_raster_plot_image(
-                    &mut pdf,
+                    pdf,
                     &mut content,
                     &mut xobjects,
                     image,
@@ -487,7 +519,7 @@ fn vector_pdf(
             }
             Entity::PdfUnderlay(underlay) => {
                 append_pdf_underlay(
-                    &mut pdf,
+                    pdf,
                     &mut content,
                     &mut xobjects,
                     underlay,
@@ -538,7 +570,12 @@ fn vector_pdf(
         .map(|resource| format!("/{} {} 0 R", resource.name, resource.object_id))
         .collect::<Vec<_>>()
         .join(" ");
-    pdf.finish(w, h, content, xobject_dict)
+    Ok(PdfPage {
+        width: w,
+        height: h,
+        content,
+        xobjects: xobject_dict,
+    })
 }
 
 fn append_pdf_underlay(
@@ -648,6 +685,26 @@ fn append_raster_plot_image(
     append_raster_image(content, image, resource, map)
 }
 
+struct PreparedPdfEntities {
+    entities: Vec<Entity>,
+    bounds: [f64; 4],
+}
+
+fn prepare_pdf_entities(
+    document: &DxfDocument,
+    document_path: Option<&Path>,
+) -> Result<PreparedPdfEntities, String> {
+    let mut entities = flatten_entities(document)?;
+    entities.retain(|entity| match entity {
+        Entity::Image(image) => image.visible(),
+        Entity::PdfUnderlay(underlay) => underlay.display_enabled(),
+        _ => true,
+    });
+    resolve_underlay_sizes(&mut entities, document_path)?;
+    let bounds = crate::layout::world_bounds(&entities).map_err(|e| e.to_string())?;
+    Ok(PreparedPdfEntities { entities, bounds })
+}
+
 fn flatten_entities(document: &DxfDocument) -> Result<Vec<Entity>, String> {
     crate::block_expansion::expand_entities(document)
         .map(|expanded| expanded.into_iter().map(|item| item.entity).collect())
@@ -698,6 +755,13 @@ struct PdfObject {
     stream: Option<Vec<u8>>,
 }
 
+struct PdfPage {
+    width: f64,
+    height: f64,
+    content: String,
+    xobjects: String,
+}
+
 struct PdfWriter {
     objects: Vec<Option<PdfObject>>,
     next_image: usize,
@@ -706,7 +770,7 @@ struct PdfWriter {
 impl PdfWriter {
     fn new() -> Self {
         Self {
-            objects: (0..5).map(|_| None).collect(),
+            objects: (0..3).map(|_| None).collect(),
             next_image: 1,
         }
     }
@@ -773,25 +837,33 @@ impl PdfWriter {
         Ok(PdfImageResource { name, object_id })
     }
 
-    fn finish(
-        mut self,
-        width: f64,
-        height: f64,
-        content: String,
-        xobjects: String,
-    ) -> Result<Vec<u8>, String> {
+    fn finish_pages(mut self, pages: Vec<PdfPage>) -> Result<Vec<u8>, String> {
+        self.assemble_page_objects(pages);
+        self.serialize()
+    }
+
+    fn assemble_page_objects(&mut self, pages: Vec<PdfPage>) {
         self.objects[0] = Some(PdfObject::plain("<< /Type /Catalog /Pages 2 0 R >>"));
-        self.objects[1] = Some(PdfObject::plain(
-            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
-        ));
-        self.objects[2] = Some(PdfObject::plain(format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {width} {height}] /Resources << /Font << /F1 5 0 R >> /XObject << {xobjects} >> >> /Contents 4 0 R >>"
-        )));
-        self.objects[3] = Some(PdfObject::stream(content.into_bytes()));
-        self.objects[4] = Some(PdfObject::plain(
+        self.objects[2] = Some(PdfObject::plain(
             "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
         ));
+        let mut kids = Vec::with_capacity(pages.len());
+        for page in pages {
+            let content_id = self.add_object(PdfObject::stream(page.content.into_bytes()));
+            let page_id = self.add_object(PdfObject::plain(format!(
+                "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources << /Font << /F1 3 0 R >> /XObject << {} >> >> /Contents {} 0 R >>",
+                page.width, page.height, page.xobjects, content_id
+            )));
+            kids.push(format!("{page_id} 0 R"));
+        }
+        self.objects[1] = Some(PdfObject::plain(format!(
+            "<< /Type /Pages /Kids [{}] /Count {} >>",
+            kids.join(" "),
+            kids.len()
+        )));
+    }
 
+    fn serialize(self) -> Result<Vec<u8>, String> {
         let mut output = b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".to_vec();
         let mut offsets = Vec::with_capacity(self.objects.len() + 1);
         offsets.push(0usize);

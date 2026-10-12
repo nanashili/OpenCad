@@ -142,7 +142,8 @@ impl OpenCadApp {
             return self.view_command(&upper, rest, &tokens);
         }
         if let Some(result) = self
-            .feature_layout_command(&upper, rest, &tokens)
+            .feature_publish_command(&upper, &tokens)
+            .or_else(|| self.feature_layout_command(&upper, rest, &tokens))
             .or_else(|| self.feature_construction_command(&upper, &tokens))
             .or_else(|| self.feature_constraints_command(&upper, &tokens))
             .or_else(|| self.feature_reference_command(&upper, &tokens))

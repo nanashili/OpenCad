@@ -87,7 +87,10 @@ pub use interchange::{
     InterchangeError, read_obj, read_stl, write_obj, write_stl_ascii, write_stl_binary,
 };
 pub use layer::{Layer, LayerError};
-pub use layout::{Layout, LayoutCollection, Orientation, PageSetup, Viewport};
+pub use layout::{
+    Layout, LayoutCollection, NamedPageSetup, NamedPageSetupCatalog, Orientation, PageSetup,
+    PageSetupError, Viewport,
+};
 pub use lengthen::Lengthen;
 pub use line::{Bounds3, Line3, Point3};
 pub use linetype::{Linetype, LinetypeError};

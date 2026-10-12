@@ -330,6 +330,8 @@ impl DxfDocument {
         let (current_ucs_name, current_ucs) = read_current_ucs(input);
         let active_view = read_active_view(input);
         let (data_links, named_fields) = read_data_metadata(input);
+        let mut layouts = read_layouts(input);
+        read_page_setup_metadata(input, &mut layouts)?;
         let mut seen = [false; 5];
         let mut previous_section = 0;
         let mut handles = HashSet::new();
@@ -450,7 +452,7 @@ impl DxfDocument {
                     imported_block_count: block_definitions.len(),
                     block_definitions,
                     block_replacements: Vec::new(),
-                    layouts: read_layouts(input),
+                    layouts,
                     groups: read_groups(input),
                     reordered: false,
                     constraints: read_constraints(input, &entity_handles(input)),
@@ -1945,6 +1947,24 @@ impl DxfDocument {
         );
         let data_objects =
             serialize_data_metadata(&self.data_links, &self.named_fields, &mut object_handle);
+        let mut page_setup_objects =
+            serialize_page_setup_metadata(&self.layouts, &mut object_handle);
+        let page_setup_spans = page_setup_metadata_spans(&self.source);
+        if !page_setup_spans.is_empty() {
+            let mut replaced_record = false;
+            for span in page_setup_spans {
+                let value = if span.record && !replaced_record {
+                    replaced_record = true;
+                    page_setup_objects.clone()
+                } else {
+                    String::new()
+                };
+                changes.push((span.start, span.end, value));
+            }
+            if replaced_record {
+                page_setup_objects.clear();
+            }
+        }
         let constraint_spans = constraint_spans(&self.source);
         let mut constraint_objects = constraint_objects;
         let mut mleader_style_objects =
@@ -1994,12 +2014,13 @@ impl DxfDocument {
             || !constraint_objects.is_empty()
             || !mleader_style_objects.is_empty()
             || !data_objects.is_empty()
+            || !page_setup_objects.is_empty()
             || !pdf_definition_objects.is_empty()
             || !pdf_metadata_objects.is_empty()
             || !dynamic_objects.is_empty()
         {
             let objects = format!(
-                "{}{}{}{}{}{}{}{}{}",
+                "{}{}{}{}{}{}{}{}{}{}",
                 images
                     .iter()
                     .map(|image| serialize_image_def(image))
@@ -2010,6 +2031,7 @@ impl DxfDocument {
                 constraint_objects,
                 mleader_style_objects,
                 data_objects,
+                page_setup_objects,
                 pdf_metadata_objects,
                 dynamic_objects
             );
@@ -5184,12 +5206,304 @@ fn read_layouts(input: &str) -> crate::LayoutCollection {
     layouts
 }
 
+#[derive(Clone)]
+struct PageSetupLayoutSnapshot {
+    layout: String,
+    applied: Option<String>,
+    setup: crate::PageSetup,
+}
+
+struct PageSetupMetadataState {
+    catalog: Vec<(String, crate::PageSetup)>,
+    snapshots: Vec<PageSetupLayoutSnapshot>,
+}
+
+fn read_page_setup_metadata(
+    input: &str,
+    layouts: &mut crate::LayoutCollection,
+) -> Result<(), DxfError> {
+    let metadata = collect_page_setup_metadata(input)?;
+    for (name, setup) in metadata.catalog {
+        layouts
+            .page_setups_mut()
+            .add(crate::NamedPageSetup::new(name, setup).map_err(|_| dynamic_error())?)
+            .map_err(|_| dynamic_error())?;
+    }
+    for snapshot in metadata.snapshots {
+        layouts
+            .restore_page_setup_snapshot(
+                &snapshot.layout,
+                snapshot.setup,
+                snapshot.applied.as_deref(),
+            )
+            .map_err(|_| dynamic_error())?;
+    }
+    Ok(())
+}
+
+fn collect_page_setup_metadata(input: &str) -> Result<PageSetupMetadataState, DxfError> {
+    let mut page_setups = Vec::new();
+    let mut snapshots = Vec::new();
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "XRECORD" {
+            continue;
+        }
+        let fields = record_fields(&mut groups)?;
+        for field in fields.iter().filter(|field| field.code == 1000) {
+            let Some(payload) = field.value.strip_prefix("OpenCadData|v1|PAGESETUP|") else {
+                continue;
+            };
+            let values: Vec<_> = payload.split('|').collect();
+            let Some(kind) = values.first().copied() else {
+                return Err(dynamic_error());
+            };
+            match kind {
+                "CATALOG" => {
+                    if values.len() != 10 {
+                        return Err(dynamic_error());
+                    }
+                    let name = dynamic_decode(values[1]).ok_or_else(dynamic_error)?;
+                    let setup = parse_page_setup_values(&values[2..], marker.line)?;
+                    page_setups.push((name, setup));
+                }
+                "LAYOUT" => {
+                    if values.len() != 11 {
+                        return Err(dynamic_error());
+                    }
+                    let layout = dynamic_decode(values[1]).ok_or_else(dynamic_error)?;
+                    let applied = if values[2].is_empty() {
+                        None
+                    } else {
+                        Some(dynamic_decode(values[2]).ok_or_else(dynamic_error)?)
+                    };
+                    let setup = parse_page_setup_values(&values[3..], marker.line)?;
+                    if snapshots.iter().any(|existing: &PageSetupLayoutSnapshot| {
+                        existing.layout.eq_ignore_ascii_case(&layout)
+                    }) {
+                        return Err(dynamic_error());
+                    }
+                    snapshots.push(PageSetupLayoutSnapshot {
+                        layout,
+                        applied,
+                        setup,
+                    });
+                }
+                _ => return Err(dynamic_error()),
+            }
+        }
+    }
+    Ok(PageSetupMetadataState {
+        catalog: page_setups,
+        snapshots,
+    })
+}
+
+fn parse_page_setup_values(values: &[&str], line: usize) -> Result<crate::PageSetup, DxfError> {
+    if values.len() != 8 {
+        return Err(DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(1000),
+        });
+    }
+    let numbers = values[..7]
+        .iter()
+        .map(|value| value.parse::<f64>())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(1000),
+        })?;
+    if numbers.iter().any(|value| !value.is_finite()) {
+        return Err(DxfError {
+            line,
+            kind: DxfErrorKind::UnsupportedProperty(1000),
+        });
+    }
+    let mut setup = crate::PageSetup::new(numbers[0], numbers[1]).map_err(|_| dynamic_error())?;
+    match values[7] {
+        "0" => setup.set_orientation(crate::Orientation::Portrait),
+        "1" => setup.set_orientation(crate::Orientation::Landscape),
+        _ => return Err(dynamic_error()),
+    }
+    setup
+        .set_margins([numbers[2], numbers[3], numbers[4], numbers[5]])
+        .map_err(|_| dynamic_error())?;
+    setup.set_scale(numbers[6]).map_err(|_| dynamic_error())?;
+    Ok(setup)
+}
+
+fn serialize_page_setup_metadata(layouts: &crate::LayoutCollection, handle: &mut u64) -> String {
+    let default_setup = crate::PageSetup::new(210.0, 297.0).expect("finite defaults");
+    let needs_metadata = !layouts.page_setups().entries().is_empty()
+        || layouts.names().any(|name| name != "Model")
+        || layouts.names().any(|name| {
+            layouts
+                .get(name)
+                .is_some_and(|layout| layout.setup() != default_setup)
+        });
+    if !needs_metadata {
+        return String::new();
+    }
+    let mut records = String::new();
+    for entry in layouts.page_setups().entries() {
+        let setup = entry.setup();
+        records.push_str(&format!(
+            "1000\nOpenCadData|v1|PAGESETUP|CATALOG|{}|{}\n",
+            dynamic_encode(entry.name()),
+            page_setup_values(setup)
+        ));
+    }
+    for name in layouts.names() {
+        let Some(layout) = layouts.get(name) else {
+            continue;
+        };
+        let setup = layout.setup();
+        let applied = layout
+            .applied_page_setup()
+            .map(dynamic_encode)
+            .unwrap_or_default();
+        records.push_str(&format!(
+            "1000\nOpenCadData|v1|PAGESETUP|LAYOUT|{}|{}|{}\n",
+            dynamic_encode(name),
+            applied,
+            page_setup_values(setup)
+        ));
+    }
+    if records.is_empty() {
+        return String::new();
+    }
+    let output = format!(
+        "0\nXRECORD\n5\n{:X}\n100\nAcDbXrecord\n{}",
+        *handle, records
+    );
+    *handle = handle.saturating_add(1);
+    output
+}
+
+fn page_setup_values(setup: crate::PageSetup) -> String {
+    let paper = setup.paper();
+    let margins = setup.margins();
+    let orientation = matches!(setup.orientation(), crate::Orientation::Landscape) as u8;
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}",
+        paper[0],
+        paper[1],
+        margins[0],
+        margins[1],
+        margins[2],
+        margins[3],
+        setup.scale(),
+        orientation
+    )
+}
+
+struct PageSetupMetadataSpan {
+    start: usize,
+    end: usize,
+    record: bool,
+}
+
+fn page_setup_metadata_spans(input: &str) -> Vec<PageSetupMetadataSpan> {
+    let mut groups = Groups::new(input);
+    let mut objects = false;
+    let mut spans = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "XRECORD" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let owned = fields
+            .iter()
+            .filter(|field| {
+                field.code == 1000 && field.value.starts_with("OpenCadData|v1|PAGESETUP|")
+            })
+            .collect::<Vec<_>>();
+        if owned.is_empty() {
+            continue;
+        }
+        let record_end = groups
+            .peek()
+            .ok()
+            .flatten()
+            .map_or(input.len(), |next| next.start);
+        let xrecord_marker = fields
+            .iter()
+            .position(|field| field.code == 100 && field.value == "AcDbXrecord");
+        let mixed = fields.iter().enumerate().any(|(index, field)| {
+            if field.code == 1000 && field.value.starts_with("OpenCadData|v1|PAGESETUP|") {
+                return false;
+            }
+            !is_page_setup_structural_field(field, index, xrecord_marker)
+        });
+        if mixed {
+            for (index, field) in fields.iter().enumerate() {
+                if field.code != 1000 || !field.value.starts_with("OpenCadData|v1|PAGESETUP|") {
+                    continue;
+                }
+                let end = fields.get(index + 1).map_or(record_end, |next| next.start);
+                spans.push(PageSetupMetadataSpan {
+                    start: field.start,
+                    end,
+                    record: false,
+                });
+            }
+        } else {
+            spans.push(PageSetupMetadataSpan {
+                start: marker.start,
+                end: record_end,
+                record: true,
+            });
+        }
+    }
+    spans
+}
+
+fn is_page_setup_structural_field(
+    field: &Group<'_>,
+    index: usize,
+    xrecord_marker: Option<usize>,
+) -> bool {
+    let Some(marker) = xrecord_marker else {
+        return false;
+    };
+    index <= marker
+        && matches!(
+            field.code,
+            5 | 100 | 102 | 280 | 330 | 340 | 350 | 360 | 361 | 390
+        )
+}
+
 fn serialize_layouts(layouts: &crate::LayoutCollection, source: &str, handle: &mut u64) -> String {
-    let names = layouts.names().collect::<Vec<_>>();
-    if names.len() <= 1
-        || source.contains("\n0\nLAYOUT\n")
-        || source.contains("\r\n0\r\nLAYOUT\r\n")
-    {
+    let existing = source_layout_names(source);
+    let names = layouts
+        .names()
+        .filter(|name| !existing.iter().any(|item| item.eq_ignore_ascii_case(name)))
+        .collect::<Vec<_>>();
+    if names.is_empty() || (names.len() == 1 && names[0].eq_ignore_ascii_case("Model")) {
         return String::new();
     }
     names
@@ -5212,6 +5526,38 @@ fn serialize_layouts(layouts: &crate::LayoutCollection, source: &str, handle: &m
             Some(result)
         })
         .collect()
+}
+
+fn source_layout_names(source: &str) -> Vec<String> {
+    let mut groups = Groups::new(source);
+    let mut objects = false;
+    let mut names = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "LAYOUT" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        if let Some(name) = fields
+            .iter()
+            .find(|field| field.code == 1)
+            .map(|field| field.value.to_owned())
+        {
+            names.push(name);
+        }
+    }
+    names
 }
 
 fn next_handle(source: &str) -> u64 {

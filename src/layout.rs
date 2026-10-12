@@ -1,7 +1,7 @@
 //! Paper-space layout and plotting models.
 
 use crate::{Entity, GeometryError};
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, error::Error, fmt};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Orientation {
@@ -43,17 +43,18 @@ impl PageSetup {
         if !w.is_finite() || !h.is_finite() || w <= 0.0 || h <= 0.0 {
             return Err(GeometryError::NonPositiveScale);
         };
-        if self.margins[0] + self.margins[2] >= w || self.margins[1] + self.margins[3] >= h {
+        let dimensions = match self.orientation {
+            Orientation::Portrait => [w, h],
+            Orientation::Landscape => [h, w],
+        };
+        if !margins_fit(self.margins, dimensions) {
             return Err(GeometryError::NonPositiveScale);
         }
         self.paper = [w, h];
         Ok(())
     }
     pub fn set_margins(&mut self, m: [f64; 4]) -> Result<(), GeometryError> {
-        if m.iter().any(|v| !v.is_finite() || *v < 0.0)
-            || m[0] + m[2] >= self.paper[0]
-            || m[1] + m[3] >= self.paper[1]
-        {
+        if !margins_fit(m, self.dimensions()) {
             return Err(GeometryError::NonPositiveScale);
         };
         self.margins = m;
@@ -64,7 +65,7 @@ impl PageSetup {
             Orientation::Portrait => self.paper,
             Orientation::Landscape => [self.paper[1], self.paper[0]],
         };
-        if self.margins[0] + self.margins[2] < w && self.margins[1] + self.margins[3] < h {
+        if margins_fit(self.margins, [w, h]) {
             self.orientation = o;
         }
     }
@@ -80,6 +81,169 @@ impl PageSetup {
             Orientation::Portrait => self.paper,
             Orientation::Landscape => [self.paper[1], self.paper[0]],
         }
+    }
+
+    fn validate(self) -> Result<(), GeometryError> {
+        let dimensions = self.dimensions();
+        if dimensions
+            .iter()
+            .any(|value| !value.is_finite() || *value <= 0.0)
+            || !margins_fit(self.margins, dimensions)
+            || !self.scale.is_finite()
+            || self.scale <= 0.0
+        {
+            return Err(GeometryError::NonPositiveScale);
+        }
+        Ok(())
+    }
+}
+
+const MAX_PAGE_SETUP_NAME: usize = 255;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PageSetupError {
+    InvalidName,
+    DuplicateName,
+    MissingName,
+    Geometry(GeometryError),
+}
+
+impl fmt::Display for PageSetupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidName => f.write_str("page setup name is invalid"),
+            Self::DuplicateName => f.write_str("a page setup with that name already exists"),
+            Self::MissingName => f.write_str("named page setup was not found"),
+            Self::Geometry(error) => error.fmt(f),
+        }
+    }
+}
+
+impl Error for PageSetupError {}
+
+impl From<GeometryError> for PageSetupError {
+    fn from(error: GeometryError) -> Self {
+        Self::Geometry(error)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct NamedPageSetup {
+    name: String,
+    setup: PageSetup,
+}
+
+impl NamedPageSetup {
+    pub fn new(name: impl Into<String>, setup: PageSetup) -> Result<Self, PageSetupError> {
+        setup.validate()?;
+        Ok(Self {
+            name: valid_page_setup_name(name)?,
+            setup,
+        })
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn setup(&self) -> PageSetup {
+        self.setup
+    }
+
+    pub fn set_setup(&mut self, setup: PageSetup) -> Result<(), PageSetupError> {
+        setup.validate()?;
+        self.setup = setup;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NamedPageSetupCatalog {
+    entries: Vec<NamedPageSetup>,
+}
+
+impl NamedPageSetupCatalog {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn entries(&self) -> &[NamedPageSetup] {
+        &self.entries
+    }
+
+    pub fn get(&self, name: &str) -> Result<&NamedPageSetup, PageSetupError> {
+        let name = valid_page_setup_name(name)?;
+        self.entries
+            .iter()
+            .find(|entry| same_page_setup_name(entry.name(), &name))
+            .ok_or(PageSetupError::MissingName)
+    }
+
+    pub fn get_mut(&mut self, name: &str) -> Result<&mut NamedPageSetup, PageSetupError> {
+        let name = valid_page_setup_name(name)?;
+        self.entries
+            .iter_mut()
+            .find(|entry| same_page_setup_name(entry.name(), &name))
+            .ok_or(PageSetupError::MissingName)
+    }
+
+    pub fn add(&mut self, entry: NamedPageSetup) -> Result<(), PageSetupError> {
+        entry.setup.validate()?;
+        let name = valid_page_setup_name(entry.name())?;
+        if self
+            .entries
+            .iter()
+            .any(|existing| same_page_setup_name(existing.name(), &name))
+        {
+            return Err(PageSetupError::DuplicateName);
+        }
+        self.entries.push(entry);
+        Ok(())
+    }
+
+    pub fn insert_or_replace(&mut self, entry: NamedPageSetup) -> Result<(), PageSetupError> {
+        entry.setup.validate()?;
+        let name = valid_page_setup_name(entry.name())?;
+        if let Some(existing) = self
+            .entries
+            .iter_mut()
+            .find(|existing| same_page_setup_name(existing.name(), &name))
+        {
+            existing.set_setup(entry.setup)?;
+        } else {
+            self.entries.push(entry);
+        }
+        Ok(())
+    }
+
+    pub fn rename(&mut self, old_name: &str, new_name: &str) -> Result<(), PageSetupError> {
+        let old_name = valid_page_setup_name(old_name)?;
+        let new_name = valid_page_setup_name(new_name)?;
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| same_page_setup_name(entry.name(), &old_name))
+            .ok_or(PageSetupError::MissingName)?;
+        if self
+            .entries
+            .iter()
+            .enumerate()
+            .any(|(other, entry)| other != index && same_page_setup_name(entry.name(), &new_name))
+        {
+            return Err(PageSetupError::DuplicateName);
+        }
+        self.entries[index].name = new_name;
+        Ok(())
+    }
+
+    pub fn remove(&mut self, name: &str) -> Result<NamedPageSetup, PageSetupError> {
+        let name = valid_page_setup_name(name)?;
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| same_page_setup_name(entry.name(), &name))
+            .ok_or(PageSetupError::MissingName)?;
+        Ok(self.entries.remove(index))
     }
 }
 
@@ -228,6 +392,7 @@ fn segments_intersect(
 pub struct Layout {
     name: String,
     setup: PageSetup,
+    applied_page_setup: Option<String>,
     viewports: Vec<Viewport>,
 }
 impl Layout {
@@ -239,6 +404,7 @@ impl Layout {
         Ok(Self {
             name: n,
             setup,
+            applied_page_setup: None,
             viewports: Vec::new(),
         })
     }
@@ -248,6 +414,9 @@ impl Layout {
     pub fn setup(&self) -> PageSetup {
         self.setup
     }
+    pub fn applied_page_setup(&self) -> Option<&str> {
+        self.applied_page_setup.as_deref()
+    }
     pub fn viewports(&self) -> &[Viewport] {
         &self.viewports
     }
@@ -255,7 +424,12 @@ impl Layout {
         &mut self.viewports
     }
     pub fn set_setup(&mut self, s: PageSetup) {
-        self.setup = s
+        self.setup = s;
+        self.applied_page_setup = None;
+    }
+    fn apply_page_setup(&mut self, name: String, setup: PageSetup) {
+        self.setup = setup;
+        self.applied_page_setup = Some(name);
     }
     pub fn add_viewport(&mut self, v: Viewport) {
         self.viewports.push(v)
@@ -266,6 +440,7 @@ impl Layout {
 pub struct LayoutCollection {
     layouts: BTreeMap<String, Layout>,
     active: String,
+    page_setups: NamedPageSetupCatalog,
 }
 impl Default for LayoutCollection {
     fn default() -> Self {
@@ -276,6 +451,7 @@ impl Default for LayoutCollection {
         Self {
             layouts,
             active: "Model".into(),
+            page_setups: NamedPageSetupCatalog::default(),
         }
     }
 }
@@ -295,6 +471,85 @@ impl LayoutCollection {
     }
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.layouts.keys().map(String::as_str)
+    }
+    pub fn page_setups(&self) -> &NamedPageSetupCatalog {
+        &self.page_setups
+    }
+    pub fn page_setups_mut(&mut self) -> &mut NamedPageSetupCatalog {
+        &mut self.page_setups
+    }
+    pub fn apply_page_setup(
+        &mut self,
+        layout_name: &str,
+        setup_name: &str,
+    ) -> Result<(), PageSetupError> {
+        let layout_name = valid_page_setup_name(layout_name)?;
+        let setup_name = valid_page_setup_name(setup_name)?;
+        let setup = self.page_setups.get(&setup_name)?.clone();
+        let layout = self
+            .layouts
+            .iter_mut()
+            .find(|(name, _)| same_page_setup_name(name, &layout_name))
+            .map(|(_, layout)| layout)
+            .ok_or(PageSetupError::MissingName)?;
+        layout.apply_page_setup(setup.name, setup.setup);
+        Ok(())
+    }
+    pub(crate) fn restore_page_setup_snapshot(
+        &mut self,
+        layout_name: &str,
+        setup: PageSetup,
+        applied_name: Option<&str>,
+    ) -> Result<(), PageSetupError> {
+        let layout_name = valid_page_setup_name(layout_name)?;
+        setup.validate()?;
+        let applied_name = applied_name
+            .map(valid_page_setup_name)
+            .transpose()?
+            .map(|name| self.page_setups.get(&name).map(|entry| entry.name.clone()))
+            .transpose()?;
+        let layout = self
+            .layouts
+            .iter_mut()
+            .find(|(name, _)| same_page_setup_name(name, &layout_name))
+            .map(|(_, layout)| layout)
+            .ok_or(PageSetupError::MissingName)?;
+        layout.setup = setup;
+        layout.applied_page_setup = applied_name;
+        Ok(())
+    }
+    pub fn rename_page_setup(
+        &mut self,
+        old_name: &str,
+        new_name: &str,
+    ) -> Result<(), PageSetupError> {
+        let old_name = valid_page_setup_name(old_name)?;
+        let new_name = valid_page_setup_name(new_name)?;
+        self.page_setups.rename(&old_name, &new_name)?;
+        for layout in self.layouts.values_mut() {
+            if layout
+                .applied_page_setup
+                .as_deref()
+                .is_some_and(|name| same_page_setup_name(name, &old_name))
+            {
+                layout.applied_page_setup = Some(new_name.clone());
+            }
+        }
+        Ok(())
+    }
+    pub fn remove_page_setup(&mut self, name: &str) -> Result<NamedPageSetup, PageSetupError> {
+        let name = valid_page_setup_name(name)?;
+        let removed = self.page_setups.remove(&name)?;
+        for layout in self.layouts.values_mut() {
+            if layout
+                .applied_page_setup
+                .as_deref()
+                .is_some_and(|applied| same_page_setup_name(applied, &name))
+            {
+                layout.applied_page_setup = None;
+            }
+        }
+        Ok(removed)
     }
     pub fn create(
         &mut self,
@@ -359,6 +614,26 @@ impl LayoutCollection {
         };
         Ok(())
     }
+}
+
+fn valid_page_setup_name(name: impl Into<String>) -> Result<String, PageSetupError> {
+    let name = name.into();
+    if name.trim().is_empty() || name.len() > MAX_PAGE_SETUP_NAME {
+        return Err(PageSetupError::InvalidName);
+    }
+    Ok(name)
+}
+
+fn same_page_setup_name(left: &str, right: &str) -> bool {
+    left.eq_ignore_ascii_case(right)
+}
+
+fn margins_fit(margins: [f64; 4], dimensions: [f64; 2]) -> bool {
+    margins
+        .iter()
+        .all(|value| value.is_finite() && *value >= 0.0)
+        && margins[0] + margins[2] < dimensions[0]
+        && margins[1] + margins[3] < dimensions[1]
 }
 
 pub fn world_bounds(entities: &[Entity]) -> Result<[f64; 4], GeometryError> {
