@@ -214,16 +214,21 @@ impl OpenCadApp {
                 });
                 if self.fit_pending {
                     self.fit_pending = false;
-                    match self.visible_expanded_geometry() {
-                        Ok(geometry) => {
-                            let fit_rect = self.active_viewport_rect(rect).unwrap_or(rect);
-                            if let Err(error) = self.camera.fit(&geometry, fit_rect) {
-                                self.message(error, true);
-                            } else if let Some(viewport_rect) = self.active_viewport_rect(rect) {
-                                self.camera.center_for_screen_rect(viewport_rect, rect);
+                    if self.active_viewport_is_locked() {
+                        self.message("The active viewport is locked.", true);
+                    } else {
+                        match self.visible_expanded_geometry() {
+                            Ok(geometry) => {
+                                let fit_rect = self.active_viewport_rect(rect).unwrap_or(rect);
+                                if let Err(error) = self.camera.fit(&geometry, fit_rect) {
+                                    self.message(error, true);
+                                } else if let Some(viewport_rect) = self.active_viewport_rect(rect)
+                                {
+                                    self.camera.center_for_screen_rect(viewport_rect, rect);
+                                }
                             }
+                            Err(error) => self.message(error, true),
                         }
-                        Err(error) => self.message(error, true),
                     }
                 }
                 let raw_pointer = response
@@ -233,7 +238,9 @@ impl OpenCadApp {
                 let pointer = raw_pointer.filter(|position| {
                     active_rect.is_none_or(|viewport_rect| viewport_rect.contains(*position))
                 });
-                let panning = pointer.is_some()
+                let navigation_locked = self.active_viewport_is_locked();
+                let panning = !navigation_locked
+                    && pointer.is_some()
                     && (response.dragged_by(PointerButton::Middle)
                         || response.dragged_by(PointerButton::Secondary)
                         || (response.dragged_by(PointerButton::Primary) && self.tool == Tool::Pan));
@@ -248,7 +255,7 @@ impl OpenCadApp {
                     }
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
-                if pointer.is_some() {
+                if pointer.is_some() && !navigation_locked {
                     let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                     let pinch = ui.input(|i| i.zoom_delta());
                     let factor = (f64::from(scroll) * 0.002).exp() * f64::from(pinch);
@@ -442,9 +449,7 @@ impl OpenCadApp {
                         Vec::new()
                     };
                     for (index, entity) in self.editor.entities().iter().enumerate() {
-                        if !self.editor.is_entity_visible(index)
-                            || !self.entity_in_active_space(index)
-                        {
+                        if !self.entity_available_for_interaction(index) {
                             continue;
                         }
                         if let Ok(expanded) =
@@ -588,8 +593,7 @@ impl OpenCadApp {
                 };
                 let mut block_render_error = None;
                 for (index, entity) in self.editor.entities().iter().enumerate() {
-                    if !self.editor.is_entity_visible(index)
-                        || !self.entity_in_active_space(index)
+                    if !self.entity_available_for_interaction(index)
                         || break_preview_source == Some(index)
                         || pedit_range_source == Some(index)
                         || lengthen_preview
@@ -978,6 +982,9 @@ impl OpenCadApp {
         viewport_rect: Rect,
         rect: Rect,
     ) {
+        if !viewport.is_displayed() {
+            return;
+        }
         let Ok(transform) = super::feature_spaces::viewport_transform(
             viewport.world(),
             viewport.paper(),
@@ -992,6 +999,7 @@ impl OpenCadApp {
                 .editor
                 .layer_for_entity(index)
                 .is_some_and(crate::Layer::is_visible)
+                || self.viewport_freezes_layer(viewport, index)
                 || !matches!(
                     self.editor.entity_space(index),
                     Some(crate::EntitySpace::Model)
@@ -1022,6 +1030,45 @@ impl OpenCadApp {
                 );
             }
         }
+    }
+
+    fn viewport_freezes_layer(&self, viewport: &crate::Viewport, index: usize) -> bool {
+        self.editor.entity_layer(index).is_some_and(|layer| {
+            viewport
+                .frozen_layers()
+                .iter()
+                .any(|frozen| frozen.eq_ignore_ascii_case(layer))
+        })
+    }
+
+    fn active_viewport_freezes_layer(&self, index: usize) -> bool {
+        let Some(active) = self.active_viewport.as_ref() else {
+            return false;
+        };
+        let Some(viewport) = self
+            .layouts
+            .get(&active.layout)
+            .and_then(|layout| layout.viewports().get(active.index))
+        else {
+            return false;
+        };
+        self.viewport_freezes_layer(viewport, index)
+    }
+
+    fn entity_available_for_interaction(&self, index: usize) -> bool {
+        self.editor.is_entity_visible(index)
+            && self.entity_in_active_space(index)
+            && !self.active_viewport_freezes_layer(index)
+    }
+
+    fn active_viewport_is_locked(&self) -> bool {
+        let Some(active) = self.active_viewport.as_ref() else {
+            return false;
+        };
+        self.layouts
+            .get(&active.layout)
+            .and_then(|layout| layout.viewports().get(active.index))
+            .is_some_and(crate::Viewport::is_display_locked)
     }
 
     fn draw_active_paper_entities(&self, painter: &Painter, rect: Rect) {
@@ -1058,7 +1105,7 @@ impl OpenCadApp {
     fn visible_expanded_geometry(&self) -> Result<Vec<Entity>, String> {
         let mut geometry = Vec::new();
         for (index, entity) in self.editor.entities().iter().enumerate() {
-            if !self.editor.is_entity_visible(index) || !self.entity_in_active_space(index) {
+            if !self.entity_available_for_interaction(index) {
                 continue;
             }
             let expanded = crate::block_expansion::expand_entity(self.editor.document(), entity)
@@ -1936,7 +1983,7 @@ impl OpenCadApp {
             let mut nearest = None;
             let mut distance = 9.0;
             for (index, entity) in self.editor.entities().iter().enumerate() {
-                if !self.editor.is_entity_visible(index) || !self.entity_in_active_space(index) {
+                if !self.entity_available_for_interaction(index) {
                     continue;
                 }
                 if let Ok(geometry) =
@@ -2037,7 +2084,7 @@ impl OpenCadApp {
         let mut closest = None;
         let mut distance = 8.0;
         for (index, entity) in self.editor.entities().iter().enumerate() {
-            if !self.editor.is_entity_visible(index) || !self.entity_in_active_space(index) {
+            if !self.entity_available_for_interaction(index) {
                 continue;
             }
             let d = match entity {

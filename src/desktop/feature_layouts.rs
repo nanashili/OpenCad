@@ -14,6 +14,37 @@ const MAX_PLOT_REFERENCE_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_PLOT_IMAGE_PIXELS: u64 = 16_000_000;
 const MAX_PDF_LAYOUT_PAGES: usize = 128;
 
+enum VplayerTarget {
+    Current,
+    All,
+    Select(Vec<usize>),
+    ExceptCurrent,
+}
+
+fn wildcard_match(pattern: &str, value: &str) -> bool {
+    let pattern = pattern.to_ascii_uppercase();
+    let value = value.to_ascii_uppercase();
+    wildcard_match_bytes(pattern.as_bytes(), value.as_bytes())
+}
+
+fn wildcard_match_bytes(pattern: &[u8], value: &[u8]) -> bool {
+    match pattern.first() {
+        None => value.is_empty(),
+        Some(b'*') => {
+            wildcard_match_bytes(&pattern[1..], value)
+                || value
+                    .first()
+                    .is_some_and(|_| wildcard_match_bytes(pattern, &value[1..]))
+        }
+        Some(b'?') => value
+            .first()
+            .is_some_and(|_| wildcard_match_bytes(&pattern[1..], &value[1..])),
+        Some(character) => {
+            value.first() == Some(character) && wildcard_match_bytes(&pattern[1..], &value[1..])
+        }
+    }
+}
+
 impl OpenCadApp {
     pub(super) fn feature_layout_command(
         &mut self,
@@ -34,6 +65,7 @@ impl OpenCadApp {
             "PAGESETUP" => self.pagesetup_command(tokens),
             "MVIEW" => self.mview_command(tokens),
             "VPCLIP" => self.vpclip_command(tokens),
+            "VPLAYER" => self.vplayer_command(tokens),
             "PLOT" => self.plot_command(tokens),
             "EXPORTPDF" => self.plot_pdf_command(tokens),
             _ => return None,
@@ -41,9 +73,12 @@ impl OpenCadApp {
         Some(result.inspect(|_| {
             if matches!(
                 verb.to_ascii_uppercase().as_str(),
-                "PAGESETUP" | "MVIEW" | "VPCLIP"
+                "PAGESETUP" | "MVIEW" | "VPCLIP" | "VPLAYER"
             ) {
                 self.editor.set_layouts(self.layouts.clone());
+            }
+            if verb.eq_ignore_ascii_case("VPLAYER") {
+                self.refresh_interaction_viewport();
             }
         }))
     }
@@ -139,6 +174,14 @@ impl OpenCadApp {
         Ok(())
     }
     fn mview_command(&mut self, t: &[&str]) -> Result<(), String> {
+        if t.first().is_some_and(|token| {
+            matches!(
+                token.to_ascii_uppercase().as_str(),
+                "ON" | "OFF" | "LOCK" | "FIT"
+            )
+        }) {
+            return self.mview_display_command(t);
+        }
         if t.len() != 2 {
             return Err("MVIEW min-point max-point.".into());
         };
@@ -169,6 +212,269 @@ impl OpenCadApp {
         self.layouts.active_mut().add_viewport(
             Viewport::new(world, [a.x(), a.y(), b.x(), b.y()], scale).map_err(|e| e.to_string())?,
         );
+        Ok(())
+    }
+
+    fn mview_display_command(&mut self, tokens: &[&str]) -> Result<(), String> {
+        let operation = tokens[0].to_ascii_uppercase();
+        if operation == "FIT" {
+            if tokens.len() != 1 {
+                return Err("MVIEW FIT takes no viewport arguments.".into());
+            }
+            if self.layouts.active().name().eq_ignore_ascii_case("Model") {
+                return Err("MVIEW FIT requires a paper layout.".into());
+            }
+            let setup = self.layouts.active().setup();
+            let [width, height] = setup.dimensions();
+            let [left, bottom, right, top] = setup.margins();
+            let paper = [left, bottom, width - right, height - top];
+            let viewport = Viewport::new([0.0, 0.0, 100.0, 100.0], paper, setup.scale())
+                .map_err(|error| error.to_string())?;
+            let mut candidate = self.layouts.clone();
+            candidate.active_mut().add_viewport(viewport);
+            self.layouts = candidate;
+            return Ok(());
+        }
+        let (locked, displayed, target_tokens) = match operation.as_str() {
+            "ON" => (None, Some(true), &tokens[1..]),
+            "OFF" => (None, Some(false), &tokens[1..]),
+            "LOCK" => {
+                if tokens.len() < 2 {
+                    return Err("MVIEW LOCK ON|OFF [viewport-number|ALL].".into());
+                }
+                let state = match tokens[1].to_ascii_uppercase().as_str() {
+                    "ON" => true,
+                    "OFF" => false,
+                    _ => return Err("MVIEW LOCK requires ON or OFF.".into()),
+                };
+                (Some(state), None, &tokens[2..])
+            }
+            _ => unreachable!(),
+        };
+        let targets = self.viewport_targets(target_tokens)?;
+        let mut candidate = self.layouts.clone();
+        let viewport_list = candidate.active_mut().viewports_mut();
+        for index in targets {
+            let viewport = &mut viewport_list[index];
+            if let Some(displayed) = displayed {
+                viewport.set_displayed(displayed);
+            }
+            if let Some(locked) = locked {
+                viewport.set_display_locked(locked);
+            }
+        }
+        self.layouts = candidate;
+        Ok(())
+    }
+
+    fn viewport_targets(&self, tokens: &[&str]) -> Result<Vec<usize>, String> {
+        if tokens.len() > 1 {
+            return Err("Viewport target must be one number or ALL.".into());
+        }
+        if tokens
+            .first()
+            .is_some_and(|token| token.eq_ignore_ascii_case("ALL"))
+        {
+            return Ok((0..self.layouts.active().viewports().len()).collect());
+        }
+        let index = if let Some(token) = tokens.first() {
+            token
+                .parse::<usize>()
+                .map_err(|_| "Viewport number must be positive.")?
+        } else {
+            self.active_viewport
+                .as_ref()
+                .filter(|active| active.layout == self.layouts.active().name())
+                .map_or_else(
+                    || {
+                        self.remembered_viewport_index()
+                            .map_or(1, |index| index + 1)
+                    },
+                    |active| active.index + 1,
+                )
+        };
+        if index == 0 || self.layouts.active().viewports().get(index - 1).is_none() {
+            return Err(format!("Viewport {index} does not exist."));
+        }
+        Ok(vec![index - 1])
+    }
+
+    fn vplayer_command(&mut self, tokens: &[&str]) -> Result<(), String> {
+        if tokens.len() == 1 && matches!(tokens[0].to_ascii_uppercase().as_str(), "?" | "LIST") {
+            let listing = self.vplayer_listing();
+            self.message(listing, false);
+            return Ok(());
+        }
+        let (freeze, patterns, target) = self.parse_vplayer_request(tokens)?;
+        let targets = self.resolve_vplayer_targets(target)?;
+        self.apply_vplayer_change(freeze, &patterns, targets)
+    }
+
+    fn vplayer_listing(&self) -> String {
+        self.layouts
+            .active()
+            .viewports()
+            .iter()
+            .enumerate()
+            .map(|(index, viewport)| {
+                format!("VP{}={}", index + 1, viewport.frozen_layers().join(","))
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
+    fn parse_vplayer_request(
+        &self,
+        tokens: &[&str],
+    ) -> Result<(bool, Vec<String>, VplayerTarget), String> {
+        if tokens.len() < 3 {
+            return Err("VPLAYER FREEZE|THAW layer[,layer...] target.".into());
+        }
+        let freeze = match tokens[0].to_ascii_uppercase().as_str() {
+            "FREEZE" => true,
+            "THAW" => false,
+            _ => return Err("VPLAYER requires FREEZE, THAW, or LIST.".into()),
+        };
+        let patterns = tokens[1]
+            .split(',')
+            .map(str::trim)
+            .filter(|pattern| !pattern.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if patterns.is_empty() {
+            return Err("VPLAYER requires at least one layer pattern.".into());
+        }
+        let target = match tokens[2].to_ascii_uppercase().as_str() {
+            "ALL" if tokens.len() == 3 => VplayerTarget::All,
+            "CURRENT" if tokens.len() == 3 => VplayerTarget::Current,
+            "EXCEPTCURRENT" if tokens.len() == 3 => VplayerTarget::ExceptCurrent,
+            "SELECT" if tokens.len() == 4 => VplayerTarget::Select(
+                tokens[3]
+                    .split(',')
+                    .map(|token| {
+                        let number = token
+                            .parse::<usize>()
+                            .map_err(|_| "VPLAYER viewport number must be positive.")?;
+                        number
+                            .checked_sub(1)
+                            .ok_or("VPLAYER viewport number must be positive.")
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ),
+            "ALL" | "CURRENT" | "EXCEPTCURRENT" => {
+                return Err("VPLAYER target takes no extra arguments.".into());
+            }
+            "SELECT" => return Err("VPLAYER SELECT requires viewport numbers.".into()),
+            _ => {
+                return Err(
+                    "VPLAYER target must be CURRENT, ALL, SELECT, or EXCEPTCURRENT.".into(),
+                );
+            }
+        };
+        Ok((freeze, patterns, target))
+    }
+
+    fn resolve_vplayer_targets(
+        &self,
+        target: VplayerTarget,
+    ) -> Result<Vec<(String, usize)>, String> {
+        let paper_layouts = self
+            .layouts
+            .names()
+            .filter(|name| !name.eq_ignore_ascii_case("Model"))
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        match target {
+            VplayerTarget::All => Ok(paper_layouts
+                .iter()
+                .flat_map(|name| {
+                    self.layouts.get(name).into_iter().flat_map(move |layout| {
+                        (0..layout.viewports().len()).map(move |index| (name.clone(), index))
+                    })
+                })
+                .collect()),
+            VplayerTarget::Current => {
+                let name = self.layouts.active().name().to_owned();
+                if name.eq_ignore_ascii_case("Model") {
+                    return Err("VPLAYER CURRENT requires a paper layout.".into());
+                }
+                let index = self
+                    .active_viewport
+                    .as_ref()
+                    .filter(|active| active.layout == name)
+                    .map(|active| active.index)
+                    .or_else(|| self.remembered_viewport_index())
+                    .ok_or("The active layout has no target viewport.")?;
+                if self
+                    .layouts
+                    .get(&name)
+                    .and_then(|layout| layout.viewports().get(index))
+                    .is_none()
+                {
+                    return Err("The active layout has no target viewport.".into());
+                }
+                Ok(vec![(name, index)])
+            }
+            VplayerTarget::ExceptCurrent => {
+                let current = self
+                    .active_viewport
+                    .as_ref()
+                    .map(|active| (active.layout.clone(), active.index));
+                Ok(paper_layouts
+                    .iter()
+                    .flat_map(|name| {
+                        self.layouts.get(name).into_iter().flat_map(move |layout| {
+                            (0..layout.viewports().len()).map(move |index| (name.clone(), index))
+                        })
+                    })
+                    .filter(|target| Some(target.clone()) != current)
+                    .collect())
+            }
+            VplayerTarget::Select(indices) => {
+                let name = self.layouts.active().name().to_owned();
+                if name.eq_ignore_ascii_case("Model") {
+                    return Err("VPLAYER SELECT requires a paper layout.".into());
+                }
+                let viewport_count = self.layouts.active().viewports().len();
+                if indices.iter().any(|index| *index >= viewport_count) {
+                    return Err("VPLAYER viewport number is out of range.".into());
+                }
+                Ok(indices
+                    .into_iter()
+                    .map(|index| (name.clone(), index))
+                    .collect())
+            }
+        }
+    }
+
+    fn apply_vplayer_change(
+        &mut self,
+        freeze: bool,
+        patterns: &[String],
+        targets: Vec<(String, usize)>,
+    ) -> Result<(), String> {
+        let mut candidate = self.layouts.clone();
+        for (layout_name, index) in targets {
+            let viewport = candidate
+                .get_mut(&layout_name)
+                .ok_or("Layout does not exist.")?
+                .viewports_mut()
+                .get_mut(index)
+                .ok_or("Viewport does not exist.")?;
+            for layer in self.editor.layers() {
+                if patterns
+                    .iter()
+                    .any(|pattern| wildcard_match(pattern, layer.name()))
+                {
+                    if freeze {
+                        viewport.freeze_layer(layer.name());
+                    } else {
+                        viewport.thaw_layer(layer.name());
+                    }
+                }
+            }
+        }
+        self.layouts = candidate;
         Ok(())
     }
     fn vpclip_command(&mut self, t: &[&str]) -> Result<(), String> {
@@ -229,14 +535,34 @@ impl OpenCadApp {
         } else {
             Some(render_layout_svg(&document, Some(&layout_name), true)?)
         };
+        let model_inners = if viewports.is_empty() {
+            vec![(inner.clone(), plot_bounds)]
+        } else {
+            viewports
+                .iter()
+                .map(|viewport| {
+                    render_layout_svg_for_viewport(&document, None, true, Some(viewport))
+                })
+                .collect::<Result<Vec<_>, _>>()?
+        };
         let setup = active_layout.setup();
-        let plotted = render_svg_plot(
-            &inner,
-            plot_bounds,
-            paper.as_ref().map(|(svg, bounds)| (svg.as_str(), *bounds)),
-            setup,
-            viewports,
-        )?;
+        let plotted = if viewports.is_empty() {
+            render_svg_plot(
+                &inner,
+                plot_bounds,
+                paper.as_ref().map(|(svg, bounds)| (svg.as_str(), *bounds)),
+                setup,
+                viewports,
+            )?
+        } else {
+            render_svg_plot_for_viewports(
+                &model_inners,
+                plot_bounds,
+                paper.as_ref().map(|(svg, bounds)| (svg.as_str(), *bounds)),
+                setup,
+                viewports,
+            )?
+        };
         fs::write(t[0], plotted).map_err(|e| format!("Cannot write plot: {e}"))
     }
     fn plot_pdf_command(&mut self, t: &[&str]) -> Result<(), String> {
@@ -258,7 +584,17 @@ fn render_layout_svg(
     layout_name: Option<&str>,
     allow_empty: bool,
 ) -> Result<(String, Option<[f64; 4]>), String> {
-    match crate::svg::render_document_svg_for_layout_with_bounds(document, layout_name) {
+    render_layout_svg_for_viewport(document, layout_name, allow_empty, None)
+}
+
+fn render_layout_svg_for_viewport(
+    document: &DxfDocument,
+    layout_name: Option<&str>,
+    allow_empty: bool,
+    viewport: Option<&Viewport>,
+) -> Result<(String, Option<[f64; 4]>), String> {
+    match crate::svg::render_document_svg_for_layout_with_viewport(document, layout_name, viewport)
+    {
         Ok((svg, bounds)) => Ok((svg, Some(bounds))),
         Err(crate::svg::SvgError::EmptyDrawing) if allow_empty => Ok((
             "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".into(),
@@ -282,8 +618,23 @@ fn render_svg_plot(
     setup: PageSetup,
     viewports: &[Viewport],
 ) -> Result<String, String> {
+    render_svg_plot_for_viewports(
+        &[(inner.to_owned(), plot_bounds)],
+        plot_bounds,
+        paper,
+        setup,
+        viewports,
+    )
+}
+
+fn render_svg_plot_for_viewports(
+    prepared: &[(String, Option<[f64; 4]>)],
+    plot_bounds: Option<[f64; 4]>,
+    paper: Option<(&str, Option<[f64; 4]>)>,
+    setup: PageSetup,
+    viewports: &[Viewport],
+) -> Result<String, String> {
     let [w, h] = setup.dimensions();
-    let body = extract_svg_body(inner);
     let source_bounds = if viewports.is_empty() {
         paper
             .and_then(|(_, bounds)| bounds)
@@ -306,23 +657,34 @@ fn render_svg_plot(
     append_svg_page_clip(&mut defs, plot_transform, h);
     if paper.is_none() || !viewports.is_empty() {
         if viewports.is_empty() {
+            let (inner, bounds) = prepared.first().expect("SVG preparation is nonempty");
             append_svg_plot_group(
                 &mut groups,
-                &body,
+                &extract_svg_body(inner),
                 plot_transform,
-                plot_bounds.unwrap_or(source_bounds),
+                bounds.or(plot_bounds).unwrap_or(source_bounds),
                 None,
                 h,
                 None,
             );
         } else {
             for (index, viewport) in viewports.iter().enumerate() {
+                let (inner, bounds) = prepared
+                    .get(index)
+                    .or_else(|| prepared.first())
+                    .expect("viewport SVG preparation is nonempty");
+                let body = extract_svg_body(inner);
+                if !viewport.is_displayed() {
+                    append_svg_viewport_clips(&mut defs, plot_transform, viewport, index, h);
+                    continue;
+                }
                 append_svg_viewport_clips(&mut defs, plot_transform, viewport, index, h);
+                let bounds = bounds.or(plot_bounds).unwrap_or(source_bounds);
                 append_svg_plot_group(
                     &mut groups,
                     &body,
                     plot_transform,
-                    plot_bounds.unwrap_or(source_bounds),
+                    bounds,
                     Some(viewport),
                     h,
                     Some(index),
@@ -466,7 +828,7 @@ fn render_pdf_page(
     let setup = layout.setup();
     let viewports = layout.viewports();
     let model_prepared = if layout.name() == "Model" || !viewports.is_empty() {
-        prepare_pdf_entities(document, document_path, None)?
+        prepare_pdf_entities(document, document_path, None, None)?
     } else {
         PreparedPdfEntities {
             entities: Vec::new(),
@@ -480,6 +842,7 @@ fn render_pdf_page(
             document,
             document_path,
             Some(layout.name()),
+            None,
         )?)
     };
     let model_bounds = model_prepared.bounds;
@@ -508,6 +871,12 @@ fn render_pdf_page(
     };
     for viewport_index in 0..viewport_passes {
         let active_viewport = viewports.get(viewport_index);
+        if active_viewport.is_some_and(|viewport| !viewport.is_displayed()) {
+            continue;
+        }
+        let viewport_prepared = active_viewport
+            .map(|viewport| prepare_pdf_entities(document, document_path, None, Some(viewport)))
+            .transpose()?;
         let construction_bounds = active_viewport
             .map(Viewport::world)
             .or(model_bounds)
@@ -521,7 +890,12 @@ fn render_pdf_page(
             content: &mut content,
             xobjects: &mut xobjects,
         };
-        render_pdf_viewport_pass(&model_prepared.entities, &mut pass)?;
+        render_pdf_viewport_pass(
+            viewport_prepared
+                .as_ref()
+                .map_or(&model_prepared.entities, |prepared| &prepared.entities),
+            &mut pass,
+        )?;
     }
     if let Some(paper) = paper_prepared {
         let mut pass = PdfEntityPass {
@@ -1039,8 +1413,9 @@ fn prepare_pdf_entities(
     document: &DxfDocument,
     document_path: Option<&Path>,
     layout_name: Option<&str>,
+    viewport: Option<&Viewport>,
 ) -> Result<PreparedPdfEntities, String> {
-    let mut entities = flatten_entities(document, layout_name)?;
+    let mut entities = flatten_entities(document, layout_name, viewport)?;
     entities.retain(|entity| match entity {
         Entity::Image(image) => image.visible(),
         Entity::PdfUnderlay(underlay) => underlay.display_enabled(),
@@ -1058,6 +1433,7 @@ fn prepare_pdf_entities(
 fn flatten_entities(
     document: &DxfDocument,
     layout_name: Option<&str>,
+    viewport: Option<&Viewport>,
 ) -> Result<Vec<Entity>, String> {
     let mut entities = Vec::new();
     for (index, entity) in document.entities().iter().enumerate() {
@@ -1071,6 +1447,16 @@ fn flatten_entities(
             .layer_for_entity(index)
             .is_none_or(|layer| layer.is_visible());
         if !in_scope || !visible {
+            continue;
+        }
+        if let Some(viewport) = viewport
+            && document.entity_layer(index).is_some_and(|layer| {
+                viewport
+                    .frozen_layers()
+                    .iter()
+                    .any(|frozen| frozen.eq_ignore_ascii_case(layer))
+            })
+        {
             continue;
         }
         let expanded = crate::block_expansion::expand_entity(document, entity)

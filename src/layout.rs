@@ -537,6 +537,12 @@ pub struct Viewport {
     scale: f64,
     clip_boundary: Option<Vec<crate::Point3>>,
     clip_enabled: bool,
+    display: bool,
+    display_locked: bool,
+    frozen_layers: Vec<String>,
+    frozen_layer_handles: Vec<String>,
+    imported_display_status: Option<i32>,
+    imported_displayed: Option<bool>,
 }
 impl Viewport {
     pub fn new(world: [f64; 4], paper: [f64; 4], scale: f64) -> Result<Self, GeometryError> {
@@ -555,6 +561,12 @@ impl Viewport {
             scale: 1.0,
             clip_boundary: None,
             clip_enabled: false,
+            display: true,
+            display_locked: false,
+            frozen_layers: Vec::new(),
+            frozen_layer_handles: Vec::new(),
+            imported_display_status: None,
+            imported_displayed: None,
         };
         v.set_scale(scale)?;
         Ok(v)
@@ -573,6 +585,61 @@ impl Viewport {
     }
     pub fn clip_enabled(&self) -> bool {
         self.clip_enabled
+    }
+    pub fn is_displayed(&self) -> bool {
+        self.display
+    }
+    pub fn set_displayed(&mut self, displayed: bool) {
+        self.display = displayed;
+    }
+    pub fn is_display_locked(&self) -> bool {
+        self.display_locked
+    }
+    pub fn set_display_locked(&mut self, locked: bool) {
+        self.display_locked = locked;
+    }
+    pub fn frozen_layers(&self) -> &[String] {
+        &self.frozen_layers
+    }
+    pub fn freeze_layer(&mut self, name: impl Into<String>) -> bool {
+        let name = name.into();
+        if self
+            .frozen_layers
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(&name))
+        {
+            return false;
+        }
+        self.frozen_layers.push(name);
+        true
+    }
+    pub fn thaw_layer(&mut self, name: &str) -> bool {
+        let Some(index) = self
+            .frozen_layers
+            .iter()
+            .position(|existing| existing.eq_ignore_ascii_case(name))
+        else {
+            return false;
+        };
+        self.frozen_layers.remove(index);
+        true
+    }
+    pub(crate) fn frozen_layer_handles(&self) -> &[String] {
+        &self.frozen_layer_handles
+    }
+    pub(crate) fn set_imported_frozen_layer_handles(&mut self, handles: Vec<String>) {
+        self.frozen_layer_handles = handles;
+    }
+    pub(crate) fn set_imported_display_status(&mut self, status: Option<i32>, displayed: bool) {
+        self.imported_display_status = status;
+        self.imported_displayed = Some(displayed);
+    }
+    pub(crate) fn display_status_changed(&self) -> bool {
+        self.imported_displayed
+            .is_some_and(|value| value != self.display)
+    }
+    pub(crate) fn imported_display_status(&self) -> Option<i32> {
+        self.imported_display_status
     }
     pub fn set_clip_enabled(&mut self, enabled: bool) -> Result<(), GeometryError> {
         if enabled && self.clip_boundary.is_none() {

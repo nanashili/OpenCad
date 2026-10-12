@@ -277,7 +277,15 @@ pub(crate) fn render_document_svg_for_layout_with_bounds(
     document: &DxfDocument,
     layout_name: Option<&str>,
 ) -> Result<(String, [f64; 4]), SvgError> {
-    let prepared = prepare_document_svg(document, layout_name)?;
+    render_document_svg_for_layout_with_viewport(document, layout_name, None)
+}
+
+pub(crate) fn render_document_svg_for_layout_with_viewport(
+    document: &DxfDocument,
+    layout_name: Option<&str>,
+    viewport: Option<&crate::Viewport>,
+) -> Result<(String, [f64; 4]), SvgError> {
+    let prepared = prepare_document_svg(document, layout_name, viewport)?;
     let bounds = entity_bounds(&prepared.entities)?;
     let svg = render_styled_entities_svg(
         &prepared.entities,
@@ -296,6 +304,7 @@ struct PreparedDocumentSvg {
 fn prepare_document_svg(
     document: &DxfDocument,
     layout_name: Option<&str>,
+    viewport: Option<&crate::Viewport>,
 ) -> Result<PreparedDocumentSvg, SvgError> {
     let mut entities = Vec::new();
     let mut colors = Vec::new();
@@ -314,6 +323,14 @@ fn prepare_document_svg(
             .layer_for_entity(index)
             .expect("entity layer exists");
         if !layer.is_visible() {
+            continue;
+        }
+        if let Some(viewport) = viewport
+            && viewport
+                .frozen_layers()
+                .iter()
+                .any(|frozen| frozen.eq_ignore_ascii_case(layer.name()))
+        {
             continue;
         }
         let expanded = expand_document_entity(document, entity)?;

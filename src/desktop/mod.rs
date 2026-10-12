@@ -885,6 +885,7 @@ impl OpenCadApp {
                 self.path.as_deref().and_then(Path::parent),
             );
         }
+        self.refresh_interaction_viewport();
         self.message(
             if changed {
                 if redo { "Redone." } else { "Undone." }

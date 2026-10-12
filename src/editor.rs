@@ -89,6 +89,7 @@ pub struct Editor {
     layer_visibility_restore: Option<Vec<LayerState>>,
     layer_previous_state: Option<Vec<LayerState>>,
     interaction_space: Option<EntitySpace>,
+    interaction_frozen_layers: Option<Vec<String>>,
 }
 
 impl Default for Editor {
@@ -206,6 +207,7 @@ impl Editor {
             layer_visibility_restore: None,
             layer_previous_state: None,
             interaction_space: None,
+            interaction_frozen_layers: None,
         }
     }
 
@@ -243,6 +245,21 @@ impl Editor {
             .filter(|index| self.entity_matches_space(*index, &active_space))
             .collect();
         self.current.selection = visible_selection;
+    }
+
+    pub fn set_interaction_frozen_layers(&mut self, layers: Option<Vec<String>>) {
+        self.interaction_frozen_layers = layers;
+        let active_space = self.active_space();
+        let selection = self
+            .current
+            .selection
+            .iter()
+            .copied()
+            .filter(|index| {
+                self.entity_matches_space(*index, &active_space) && self.is_entity_visible(*index)
+            })
+            .collect();
+        self.current.selection = selection;
     }
     pub fn entity_space(&self, index: usize) -> Option<&EntitySpace> {
         self.current.document.entity_space(index)
@@ -476,6 +493,15 @@ impl Editor {
     }
     pub fn is_entity_visible(&self, index: usize) -> bool {
         self.layer_for_entity(index).is_some_and(Layer::is_visible)
+            && self.layer_for_entity(index).is_none_or(|layer| {
+                self.interaction_frozen_layers
+                    .as_ref()
+                    .is_none_or(|frozen| {
+                        !frozen
+                            .iter()
+                            .any(|name| name.eq_ignore_ascii_case(layer.name()))
+                    })
+            })
             && self.entity_matches_space(index, &self.active_space())
     }
 

@@ -1,6 +1,10 @@
 use super::*;
 use egui::{Button, RichText};
 
+fn quote_command_token(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
 impl OpenCadApp {
     pub(super) fn inspector_panel(&mut self, ui: &mut egui::Ui) {
         if !self.workspace.layers && !self.workspace.properties {
@@ -144,6 +148,12 @@ impl OpenCadApp {
                 egui::CollapsingHeader::new("Show Layer List").id_salt("layer_details").show(ui, |ui| self.layer_panel(ui));
                 ui.separator();
             }
+            if !self.layouts.active().name().eq_ignore_ascii_case("Model")
+                && !self.layouts.active().viewports().is_empty()
+            {
+                self.viewport_panel(ui);
+                ui.separator();
+            }
             if !self.workspace.properties { return; }
             ui.horizontal(|ui| {
                 let caption = ui.label(RichText::new("Properties").font(egui::FontId::new(11.0, egui::FontFamily::Name("Caption".into()))));
@@ -272,6 +282,72 @@ impl OpenCadApp {
             });
             });
         });
+    }
+
+    fn viewport_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("Viewports").font(egui::FontId::new(
+            11.0,
+            egui::FontFamily::Name("Caption".into()),
+        )));
+        let selected_layer = (self.editor.selection().len() == 1)
+            .then(|| self.editor.entity_layer(self.editor.selection()[0]))
+            .flatten()
+            .map(str::to_owned)
+            .or_else(|| Some(self.editor.current_layer().to_owned()));
+        let viewport_states = self
+            .layouts
+            .active()
+            .viewports()
+            .iter()
+            .map(|viewport| {
+                let frozen = selected_layer.as_deref().is_some_and(|layer| {
+                    viewport
+                        .frozen_layers()
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(layer))
+                });
+                (
+                    viewport.is_displayed(),
+                    viewport.is_display_locked(),
+                    frozen,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (index, (displayed, locked, frozen)) in viewport_states.into_iter().enumerate() {
+            let number = index + 1;
+            ui.horizontal(|ui| {
+                ui.label(format!("VP{number}"));
+                if ui.button(if displayed { "On" } else { "Off" }).clicked() {
+                    self.run_viewport_control(format!(
+                        "MVIEW {} {number}",
+                        if displayed { "OFF" } else { "ON" }
+                    ));
+                }
+                if ui.button(if locked { "Unlock" } else { "Lock" }).clicked() {
+                    self.run_viewport_control(format!(
+                        "MVIEW LOCK {} {number}",
+                        if locked { "OFF" } else { "ON" }
+                    ));
+                }
+                if let Some(layer) = selected_layer.as_deref()
+                    && ui
+                        .button(if frozen { "Thaw layer" } else { "Freeze layer" })
+                        .clicked()
+                {
+                    let layer = quote_command_token(layer);
+                    self.run_viewport_control(format!(
+                        "VPLAYER {} {layer} SELECT {number}",
+                        if frozen { "THAW" } else { "FREEZE" }
+                    ));
+                }
+            });
+        }
+    }
+
+    fn run_viewport_control(&mut self, command: String) {
+        if let Err(error) = self.command_result(&command) {
+            self.message(error, true);
+        }
     }
 
     fn entity_style_panel(&mut self, ui: &mut egui::Ui) {

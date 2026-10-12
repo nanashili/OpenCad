@@ -1061,14 +1061,27 @@ impl OpenCadApp {
             }
             "CLOSE" => self.close_line(),
             "ZOOM" if rest.eq_ignore_ascii_case("EXTENTS") || rest.eq_ignore_ascii_case("E") => {
+                if self.viewport_navigation_locked() {
+                    return Err("The active viewport is locked.".into());
+                }
                 self.fit_pending = true;
             }
-            "FIT" => self.fit_pending = true,
+            "FIT" => {
+                if self.viewport_navigation_locked() {
+                    return Err("The active viewport is locked.".into());
+                }
+                self.fit_pending = true;
+            }
             "ZOOM" if rest.to_ascii_uppercase().ends_with('X') => {
                 let factor = number(&rest[..rest.len() - 1])?;
                 self.zoom_camera(factor)?;
             }
-            "PAN" if !rest.is_empty() => self.camera.pan(rest)?,
+            "PAN" if !rest.is_empty() => {
+                if self.viewport_navigation_locked() {
+                    return Err("The active viewport is locked.".into());
+                }
+                self.camera.pan(rest)?;
+            }
             "PAN" | "P" => self.set_tool(Tool::Pan),
             "CLOSEDRAWING" => self.request(PendingAction::CloseDrawing),
             "TOOLSETS" => self.workspace.tools = !self.workspace.tools,

@@ -11,6 +11,9 @@ impl OpenCadApp {
             .get(&active.layout)
             .and_then(|layout| layout.viewports().get(active.index))
             .ok_or("The active viewport no longer exists.")?;
+        if viewport.is_display_locked() {
+            return Err("The active viewport is locked.".into());
+        }
         let paper = viewport.paper();
         let paper_center = active.paper_camera.center;
         let paper_scale = active.paper_camera.scale;
@@ -220,8 +223,37 @@ impl OpenCadApp {
             .last_viewports
             .get(layout.name())
             .copied()
-            .filter(|index| layout.viewports().get(*index).is_some());
-        remembered.or_else(|| (!layout.viewports().is_empty()).then_some(0))
+            .filter(|index| {
+                layout
+                    .viewports()
+                    .get(*index)
+                    .is_some_and(crate::Viewport::is_displayed)
+            });
+        remembered.or_else(|| {
+            layout
+                .viewports()
+                .iter()
+                .position(crate::Viewport::is_displayed)
+        })
+    }
+
+    pub(super) fn viewport_navigation_locked(&self) -> bool {
+        self.active_viewport.as_ref().is_some_and(|active| {
+            self.layouts
+                .get(&active.layout)
+                .and_then(|layout| layout.viewports().get(active.index))
+                .is_some_and(crate::Viewport::is_display_locked)
+        })
+    }
+
+    pub(super) fn refresh_interaction_viewport(&mut self) {
+        let frozen_layers = self.active_viewport.as_ref().and_then(|active| {
+            self.layouts
+                .get(&active.layout)
+                .and_then(|layout| layout.viewports().get(active.index))
+                .map(|viewport| viewport.frozen_layers().to_vec())
+        });
+        self.editor.set_interaction_frozen_layers(frozen_layers);
     }
 
     fn pspace_command(&mut self, tokens: &[&str]) -> Result<(), String> {
@@ -243,6 +275,9 @@ impl OpenCadApp {
             .viewports()
             .get(index)
             .ok_or_else(|| format!("Viewport {} does not exist.", index + 1))?;
+        if !viewport.is_displayed() {
+            return Err(format!("Viewport {} is off.", index + 1));
+        }
         let (paper_center, paper_scale) = self.camera.view_state();
         let model_scale = paper_scale * viewport.scale();
         let world = viewport.world();
@@ -267,6 +302,8 @@ impl OpenCadApp {
         });
         self.last_viewports.insert(layout.name().to_owned(), index);
         self.editor.set_interaction_space(Some(EntitySpace::Model));
+        self.editor
+            .set_interaction_frozen_layers(Some(viewport.frozen_layers().to_vec()));
         self.editor.select(Vec::new());
         self.finish();
         self.message(
@@ -279,6 +316,7 @@ impl OpenCadApp {
     pub(super) fn leave_model_space(&mut self) -> Result<(), String> {
         let Some(active) = self.active_viewport.as_ref() else {
             self.editor.set_interaction_space(None);
+            self.editor.set_interaction_frozen_layers(None);
             return Ok(());
         };
         let valid_layout = self
@@ -300,6 +338,7 @@ impl OpenCadApp {
             self.layouts = self.editor.layouts().clone();
         }
         self.editor.set_interaction_space(None);
+        self.editor.set_interaction_frozen_layers(None);
         self.editor.select(Vec::new());
         self.message("Paper space active.".to_owned(), false);
         Ok(())

@@ -389,6 +389,8 @@ struct TextField {
 #[derive(Clone, Debug)]
 struct LayerRecord {
     original: Layer,
+    handle: Option<String>,
+    handle_insertion: usize,
     flags: Coordinate,
     color: Coordinate,
     linetype: TextField,
@@ -510,6 +512,7 @@ impl DxfDocument {
                     });
                 }
                 let layer_data = read_layers(input)?;
+                import_viewport_display_state(input, &mut layouts, &layer_data);
                 let linetype_data = read_linetypes(input)?;
                 let dimension_data = read_dimensions(input)?;
                 let entity_layers = records
@@ -2090,7 +2093,19 @@ impl DxfDocument {
                 ));
             }
         }
-        self.layer_data.write_changes(&mut changes, &mut tables);
+        let generated_layer_handles = allocate_frozen_layer_handles(
+            &self.source,
+            &self.layer_data,
+            &self.layouts,
+            &mut object_handle,
+        );
+        let newline = if self.source.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        self.layer_data
+            .write_changes(&mut changes, &mut tables, &generated_layer_handles, newline);
         let mline_style_objects = serialize_mline_styles(&self.mline_styles, "\n");
         let mline_style_records = serialize_mline_style_records(&self.mline_styles, "\n");
         let mline_style_spans = mline_style_spans(&self.source);
@@ -2206,6 +2221,8 @@ impl DxfDocument {
         let viewport_entities = serialize_viewports(
             &self.layouts,
             &self.source,
+            &self.layer_data,
+            &generated_layer_handles,
             &self.layout_source_names,
             &mut object_handle,
             "\n",
@@ -2295,7 +2312,14 @@ impl DxfDocument {
             &self.removed_layout_names,
             &mut changes,
         );
-        patch_existing_viewports(&self.source, &self.layouts, &layout_mapping, &mut changes);
+        patch_existing_viewports(
+            &self.source,
+            &self.layouts,
+            &self.layer_data,
+            &generated_layer_handles,
+            &layout_mapping,
+            &mut changes,
+        );
         for (index, (source_name, start, end, _source_handle)) in layout_spans.iter().enumerate() {
             let current_name = self
                 .layout_source_names
@@ -3122,6 +3146,11 @@ fn read_layers(input: &str) -> Result<LayerData, DxfError> {
                 };
                 let record = Some(LayerRecord {
                     original: layer.clone(),
+                    handle: fields
+                        .iter()
+                        .find(|field| field.code == 5)
+                        .map(|field| field.value.to_owned()),
+                    handle_insertion: fields.first().map_or(group.start, |field| field.start),
                     flags,
                     color,
                     linetype: TextField {
@@ -3151,10 +3180,51 @@ fn read_layers(input: &str) -> Result<LayerData, DxfError> {
 }
 
 impl LayerData {
-    fn write_changes(&self, changes: &mut Vec<(usize, usize, String)>, tables: &mut String) {
+    fn handle_for_name(&self, name: &str, generated: &HashMap<String, String>) -> Option<String> {
+        self.layers
+            .iter()
+            .zip(&self.records)
+            .find(|(layer, _)| layer.name.eq_ignore_ascii_case(name))
+            .and_then(|(layer, record)| {
+                record
+                    .as_ref()
+                    .and_then(|record| record.handle.clone())
+                    .or_else(|| generated.get(&layer.name.to_ascii_lowercase()).cloned())
+            })
+    }
+
+    fn name_for_handle(&self, handle: &str) -> Option<&str> {
+        self.layers
+            .iter()
+            .zip(&self.records)
+            .find(|(_, record)| {
+                record
+                    .as_ref()
+                    .and_then(|record| record.handle.as_deref())
+                    .is_some_and(|value| value.eq_ignore_ascii_case(handle))
+            })
+            .map(|(layer, _)| layer.name.as_str())
+    }
+
+    fn write_changes(
+        &self,
+        changes: &mut Vec<(usize, usize, String)>,
+        tables: &mut String,
+        generated: &HashMap<String, String>,
+        newline: &str,
+    ) {
         let mut added = String::new();
         for (layer, record) in self.layers.iter().zip(&self.records) {
             if let Some(record) = record {
+                if record.handle.is_none()
+                    && let Some(handle) = generated.get(&layer.name.to_ascii_lowercase())
+                {
+                    changes.push((
+                        record.handle_insertion,
+                        record.handle_insertion,
+                        format!("5{newline}{handle}{newline}"),
+                    ));
+                }
                 if layer.linetype != record.linetype.value {
                     changes.push((
                         record.linetype.start,
@@ -3171,7 +3241,11 @@ impl LayerData {
                     }
                 }
             } else {
-                write_layer(&mut added, layer);
+                write_layer(
+                    &mut added,
+                    layer,
+                    generated.get(&layer.name.to_ascii_lowercase()),
+                );
             }
         }
         if let Some(table) = &self.table {
@@ -3188,13 +3262,83 @@ impl LayerData {
     }
 }
 
-fn write_layer(output: &mut String, layer: &Layer) {
+fn write_layer(output: &mut String, layer: &Layer, handle: Option<&String>) {
+    let handle_field = handle.map_or_else(String::new, |handle| format!("5\n{handle}\n"));
     write!(
         output,
-        "0\nLAYER\n2\n{}\n70\n{}\n62\n{}\n6\n{}\n",
+        "0\nLAYER\n{handle_field}2\n{}\n70\n{}\n62\n{}\n6\n{}\n",
         layer.name, layer.flags, layer.color, layer.linetype
     )
     .expect("writing to a String cannot fail");
+}
+
+fn allocate_frozen_layer_handles(
+    source: &str,
+    layers: &LayerData,
+    layouts: &crate::LayoutCollection,
+    next: &mut u64,
+) -> HashMap<String, String> {
+    let wanted = wanted_frozen_layer_names(layouts);
+    let mut used = native_handle_values(source);
+    let mut generated = HashMap::new();
+    for (layer, record) in layers.layers.iter().zip(&layers.records) {
+        let key = layer.name.to_ascii_lowercase();
+        if !wanted.contains(&key)
+            || record
+                .as_ref()
+                .and_then(|record| record.handle.as_ref())
+                .is_some()
+        {
+            continue;
+        }
+        let Some(candidate) = allocate_unique_handle(&mut used, next) else {
+            break;
+        };
+        generated.insert(key, format!("{candidate:X}"));
+    }
+    generated
+}
+
+fn wanted_frozen_layer_names(layouts: &crate::LayoutCollection) -> HashSet<String> {
+    let mut wanted = HashSet::new();
+    for name in layouts.names() {
+        if let Some(layout) = layouts.get(name) {
+            for viewport in layout.viewports() {
+                for frozen in viewport.frozen_layers() {
+                    wanted.insert(frozen.to_ascii_lowercase());
+                }
+            }
+        }
+    }
+    wanted
+}
+
+fn native_handle_values(source: &str) -> HashSet<u64> {
+    let mut used = HashSet::new();
+    let mut groups = Groups::new(source);
+    while let Ok(Some(group)) = groups.next() {
+        if matches!(group.code, 5 | 105 | 320..=369 | 390..=399 | 480 | 481)
+            && let Ok(handle) = u64::from_str_radix(group.value.trim(), 16)
+        {
+            used.insert(handle);
+        }
+    }
+    used
+}
+
+fn allocate_unique_handle(used: &mut HashSet<u64>, next: &mut u64) -> Option<u64> {
+    let start = *next;
+    let mut candidate = start;
+    loop {
+        if used.insert(candidate) {
+            *next = candidate.checked_add(1).unwrap_or(1);
+            return Some(candidate);
+        }
+        candidate = candidate.checked_add(1).unwrap_or(1);
+        if candidate == start {
+            return None;
+        }
+    }
 }
 
 /// Extract LINE geometry from a supported R12 document. Use `DxfDocument` to
@@ -6642,6 +6786,8 @@ fn patch_layout_owned_records(
 fn patch_existing_viewports(
     source: &str,
     layouts: &crate::LayoutCollection,
+    layers: &LayerData,
+    generated_layer_handles: &HashMap<String, String>,
     mapping: &[(&str, &str)],
     changes: &mut Vec<(usize, usize, String)>,
 ) {
@@ -6658,6 +6804,9 @@ fn patch_existing_viewports(
             break;
         };
         if is_overall_paper_viewport(&fields) {
+            continue;
+        }
+        if !has_importable_viewport_geometry(&fields) {
             continue;
         }
         let source_name = fields
@@ -6693,7 +6842,15 @@ fn patch_existing_viewports(
         } else {
             "\n"
         };
-        patch_existing_viewport_fields(&fields, record_end, newline, viewport, changes);
+        patch_existing_viewport_fields(
+            &fields,
+            record_end,
+            newline,
+            viewport,
+            layers,
+            generated_layer_handles,
+            changes,
+        );
     }
 }
 
@@ -6702,6 +6859,34 @@ fn patch_existing_viewport_fields(
     record_end: usize,
     newline: &str,
     viewport: &crate::Viewport,
+    layers: &LayerData,
+    generated_layer_handles: &HashMap<String, String>,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let mut missing = String::new();
+    patch_viewport_geometry(fields, newline, viewport, &mut missing, changes);
+    patch_viewport_display(fields, newline, viewport, &mut missing, changes);
+    let frozen_handles = desired_frozen_layer_handles(viewport, layers, generated_layer_handles);
+    patch_viewport_frozen_layers(
+        fields,
+        record_end,
+        newline,
+        &frozen_handles,
+        &mut missing,
+        changes,
+    );
+    if missing.is_empty() {
+        return;
+    }
+    let insertion = viewport_subclass_insertion(fields, record_end, newline);
+    changes.push((insertion, insertion, missing));
+}
+
+fn patch_viewport_geometry(
+    fields: &[Group<'_>],
+    newline: &str,
+    viewport: &crate::Viewport,
+    missing: &mut String,
     changes: &mut Vec<(usize, usize, String)>,
 ) {
     let paper = viewport.paper();
@@ -6710,7 +6895,7 @@ fn patch_existing_viewport_fields(
     let world = viewport.world();
     let world_width = (width / viewport.scale()).max(f64::EPSILON);
     let world_height = (height / viewport.scale()).max(f64::EPSILON);
-    let values = [
+    for (code, value) in [
         (10, ((paper[0] + paper[2]) / 2.0).to_string()),
         (20, ((paper[1] + paper[3]) / 2.0).to_string()),
         (40, width.to_string()),
@@ -6718,26 +6903,127 @@ fn patch_existing_viewport_fields(
         (12, (world[0] + world_width / 2.0).to_string()),
         (22, (world[1] + world_height / 2.0).to_string()),
         (45, world_height.to_string()),
-    ];
-    let mut missing = String::new();
-    for (code, value) in values {
-        let Some(field) = fields.iter().find(|field| field.code == code) else {
-            missing.push_str(&format!("{code}{newline}{value}{newline}"));
-            continue;
+    ] {
+        patch_viewport_scalar(fields, code, value, newline, missing, changes);
+    }
+}
+
+fn patch_viewport_display(
+    fields: &[Group<'_>],
+    newline: &str,
+    viewport: &crate::Viewport,
+    missing: &mut String,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let source_flags = fields
+        .iter()
+        .find(|field| field.code == 90)
+        .and_then(|field| field.value.parse::<u32>().ok())
+        .unwrap_or(0);
+    let modeled_flags = (if viewport.clip_enabled() { 65_536 } else { 0 })
+        | (if viewport.is_display_locked() {
+            0x4000
+        } else {
+            0
+        })
+        | (if !viewport.is_displayed() {
+            0x20_000
+        } else {
+            0
+        });
+    let flags = (source_flags & !(0x4000 | 0x20_000 | 65_536)) | modeled_flags;
+    patch_viewport_scalar(fields, 90, flags.to_string(), newline, missing, changes);
+    if viewport.display_status_changed() {
+        let status = if viewport.is_displayed() {
+            viewport
+                .imported_display_status()
+                .filter(|status| *status != 0)
+                .unwrap_or(1)
+                .to_string()
+        } else {
+            "0".to_owned()
         };
-        if numeric_values_equal(field.value, &value) {
+        patch_viewport_scalar(fields, 68, status, newline, missing, changes);
+    }
+}
+
+fn patch_viewport_frozen_layers(
+    fields: &[Group<'_>],
+    record_end: usize,
+    newline: &str,
+    frozen_handles: &[String],
+    missing: &mut String,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let source_frozen = fields
+        .iter()
+        .filter(|field| field.code == 331)
+        .map(|field| field.value.to_owned())
+        .collect::<Vec<_>>();
+    for (index, field) in fields
+        .iter()
+        .enumerate()
+        .filter(|(_, field)| field.code == 331)
+    {
+        if frozen_handles
+            .iter()
+            .any(|current| current.eq_ignore_ascii_case(field.value))
+        {
             continue;
         }
-        changes.push((field.value_start, field.value_end, value));
+        let end = fields.get(index + 1).map_or(record_end, |next| next.start);
+        changes.push((field.start, end, String::new()));
     }
-    if missing.is_empty() {
-        return;
+    for handle in frozen_handles {
+        if !source_frozen
+            .iter()
+            .any(|source| source.eq_ignore_ascii_case(handle))
+        {
+            missing.push_str(&format!("331{newline}{handle}{newline}"));
+        }
     }
-    let insertion = fields
+}
+
+fn desired_frozen_layer_handles(
+    viewport: &crate::Viewport,
+    layers: &LayerData,
+    generated_layer_handles: &HashMap<String, String>,
+) -> Vec<String> {
+    let mut handles = viewport.frozen_layer_handles().to_vec();
+    for name in viewport.frozen_layers() {
+        if let Some(handle) = layers.handle_for_name(name, generated_layer_handles)
+            && !handles
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(handle.as_str()))
+        {
+            handles.push(handle);
+        }
+    }
+    handles
+}
+
+fn patch_viewport_scalar(
+    fields: &[Group<'_>],
+    code: u16,
+    value: String,
+    newline: &str,
+    missing: &mut String,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    if let Some(field) = fields.iter().find(|field| field.code == code) {
+        if !numeric_values_equal(field.value, &value) {
+            changes.push((field.value_start, field.value_end, value));
+        }
+    } else {
+        missing.push_str(&format!("{code}{newline}{value}{newline}"));
+    }
+}
+
+fn viewport_subclass_insertion(fields: &[Group<'_>], record_end: usize, newline: &str) -> usize {
+    fields
         .iter()
         .find(|field| field.code == 100 && field.value == "AcDbViewport")
-        .map_or(record_end, |marker| marker.value_end + newline.len());
-    changes.push((insertion, insertion, missing));
+        .map_or(record_end, |marker| marker.value_end + newline.len())
 }
 
 fn numeric_values_equal(left: &str, right: &str) -> bool {
@@ -6889,6 +7175,80 @@ fn allocate_native_viewport_id(used_ids: &mut Vec<u64>) -> Option<u64> {
     }
 }
 
+fn import_viewport_display_state(
+    input: &str,
+    layouts: &mut crate::LayoutCollection,
+    layers: &LayerData,
+) {
+    let fallback_target = layouts
+        .names()
+        .find(|name| *name != "Model")
+        .unwrap_or("Model")
+        .to_owned();
+    let mut groups = Groups::new(input);
+    let mut viewport_indices: HashMap<String, usize> = HashMap::new();
+    while let Ok(Some(group)) = groups.next() {
+        if group.code != 0 || group.value != "VIEWPORT" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        if is_overall_paper_viewport(&fields) {
+            continue;
+        }
+        if !has_importable_viewport_geometry(&fields) {
+            continue;
+        }
+        let target = fields
+            .iter()
+            .find(|field| field.code == 410)
+            .map(|field| field.value)
+            .filter(|name| layouts.get(name).is_some())
+            .unwrap_or(fallback_target.as_str())
+            .to_owned();
+        let index = viewport_indices
+            .entry(target.to_ascii_lowercase())
+            .or_insert(0);
+        let current_index = *index;
+        *index += 1;
+        let Some(viewport) = layouts
+            .get_mut(&target)
+            .and_then(|layout| layout.viewports_mut().get_mut(current_index))
+        else {
+            continue;
+        };
+        let status = fields
+            .iter()
+            .find(|field| field.code == 68)
+            .and_then(|field| field.value.parse::<i32>().ok());
+        let flags = fields
+            .iter()
+            .find(|field| field.code == 90)
+            .and_then(|field| field.value.parse::<u32>().ok())
+            .unwrap_or(0);
+        let displayed = status != Some(0) && flags & 0x20_000 == 0;
+        viewport.set_displayed(displayed);
+        viewport.set_display_locked(flags & 0x4000 != 0);
+        viewport.set_imported_display_status(status, displayed);
+
+        let handles = fields
+            .iter()
+            .filter(|field| field.code == 331)
+            .map(|field| field.value.to_owned())
+            .collect::<Vec<_>>();
+        let mut unresolved_handles = Vec::new();
+        for handle in &handles {
+            if let Some(name) = layers.name_for_handle(handle) {
+                viewport.freeze_layer(name.to_owned());
+            } else {
+                unresolved_handles.push(handle.to_owned());
+            }
+        }
+        viewport.set_imported_frozen_layer_handles(unresolved_handles);
+    }
+}
+
 fn import_viewports(input: &str, layouts: &mut crate::LayoutCollection) {
     let fallback_target = layouts
         .names()
@@ -6968,9 +7328,25 @@ fn import_viewports(input: &str, layouts: &mut crate::LayoutCollection) {
     }
 }
 
+fn has_importable_viewport_geometry(fields: &[Group<'_>]) -> bool {
+    let number = |code| {
+        fields
+            .iter()
+            .find(|field| field.code == code)
+            .and_then(|field| field.value.parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+    };
+    matches!(
+        (number(10), number(20), number(40), number(41)),
+        (Some(_), Some(_), Some(width), Some(height)) if width > 0.0 && height > 0.0
+    )
+}
+
 fn serialize_viewports(
     layouts: &crate::LayoutCollection,
     source: &str,
+    layers: &LayerData,
+    generated_layer_handles: &HashMap<String, String>,
     current_layout_names: &[String],
     handle: &mut u64,
     newline: &str,
@@ -7026,15 +7402,41 @@ fn serialize_viewports(
                 }
             }
             let clip_flags = if viewport.clip_enabled() { 65_536 } else { 0 };
-            let clip_fields = clip_handle.map_or_else(
-                || format!("90{newline}{clip_flags}{newline}"),
-                |value| format!("90{newline}{clip_flags}{newline}340{newline}{value:X}{newline}"),
-            );
+            let viewport_flags = (if viewport.is_display_locked() {
+                0x4000
+            } else {
+                0
+            }) | (if !viewport.is_displayed() {
+                0x20_000
+            } else {
+                0
+            }) | clip_flags;
+            let frozen_layers = viewport
+                .frozen_layer_handles()
+                .iter()
+                .cloned()
+                .chain(
+                    viewport
+                        .frozen_layers()
+                        .iter()
+                        .filter_map(|name| layers.handle_for_name(name, generated_layer_handles)),
+                )
+                .collect::<Vec<_>>();
+            let frozen_fields = frozen_layers
+                .iter()
+                .map(|value| format!("331{newline}{value}{newline}"))
+                .collect::<String>();
+            let clip_reference = clip_handle.map_or_else(String::new, |value| {
+                format!("340{newline}{value:X}{newline}")
+            });
             output.push_str(&format!(
-                "0{newline}VIEWPORT{newline}5{newline}{:X}{newline}100{newline}AcDbEntity{newline}8{newline}0{newline}67{newline}1{newline}410{newline}{name}{newline}100{newline}AcDbViewport{newline}10{newline}{paper_cx}{newline}20{newline}{paper_cy}{newline}40{newline}{width}{newline}41{newline}{height}{newline}12{newline}{world_cx}{newline}22{newline}{world_cy}{newline}45{newline}{world_height}{newline}{clip_fields}69{newline}{}{newline}",
+                "0{newline}VIEWPORT{newline}5{newline}{:X}{newline}100{newline}AcDbEntity{newline}8{newline}0{newline}67{newline}1{newline}410{newline}{name}{newline}100{newline}AcDbViewport{newline}10{newline}{paper_cx}{newline}20{newline}{paper_cy}{newline}40{newline}{width}{newline}41{newline}{height}{newline}12{newline}{world_cx}{newline}22{newline}{world_cy}{newline}45{newline}{world_height}{newline}68{newline}{status}{newline}90{newline}{viewport_flags}{newline}{clip_reference}69{newline}{}{newline}{frozen_fields}",
                 *handle,
                 native_id,
-                clip_fields = clip_fields,
+                status = if viewport.is_displayed() { 1 } else { 0 },
+                viewport_flags = viewport_flags,
+                clip_reference = clip_reference,
+                frozen_fields = frozen_fields,
             ));
             *handle = handle.saturating_add(1);
         }
@@ -7074,6 +7476,7 @@ fn source_viewport_states(
         let Some(source_name) = source_name else {
             continue;
         };
+        let imported = has_importable_viewport_geometry(&fields);
         let name = source_layouts
             .iter()
             .position(|candidate| candidate.eq_ignore_ascii_case(&source_name))
@@ -7083,12 +7486,12 @@ fn source_viewport_states(
             .iter_mut()
             .find(|(existing, _, _)| existing.eq_ignore_ascii_case(&name))
         {
-            *count += 1;
+            *count += usize::from(imported);
             if let Some(native_id) = native_id {
                 ids.push(native_id);
             }
         } else {
-            states.push((name, 1, native_id.into_iter().collect()));
+            states.push((name, usize::from(imported), native_id.into_iter().collect()));
         }
     }
     states
