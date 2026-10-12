@@ -33,7 +33,7 @@ impl OpenCadApp {
         Some(result.inspect(|_| {
             if matches!(
                 verb.to_ascii_uppercase().as_str(),
-                "LAYOUT" | "PAGESETUP" | "MVIEW" | "VPCLIP"
+                "PAGESETUP" | "MVIEW" | "VPCLIP"
             ) {
                 self.editor.set_layouts(self.layouts.clone());
             }
@@ -48,36 +48,52 @@ impl OpenCadApp {
                 if t.len() != 2 {
                     return Err("LAYOUT NEW name.".into());
                 };
-                self.layouts
-                    .create(
+                self.editor
+                    .create_layout(
                         t[1],
                         PageSetup::new(210.0, 297.0).map_err(|e| e.to_string())?,
                     )
-                    .map_err(|e| e.to_string())
+                    .map_err(|e| e.to_string())?;
+                self.layouts = self.editor.layouts().clone();
+                Ok(())
             }
             "SET" => {
                 if t.len() != 2 {
                     return Err("LAYOUT SET name.".into());
                 };
-                self.layouts.set_active(t[1]).map_err(|e| e.to_string())
+                self.editor
+                    .activate_layout(t[1])
+                    .map_err(|e| e.to_string())?;
+                self.layouts = self.editor.layouts().clone();
+                Ok(())
             }
             "COPY" => {
                 if t.len() != 3 {
                     return Err("LAYOUT COPY source target.".into());
                 };
-                self.layouts.copy(t[1], t[2]).map_err(|e| e.to_string())
+                self.editor
+                    .copy_layout(t[1], t[2])
+                    .map_err(|e| e.to_string())?;
+                self.layouts = self.editor.layouts().clone();
+                Ok(())
             }
             "RENAME" => {
                 if t.len() != 3 {
                     return Err("LAYOUT RENAME old new.".into());
                 };
-                self.layouts.rename(t[1], t[2]).map_err(|e| e.to_string())
+                self.editor
+                    .rename_layout(t[1], t[2])
+                    .map_err(|e| e.to_string())?;
+                self.layouts = self.editor.layouts().clone();
+                Ok(())
             }
             "DELETE" => {
                 if t.len() != 2 {
                     return Err("LAYOUT DELETE name.".into());
                 };
-                self.layouts.delete(t[1]).map_err(|e| e.to_string())
+                self.editor.delete_layout(t[1]).map_err(|e| e.to_string())?;
+                self.layouts = self.editor.layouts().clone();
+                Ok(())
             }
             "LIST" => {
                 self.message(self.layouts.names().collect::<Vec<_>>().join(", "), false);
@@ -112,10 +128,29 @@ impl OpenCadApp {
         if t.len() != 2 {
             return Err("MVIEW min-point max-point.".into());
         };
+        if self.layouts.active().name() == "Model" {
+            return Err("MVIEW requires a paper layout.".into());
+        }
         let a = parse_point(t[0], self.drawing_elevation())?;
         let b = parse_point(t[1], a.z())?;
-        let world =
-            crate::layout::world_bounds(self.editor.entities()).map_err(|e| e.to_string())?;
+        let model_entities = self
+            .editor
+            .entities()
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| {
+                self.editor
+                    .document()
+                    .entity_space(*index)
+                    .is_none_or(|space| space.matches_layout("Model"))
+            })
+            .map(|(_, entity)| entity.clone())
+            .collect::<Vec<_>>();
+        let world = if model_entities.is_empty() {
+            [0.0, 0.0, 100.0, 100.0]
+        } else {
+            crate::layout::world_bounds(&model_entities).map_err(|e| e.to_string())?
+        };
         let scale = self.layouts.active().setup().scale();
         self.layouts.active_mut().add_viewport(
             Viewport::new(world, [a.x(), a.y(), b.x(), b.y()], scale).map_err(|e| e.to_string())?,
@@ -163,15 +198,30 @@ impl OpenCadApp {
         if t.len() != 1 {
             return Err("PLOT output.svg.".into());
         };
-        let (inner, plot_bounds) =
-            crate::svg::render_document_svg_with_bounds(self.editor.document())
-                .map_err(|e| e.to_string())?;
+        let layout_name = self.layouts.active().name().to_owned();
+        let viewports = self.layouts.active().viewports();
+        let model_scope_needed = layout_name == "Model" || !viewports.is_empty();
+        let (inner, plot_bounds) = if model_scope_needed {
+            render_layout_svg(self.editor.document(), None, layout_name != "Model")?
+        } else {
+            empty_layout_svg()
+        };
+        let paper = if layout_name == "Model" {
+            None
+        } else {
+            Some(render_layout_svg(
+                self.editor.document(),
+                Some(&layout_name),
+                true,
+            )?)
+        };
         let setup = self.layouts.active().setup();
         let plotted = render_svg_plot(
             &inner,
             plot_bounds,
+            paper.as_ref().map(|(svg, bounds)| (svg.as_str(), *bounds)),
             setup,
-            self.layouts.active().viewports(),
+            viewports,
         )?;
         fs::write(t[0], plotted).map_err(|e| format!("Cannot write plot: {e}"))
     }
@@ -180,64 +230,109 @@ impl OpenCadApp {
             return Err("EXPORTPDF output.pdf.".into());
         };
         let layout = self.layouts.active();
-        let bytes = vector_pdf(
-            self.editor.document(),
-            layout.setup(),
-            layout.viewports(),
-            self.path.as_deref(),
-        )
-        .map_err(|e| e.to_string())?;
+        let bytes = vector_pdf(self.editor.document(), layout, self.path.as_deref())
+            .map_err(|e| e.to_string())?;
         fs::write(t[0], bytes).map_err(|e| format!("Cannot write PDF: {e}"))
     }
 }
 
+fn render_layout_svg(
+    document: &DxfDocument,
+    layout_name: Option<&str>,
+    allow_empty: bool,
+) -> Result<(String, Option<[f64; 4]>), String> {
+    match crate::svg::render_document_svg_for_layout_with_bounds(document, layout_name) {
+        Ok((svg, bounds)) => Ok((svg, Some(bounds))),
+        Err(crate::svg::SvgError::EmptyDrawing) if allow_empty => Ok((
+            "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".into(),
+            None,
+        )),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn empty_layout_svg() -> (String, Option<[f64; 4]>) {
+    (
+        "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>".into(),
+        None,
+    )
+}
+
 fn render_svg_plot(
     inner: &str,
-    plot_bounds: [f64; 4],
+    plot_bounds: Option<[f64; 4]>,
+    paper: Option<(&str, Option<[f64; 4]>)>,
     setup: PageSetup,
     viewports: &[Viewport],
 ) -> Result<String, String> {
     let [w, h] = setup.dimensions();
-    let body = inner
+    let body = extract_svg_body(inner);
+    let source_bounds = if viewports.is_empty() {
+        paper
+            .and_then(|(_, bounds)| bounds)
+            .or(plot_bounds)
+            .unwrap_or([0.0, 0.0, 1.0, 1.0])
+    } else {
+        let viewport_bounds =
+            plot_source_bounds(plot_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]), viewports);
+        paper
+            .and_then(|(_, bounds)| bounds)
+            .map_or(viewport_bounds, |bounds| {
+                union_bounds(viewport_bounds, bounds)
+            })
+    };
+    let plot_transform = setup
+        .plot_transform(source_bounds)
+        .map_err(|e| e.to_string())?;
+    let mut defs = String::new();
+    let mut groups = String::new();
+    append_svg_page_clip(&mut defs, plot_transform, h);
+    if paper.is_none() || !viewports.is_empty() {
+        if viewports.is_empty() {
+            append_svg_plot_group(
+                &mut groups,
+                &body,
+                plot_transform,
+                plot_bounds.unwrap_or(source_bounds),
+                None,
+                h,
+                None,
+            );
+        } else {
+            for (index, viewport) in viewports.iter().enumerate() {
+                append_svg_viewport_clips(&mut defs, plot_transform, viewport, index, h);
+                append_svg_plot_group(
+                    &mut groups,
+                    &body,
+                    plot_transform,
+                    plot_bounds.unwrap_or(source_bounds),
+                    Some(viewport),
+                    h,
+                    Some(index),
+                );
+            }
+        }
+    }
+    if let Some((paper_inner, Some(paper_bounds))) = paper {
+        let paper_body = extract_svg_body(paper_inner);
+        let transform = svg_body_transform(plot_transform, paper_bounds, None, h);
+        groups.push_str(&format!(
+            "<g clip-path=\"url(#plotclip)\"><g transform=\"{transform}\">{paper_body}</g></g>"
+        ));
+    }
+    Ok(format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" width=\"{w}\" height=\"{h}\" role=\"img\" aria-label=\"Plotted CAD layout\"><defs>{defs}</defs><rect width=\"100%\" height=\"100%\" fill=\"white\"/>{groups}</svg>\n"
+    ))
+}
+
+fn extract_svg_body(inner: &str) -> String {
+    inner
         .lines()
         .skip(1)
         .take_while(|line| !line.trim_start().starts_with("</svg>"))
         .filter(|line| !line.contains("<rect width=\"100%\" height=\"100%\" fill=\"white\""))
         .collect::<Vec<_>>()
-        .join("\n");
-    let plot_transform = setup
-        .plot_transform(plot_source_bounds(plot_bounds, viewports))
-        .map_err(|e| e.to_string())?;
-    let mut defs = String::new();
-    let mut groups = String::new();
-    append_svg_page_clip(&mut defs, plot_transform, h);
-    if viewports.is_empty() {
-        append_svg_plot_group(
-            &mut groups,
-            &body,
-            plot_transform,
-            plot_bounds,
-            None,
-            h,
-            None,
-        );
-    } else {
-        for (index, viewport) in viewports.iter().enumerate() {
-            append_svg_viewport_clips(&mut defs, plot_transform, viewport, index, h);
-            append_svg_plot_group(
-                &mut groups,
-                &body,
-                plot_transform,
-                plot_bounds,
-                Some(viewport),
-                h,
-                Some(index),
-            );
-        }
-    }
-    Ok(format!(
-        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {w} {h}\" width=\"{w}\" height=\"{h}\" role=\"img\" aria-label=\"Plotted CAD layout\"><defs>{defs}</defs><rect width=\"100%\" height=\"100%\" fill=\"white\"/>{groups}</svg>\n"
-    ))
+        .join("\n")
 }
 
 fn append_svg_page_clip(defs: &mut String, transform: PlotTransform, page_height: f64) {
@@ -318,12 +413,11 @@ fn append_svg_plot_group(
 
 fn vector_pdf(
     document: &DxfDocument,
-    setup: PageSetup,
-    viewports: &[Viewport],
+    layout: &Layout,
     document_path: Option<&Path>,
 ) -> Result<Vec<u8>, String> {
     let mut pdf = PdfWriter::new();
-    let page = render_pdf_page(document, setup, viewports, document_path, &mut pdf)?;
+    let page = render_pdf_page(document, layout, document_path, &mut pdf)?;
     pdf.finish_pages(vec![page])
 }
 
@@ -341,42 +435,66 @@ pub(super) fn vector_pdf_layouts(
     let mut pdf = PdfWriter::new();
     let mut pages = Vec::with_capacity(layouts.len());
     for layout in layouts {
-        pages.push(render_pdf_page(
-            document,
-            layout.setup(),
-            layout.viewports(),
-            document_path,
-            &mut pdf,
-        )?);
+        pages.push(render_pdf_page(document, layout, document_path, &mut pdf)?);
     }
     pdf.finish_pages(pages)
 }
 
 fn render_pdf_page(
     document: &DxfDocument,
-    setup: PageSetup,
-    viewports: &[Viewport],
+    layout: &Layout,
     document_path: Option<&Path>,
     pdf: &mut PdfWriter,
 ) -> Result<PdfPage, String> {
-    let prepared = prepare_pdf_entities(document, document_path)?;
-    let entities = &prepared.entities;
-    let b = prepared.bounds;
+    let setup = layout.setup();
+    let viewports = layout.viewports();
+    let model_prepared = if layout.name() == "Model" || !viewports.is_empty() {
+        prepare_pdf_entities(document, document_path, None)?
+    } else {
+        PreparedPdfEntities {
+            entities: Vec::new(),
+            bounds: None,
+        }
+    };
+    let paper_prepared = if layout.name() == "Model" {
+        None
+    } else {
+        Some(prepare_pdf_entities(
+            document,
+            document_path,
+            Some(layout.name()),
+        )?)
+    };
+    let model_bounds = model_prepared.bounds;
+    let paper_bounds = paper_prepared.as_ref().and_then(|prepared| prepared.bounds);
     let [w, h] = setup.dimensions();
-    let source_bounds = plot_source_bounds(b, viewports);
+    let source_bounds = if viewports.is_empty() {
+        paper_bounds
+            .or(model_bounds)
+            .unwrap_or([0.0, 0.0, 1.0, 1.0])
+    } else {
+        let viewport_bounds =
+            plot_source_bounds(model_bounds.unwrap_or([0.0, 0.0, 1.0, 1.0]), viewports);
+        paper_bounds.map_or(viewport_bounds, |bounds| {
+            union_bounds(viewport_bounds, bounds)
+        })
+    };
     let plot_transform = setup
         .plot_transform(source_bounds)
         .map_err(|error| error.to_string())?;
     let mut content = String::from("1 w 0 0 0 RG\n");
     let mut xobjects = Vec::new();
-    let viewport_passes = if viewports.is_empty() {
-        1
+    let viewport_passes = if layout.name() == "Model" || !viewports.is_empty() {
+        viewports.len().max(1)
     } else {
-        viewports.len()
+        0
     };
     for viewport_index in 0..viewport_passes {
         let active_viewport = viewports.get(viewport_index);
-        let construction_bounds = active_viewport.map_or(b, Viewport::world);
+        let construction_bounds = active_viewport
+            .map(Viewport::world)
+            .or(model_bounds)
+            .unwrap_or([0.0, 0.0, 1.0, 1.0]);
         let mut pass = PdfEntityPass {
             active_viewport,
             plot_transform,
@@ -386,7 +504,19 @@ fn render_pdf_page(
             content: &mut content,
             xobjects: &mut xobjects,
         };
-        render_pdf_viewport_pass(entities, &mut pass)?;
+        render_pdf_viewport_pass(&model_prepared.entities, &mut pass)?;
+    }
+    if let Some(paper) = paper_prepared {
+        let mut pass = PdfEntityPass {
+            active_viewport: None,
+            plot_transform,
+            construction_bounds: paper.bounds.unwrap_or(source_bounds),
+            document_path,
+            pdf,
+            content: &mut content,
+            xobjects: &mut xobjects,
+        };
+        render_pdf_viewport_pass(&paper.entities, &mut pass)?;
     }
     let xobject_dict = xobjects
         .iter()
@@ -813,7 +943,7 @@ fn append_raster_plot_image(
 
 struct PreparedPdfEntities {
     entities: Vec<Entity>,
-    bounds: [f64; 4],
+    bounds: Option<[f64; 4]>,
 }
 
 fn plot_source_bounds(entity_bounds: [f64; 4], viewports: &[Viewport]) -> [f64; 4] {
@@ -832,6 +962,15 @@ fn plot_source_bounds(entity_bounds: [f64; 4], viewports: &[Viewport]) -> [f64; 
                 bounds[3].max(paper[3]),
             ]
         })
+}
+
+fn union_bounds(left: [f64; 4], right: [f64; 4]) -> [f64; 4] {
+    [
+        left[0].min(right[0]),
+        left[1].min(right[1]),
+        left[2].max(right[2]),
+        left[3].max(right[3]),
+    ]
 }
 
 fn transformed_rect(transform: PlotTransform, rect: [f64; 4]) -> [f64; 4] {
@@ -882,22 +1021,46 @@ fn svg_body_transform(
 fn prepare_pdf_entities(
     document: &DxfDocument,
     document_path: Option<&Path>,
+    layout_name: Option<&str>,
 ) -> Result<PreparedPdfEntities, String> {
-    let mut entities = flatten_entities(document)?;
+    let mut entities = flatten_entities(document, layout_name)?;
     entities.retain(|entity| match entity {
         Entity::Image(image) => image.visible(),
         Entity::PdfUnderlay(underlay) => underlay.display_enabled(),
         _ => true,
     });
     resolve_underlay_sizes(&mut entities, document_path)?;
-    let bounds = crate::layout::world_bounds(&entities).map_err(|e| e.to_string())?;
+    let bounds = if entities.is_empty() {
+        None
+    } else {
+        Some(crate::layout::world_bounds(&entities).map_err(|e| e.to_string())?)
+    };
     Ok(PreparedPdfEntities { entities, bounds })
 }
 
-fn flatten_entities(document: &DxfDocument) -> Result<Vec<Entity>, String> {
-    crate::block_expansion::expand_entities(document)
-        .map(|expanded| expanded.into_iter().map(|item| item.entity).collect())
-        .map_err(|error| error.to_string())
+fn flatten_entities(
+    document: &DxfDocument,
+    layout_name: Option<&str>,
+) -> Result<Vec<Entity>, String> {
+    let mut entities = Vec::new();
+    for (index, entity) in document.entities().iter().enumerate() {
+        let in_scope = document
+            .entity_space(index)
+            .is_none_or(|space| match layout_name {
+                Some(name) => space.matches_layout(name),
+                None => space.matches_layout("Model"),
+            });
+        let visible = document
+            .layer_for_entity(index)
+            .is_none_or(|layer| layer.is_visible());
+        if !in_scope || !visible {
+            continue;
+        }
+        let expanded = crate::block_expansion::expand_entity(document, entity)
+            .map_err(|error| error.to_string())?;
+        entities.extend(expanded);
+    }
+    Ok(entities)
 }
 
 fn resolve_underlay_sizes(

@@ -41,6 +41,7 @@ mod reference;
 mod region;
 mod script;
 pub(crate) mod solid;
+mod space;
 mod spline;
 mod svg;
 mod table_formula;
@@ -120,6 +121,7 @@ pub use script::{
     ScriptCommand, ScriptError, ScriptErrorKind, ScriptRunner, parse_script, parse_script_named,
 };
 pub use solid::{Face3, Mesh3};
+pub use space::EntitySpace;
 pub use spline::Spline3;
 pub use svg::{SvgError, render_document_svg, render_entities_svg, render_svg};
 pub use table_formula::{CellValue, EvaluatedTable, FormulaError, copy_formula, evaluate_table};

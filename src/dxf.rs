@@ -2,6 +2,7 @@
 //! Geometry uses finite coordinates and named layers. Other table and block
 //! contents are retained without interpreting their contents.
 
+use crate::EntitySpace;
 use crate::group::EntityGroup;
 use crate::{Anchor, ConstraintError, ConstraintKind, ConstraintRecord, ConstraintSet, LinePair};
 use crate::{
@@ -205,6 +206,156 @@ struct EntityRecord {
     polyline: Option<PolylineRecord>,
 }
 
+fn entity_space_from_record(
+    input: &str,
+    record: &EntityRecord,
+    line: usize,
+) -> Result<EntitySpace, DxfError> {
+    let source = input.get(record.start..record.end).ok_or(DxfError {
+        line,
+        kind: DxfErrorKind::UnexpectedEnd,
+    })?;
+    let mut groups = Groups::new(source);
+    let mut paper_flag = None;
+    let mut layout = None;
+    let mut entity_started = false;
+    while let Some(group) = groups.next()? {
+        if group.code == 0 {
+            if entity_started {
+                break;
+            }
+            entity_started = true;
+            continue;
+        }
+        match group.code {
+            67 => {
+                if paper_flag.is_some() {
+                    return Err(DxfError {
+                        line: group.line,
+                        kind: DxfErrorKind::DuplicateField(67),
+                    });
+                }
+                paper_flag = Some(group.value.parse::<u8>().map_err(|_| DxfError {
+                    line: group.line,
+                    kind: DxfErrorKind::InvalidCoordinate(67),
+                })?);
+            }
+            410 => {
+                if layout.is_some() {
+                    return Err(DxfError {
+                        line: group.line,
+                        kind: DxfErrorKind::DuplicateField(410),
+                    });
+                }
+                if group.value.trim().is_empty() {
+                    return Err(DxfError {
+                        line: group.line,
+                        kind: DxfErrorKind::InvalidCoordinate(410),
+                    });
+                }
+                layout = Some(group.value.to_owned());
+            }
+            _ => {}
+        }
+    }
+    match paper_flag.unwrap_or(0) {
+        0 => Ok(EntitySpace::Model),
+        1 => Ok(EntitySpace::Paper(layout.unwrap_or_default())),
+        _ => Err(DxfError {
+            line,
+            kind: DxfErrorKind::InvalidCoordinate(67),
+        }),
+    }
+}
+
+fn read_entity_spaces(
+    input: &str,
+    records: &[Option<EntityRecord>],
+    layouts: &mut crate::LayoutCollection,
+) -> Result<Vec<EntitySpace>, DxfError> {
+    let mut fallback = layouts
+        .names()
+        .find(|name| !name.eq_ignore_ascii_case("Model"))
+        .map(|name| name.to_owned());
+    let mut spaces = Vec::with_capacity(records.len());
+    for record in records {
+        let Some(record) = record else {
+            return Err(DxfError {
+                line: 0,
+                kind: DxfErrorKind::Expected("imported entity record"),
+            });
+        };
+        let mut space = entity_space_from_record(input, record, record.source_line)?;
+        if let EntitySpace::Paper(name) = &mut space {
+            if name.is_empty() {
+                if fallback.is_none() {
+                    let setup = crate::PageSetup::new(210.0, 297.0).map_err(|_| DxfError {
+                        line: record.source_line,
+                        kind: DxfErrorKind::InvalidCoordinate(410),
+                    })?;
+                    layouts.create("Layout1", setup).map_err(|_| DxfError {
+                        line: record.source_line,
+                        kind: DxfErrorKind::InvalidCoordinate(410),
+                    })?;
+                    fallback = Some("Layout1".to_owned());
+                }
+                *name = fallback.clone().ok_or(DxfError {
+                    line: record.source_line,
+                    kind: DxfErrorKind::InvalidCoordinate(410),
+                })?;
+            } else if !valid_space_name(name) {
+                return Err(DxfError {
+                    line: record.source_line,
+                    kind: DxfErrorKind::InvalidCoordinate(410),
+                });
+            } else if let Some(canonical) = layouts
+                .names()
+                .find(|layout| layout.eq_ignore_ascii_case(name))
+                .map(|layout| layout.to_owned())
+            {
+                *name = canonical;
+            } else {
+                let setup = crate::PageSetup::new(210.0, 297.0).map_err(|_| DxfError {
+                    line: record.source_line,
+                    kind: DxfErrorKind::InvalidCoordinate(410),
+                })?;
+                layouts.create(name.clone(), setup).map_err(|_| DxfError {
+                    line: record.source_line,
+                    kind: DxfErrorKind::InvalidCoordinate(410),
+                })?;
+            }
+        }
+        spaces.push(space);
+    }
+    Ok(spaces)
+}
+
+fn valid_space_name(name: &str) -> bool {
+    !name.trim().is_empty()
+        && !name.eq_ignore_ascii_case("Model")
+        && !name.chars().any(char::is_control)
+}
+
+fn canonical_layout_name(layouts: &crate::LayoutCollection, name: &str) -> Option<String> {
+    layouts
+        .names()
+        .find(|candidate| candidate.eq_ignore_ascii_case(name))
+        .map(str::to_owned)
+}
+
+fn normalized_entity_space(space: EntitySpace, layouts: &crate::LayoutCollection) -> EntitySpace {
+    match space {
+        EntitySpace::Paper(name) if name.is_empty() => layouts
+            .names()
+            .find(|layout| !layout.eq_ignore_ascii_case("Model"))
+            .map_or_else(
+                || EntitySpace::Paper("Layout1".to_owned()),
+                |layout| EntitySpace::Paper(layout.to_owned()),
+            ),
+        space => space,
+    }
+}
+
 #[derive(Clone, Debug)]
 struct EntityProperties {
     layer: TextField,
@@ -293,6 +444,8 @@ pub struct DxfDocument {
     imported_block_count: usize,
     block_replacements: Vec<BlockDefinition>,
     layouts: crate::LayoutCollection,
+    layout_source_names: Vec<String>,
+    removed_layout_names: HashSet<String>,
     groups: Vec<EntityGroup>,
     reordered: bool,
     constraints: ConstraintSet,
@@ -312,6 +465,7 @@ pub struct DxfDocument {
     entity_handles: Vec<u64>,
     data_links: Vec<DataLink>,
     named_fields: Vec<NamedField>,
+    entity_spaces: Vec<EntitySpace>,
 }
 
 impl DxfDocument {
@@ -331,6 +485,7 @@ impl DxfDocument {
         let active_view = read_active_view(input);
         let (data_links, named_fields) = read_data_metadata(input);
         let mut layouts = read_layouts(input);
+        let layout_source_names = source_layout_names(input);
         read_page_setup_metadata(input, &mut layouts)?;
         let mut seen = [false; 5];
         let mut previous_section = 0;
@@ -418,6 +573,14 @@ impl DxfDocument {
                     }
                 }
                 read_dynamic_metadata(input, &mut block_definitions, &mut entities, &records)?;
+                let entity_spaces = read_entity_spaces(input, &records, &mut layouts)?;
+                if let Some(active) = read_active_layout(input)
+                    && let Some(canonical) = canonical_layout_name(&layouts, &active)
+                {
+                    layouts
+                        .set_active(&canonical)
+                        .expect("canonical active layout must be present");
+                }
                 let mut used_handles = HashSet::new();
                 let mut next_entity_handle = next_handle(input);
                 let mut stable_entity_handles = Vec::with_capacity(records.len());
@@ -453,6 +616,8 @@ impl DxfDocument {
                     block_definitions,
                     block_replacements: Vec::new(),
                     layouts,
+                    layout_source_names,
+                    removed_layout_names: HashSet::new(),
                     groups: read_groups(input),
                     reordered: false,
                     constraints: read_constraints(input, &entity_handles(input)),
@@ -472,6 +637,7 @@ impl DxfDocument {
                     entity_handles: stable_entity_handles,
                     data_links,
                     named_fields,
+                    entity_spaces,
                 });
             }
             if (marker.code, marker.value) != (0, "SECTION") {
@@ -617,6 +783,33 @@ impl DxfDocument {
 
     pub fn entities(&self) -> &[Entity] {
         &self.entities
+    }
+
+    pub fn entity_space(&self, index: usize) -> Option<&EntitySpace> {
+        self.entity_spaces.get(index)
+    }
+
+    pub fn set_entity_space(&mut self, index: usize, space: EntitySpace) -> Result<bool, DxfError> {
+        if index >= self.entities.len() {
+            return Err(group_error(67));
+        }
+        self.validate_entity_space(&space)?;
+        let changed = self.entity_spaces[index] != space;
+        self.entity_spaces[index] = space;
+        Ok(changed)
+    }
+
+    fn validate_entity_space(&self, space: &EntitySpace) -> Result<(), DxfError> {
+        if let EntitySpace::Paper(name) = space
+            && (!valid_space_name(name)
+                || self
+                    .layouts
+                    .names()
+                    .all(|layout| !layout.eq_ignore_ascii_case(name)))
+        {
+            return Err(group_error(410));
+        }
+        Ok(())
     }
     pub fn groups(&self) -> &[EntityGroup] {
         &self.groups
@@ -935,6 +1128,10 @@ impl DxfDocument {
             .iter()
             .map(|index| self.entity_styles[*index].clone())
             .collect();
+        let spaces = order
+            .iter()
+            .map(|index| self.entity_spaces[*index].clone())
+            .collect();
         let mut inverse = vec![0; order.len()];
         for (new, old) in order.iter().copied().enumerate() {
             inverse[old] = new;
@@ -943,6 +1140,7 @@ impl DxfDocument {
         self.records = records;
         self.entity_layers = layers;
         self.entity_styles = styles;
+        self.entity_spaces = spaces;
         self.entity_handles = order
             .iter()
             .map(|index| self.entity_handles[*index])
@@ -975,6 +1173,107 @@ impl DxfDocument {
     }
     pub fn set_layouts(&mut self, layouts: crate::LayoutCollection) {
         self.layouts = layouts;
+    }
+
+    pub fn copy_layout(&mut self, source: &str, target: &str) -> Result<(), DxfError> {
+        if source.eq_ignore_ascii_case("Model")
+            || !valid_space_name(target)
+            || target.eq_ignore_ascii_case("Model")
+        {
+            return Err(group_error(2));
+        }
+        let source = canonical_layout_name(&self.layouts, source).ok_or_else(|| group_error(2))?;
+        if self.layouts.get(&source).is_none()
+            || self
+                .layouts
+                .names()
+                .any(|name| name.eq_ignore_ascii_case(target))
+        {
+            return Err(group_error(2));
+        }
+        let copies = self
+            .entities
+            .iter()
+            .zip(self.entity_layers.iter().zip(&self.entity_styles))
+            .zip(&self.entity_spaces)
+            .filter(|((_, _), space)| space.matches_layout(&source))
+            .map(|((entity, (layer, style)), _)| (entity.clone(), layer.clone(), style.clone()))
+            .collect::<Vec<_>>();
+        for (_, layer, _) in &copies {
+            if self.layer(layer).is_none() {
+                return Err(group_error(8));
+            }
+        }
+        self.layouts
+            .copy(&source, target)
+            .map_err(|_| group_error(2))?;
+        self.removed_layout_names
+            .retain(|name| !name.eq_ignore_ascii_case(target));
+        for (entity, layer, style) in copies {
+            self.push_with_style_in_space(
+                entity,
+                &layer,
+                style,
+                EntitySpace::Paper(target.to_owned()),
+            )
+            .map_err(|error| DxfError {
+                line: 0,
+                kind: DxfErrorKind::Layer(error),
+            })?;
+        }
+        Ok(())
+    }
+
+    pub fn rename_layout(&mut self, old: &str, new: &str) -> Result<(), DxfError> {
+        if old.eq_ignore_ascii_case("Model")
+            || !valid_space_name(new)
+            || self
+                .layouts
+                .names()
+                .any(|name| !name.eq_ignore_ascii_case(old) && name.eq_ignore_ascii_case(new))
+        {
+            return Err(group_error(2));
+        }
+        let old = canonical_layout_name(&self.layouts, old).ok_or_else(|| group_error(2))?;
+        self.layouts.rename(&old, new).map_err(|_| group_error(2))?;
+        for source_name in &mut self.layout_source_names {
+            if source_name.eq_ignore_ascii_case(&old) {
+                *source_name = new.to_owned();
+            }
+        }
+        for space in &mut self.entity_spaces {
+            if let EntitySpace::Paper(name) = space
+                && name.eq_ignore_ascii_case(&old)
+            {
+                *name = new.to_owned();
+            }
+        }
+        Ok(())
+    }
+
+    pub fn delete_layout(&mut self, name: &str) -> Result<(), DxfError> {
+        if !valid_space_name(name)
+            || name.eq_ignore_ascii_case("Model")
+            || canonical_layout_name(&self.layouts, name).is_none()
+        {
+            return Err(group_error(2));
+        }
+        let name = canonical_layout_name(&self.layouts, name).ok_or_else(|| group_error(2))?;
+        self.layouts.delete(&name).map_err(|_| group_error(2))?;
+        self.removed_layout_names.insert(name.to_owned());
+        let mut indices = self
+            .entity_spaces
+            .iter()
+            .enumerate()
+            .filter_map(|(index, space)| space.matches_layout(&name).then_some(index))
+            .collect::<Vec<_>>();
+        indices.sort_unstable_by(|left, right| right.cmp(left));
+        for index in indices {
+            if self.remove(index).is_none() {
+                return Err(group_error(67));
+            }
+        }
+        Ok(())
     }
 
     /// Definitions registered for INSERT expansion. Existing opaque BLOCKS records remain
@@ -1361,6 +1660,25 @@ impl DxfDocument {
         name: &str,
         style: EntityStyle,
     ) -> Result<(), LayerError> {
+        self.push_with_style_in_space(entity, name, style, EntitySpace::Model)
+    }
+
+    pub(crate) fn push_with_style_in_space(
+        &mut self,
+        entity: Entity,
+        name: &str,
+        style: EntityStyle,
+        space: EntitySpace,
+    ) -> Result<(), LayerError> {
+        if let EntitySpace::Paper(layout) = &space
+            && (!valid_space_name(layout)
+                || self
+                    .layouts
+                    .names()
+                    .all(|name| !name.eq_ignore_ascii_case(layout)))
+        {
+            return Err(LayerError::UnknownLayer(layout.clone()));
+        }
         let name = self
             .layer(name)
             .ok_or_else(|| LayerError::UnknownLayer(name.into()))?
@@ -1379,6 +1697,7 @@ impl DxfDocument {
             .saturating_add(1)
             .max(next_handle(&self.source));
         self.entity_handles.push(next);
+        self.entity_spaces.push(space);
         Ok(())
     }
 
@@ -1391,6 +1710,7 @@ impl DxfDocument {
         }
         self.entity_layers.remove(index);
         self.entity_styles.remove(index);
+        self.entity_spaces.remove(index);
         let removed_handle = self.entity_handles.remove(index);
         let removed = self.entities.remove(index);
         self.data_links
@@ -1466,6 +1786,7 @@ impl DxfDocument {
                     .cloned()
                     .unwrap_or_else(|| format!("{:X}", object_handle));
                 insert_entity_handle(&mut serialized, &handle);
+                insert_entity_space(&mut serialized, self.entity_spaces[entity_index].clone());
                 added.push_str(&serialized);
                 generated_handles.insert(entity_index, handle);
                 if let Ok(value) = u64::from_str_radix(
@@ -1491,6 +1812,15 @@ impl DxfDocument {
                 let at = entity_handle_insertion_offset(&self.source, record.start);
                 changes.push((at, at, format!("5{newline}{handle:X}{newline}")));
             }
+            let space_changed = self
+                .entity_spaces
+                .get(entity_index)
+                .zip(Some(record))
+                .is_some_and(|(space, record)| {
+                    entity_space_from_record(&self.source, record, record.source_line).is_ok_and(
+                        |original| normalized_entity_space(original, &self.layouts) != *space,
+                    )
+                });
             if entity != &record.original
                 && matches!(
                     entity,
@@ -1516,6 +1846,7 @@ impl DxfDocument {
                 if let Some(handle) = self.entity_handles.get(entity_index) {
                     insert_entity_handle(&mut replacement, &format!("{handle:X}"));
                 }
+                insert_entity_space(&mut replacement, self.entity_spaces[entity_index].clone());
                 changes.push((record.start, record.end, replacement));
                 continue;
             }
@@ -1534,6 +1865,14 @@ impl DxfDocument {
                 changed,
                 record.fields_end,
             );
+            if space_changed {
+                patch_entity_space(
+                    &self.source,
+                    record,
+                    &self.entity_spaces[entity_index],
+                    &mut changes,
+                );
+            }
             if let (Entity::Polyline(polyline), Entity::Polyline(old), Some(source)) =
                 (entity, &record.original, &record.polyline)
             {
@@ -1675,6 +2014,7 @@ impl DxfDocument {
                     if let Some(handle) = handle {
                         insert_entity_handle(&mut entity_text, &handle);
                     }
+                    insert_entity_space(&mut entity_text, self.entity_spaces[index].clone());
                     serialized.push_str(&entity_text.replace('\n', newline));
                 }
                 changes.retain(|(start, end, _)| *end <= entity_start || *start >= self.insertion);
@@ -1863,13 +2203,13 @@ impl DxfDocument {
             }
             group_objects.clear();
         }
-        let viewport_entities = if self.source.contains("\n0\nVIEWPORT\n")
-            || self.source.contains("\r\n0\r\nVIEWPORT\r\n")
-        {
-            String::new()
-        } else {
-            serialize_viewports(&self.layouts, &self.source, &mut object_handle, "\n")
-        };
+        let viewport_entities = serialize_viewports(
+            &self.layouts,
+            &self.source,
+            &self.layout_source_names,
+            &mut object_handle,
+            "\n",
+        );
         if !viewport_entities.is_empty() {
             changes.push((self.insertion, self.insertion, viewport_entities));
         }
@@ -1938,7 +2278,55 @@ impl DxfDocument {
             }
             dynamic_objects.clear();
         }
-        let layout_objects = serialize_layouts(&self.layouts, &self.source, &mut object_handle);
+        let layout_spans = layout_record_spans(&self.source);
+        let layout_mapping = layout_spans
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (source_name, _, _, _))| {
+                self.layout_source_names
+                    .get(index)
+                    .map(|current| (source_name.as_str(), current.as_str()))
+            })
+            .collect::<Vec<_>>();
+        patch_layout_owned_records(
+            &self.source,
+            &self.layouts,
+            &layout_mapping,
+            &self.removed_layout_names,
+            &mut changes,
+        );
+        for (index, (source_name, start, end, _source_handle)) in layout_spans.iter().enumerate() {
+            let current_name = self
+                .layout_source_names
+                .get(index)
+                .map(String::as_str)
+                .unwrap_or(source_name);
+            if self
+                .removed_layout_names
+                .iter()
+                .any(|removed| removed.eq_ignore_ascii_case(source_name))
+                && self.layouts.get(source_name).is_none()
+            {
+                changes.push((*start, *end, String::new()));
+                continue;
+            }
+            if let Some(layout) = self.layouts.get(current_name) {
+                if !layout_record_matches(&self.source, *start, *end, current_name, layout) {
+                    patch_layout_record(
+                        &self.source,
+                        *start,
+                        *end,
+                        current_name,
+                        layout,
+                        &mut changes,
+                    );
+                }
+            } else {
+                changes.push((*start, *end, String::new()));
+            }
+        }
+        let layout_objects =
+            serialize_layouts(&self.layouts, &self.layout_source_names, &mut object_handle);
         let constraint_objects = serialize_constraints(
             &self.constraints,
             &self.source,
@@ -2072,6 +2460,26 @@ impl DxfDocument {
         replace_header_style(&mut output, "$TEXTSTYLE", &self.current_text_style);
         replace_header_style(&mut output, "$DIMSTYLE", &self.current_dimension_style);
         replace_header_style(&mut output, "$CMLEADERSTYLE", &self.current_mleader_style);
+        let active_layout = self.layouts.active().name();
+        let source_active = read_active_layout(&self.source);
+        let active_changed = source_active
+            .as_ref()
+            .is_some_and(|source_active| !source_active.eq_ignore_ascii_case(active_layout))
+            || (source_active.is_none() && !active_layout.eq_ignore_ascii_case("Model"));
+        if active_changed {
+            replace_header_value(&mut output, "$CTAB", active_layout, "2");
+            replace_header_value(
+                &mut output,
+                "$TILEMODE",
+                if active_layout.eq_ignore_ascii_case("Model") {
+                    "1"
+                } else {
+                    "0"
+                },
+                "70",
+            );
+            ensure_active_header(&mut output, active_layout);
+        }
         replace_header_value(&mut output, "$UCSNAME", &self.current_ucs_name, "2");
         replace_header_point(&mut output, "$UCSORG", self.current_ucs.origin());
         replace_header_point(&mut output, "$UCSXDIR", self.current_ucs.x_axis());
@@ -3574,6 +3982,97 @@ fn insert_entity_handle(output: &mut String, handle: &str) {
     };
     let at = name_start + name_end + 1;
     output.insert_str(at, &format!("5\n{handle}\n"));
+}
+
+fn insert_entity_space(output: &mut String, space: EntitySpace) {
+    let fields = match space {
+        EntitySpace::Model => "67\n0\n".to_owned(),
+        EntitySpace::Paper(name) => format!("67\n1\n410\n{name}\n"),
+    };
+    let at = output
+        .find("\n100\n")
+        .map(|index| index + 1)
+        .or_else(|| output.find("\n10\n").map(|index| index + 1))
+        .unwrap_or(output.len());
+    output.insert_str(at, &fields);
+}
+
+fn patch_entity_space(
+    input: &str,
+    record: &EntityRecord,
+    space: &EntitySpace,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let Some(source) = input.get(record.start..record.end) else {
+        return;
+    };
+    let mut groups = Groups::new(source);
+    let mut fields = Vec::new();
+    let mut header_end = record.end;
+    while let Ok(Some(group)) = groups.next() {
+        if group.code == 0 && !fields.is_empty() {
+            header_end = record.start + group.start;
+            break;
+        }
+        fields.push(group);
+    }
+    let newline = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let insertion = fields
+        .iter()
+        .find(|field| field.code == 100)
+        .map(|field| record.start + field.start)
+        .unwrap_or(header_end);
+    let field_end = |index: usize| {
+        fields
+            .get(index + 1)
+            .map_or(header_end, |next| record.start + next.start)
+    };
+    let flag = fields.iter().position(|field| field.code == 67);
+    let layout = fields.iter().position(|field| field.code == 410);
+    match space {
+        EntitySpace::Model => {
+            if let Some(index) = flag {
+                changes.push((
+                    record.start + fields[index].value_start,
+                    record.start + fields[index].value_end,
+                    "0".to_owned(),
+                ));
+            } else {
+                changes.push((insertion, insertion, format!("67{newline}0{newline}")));
+            }
+            if let Some(index) = layout {
+                changes.push((
+                    record.start + fields[index].start,
+                    field_end(index),
+                    String::new(),
+                ));
+            }
+        }
+        EntitySpace::Paper(name) => {
+            if let Some(index) = flag {
+                changes.push((
+                    record.start + fields[index].value_start,
+                    record.start + fields[index].value_end,
+                    "1".to_owned(),
+                ));
+            } else {
+                changes.push((insertion, insertion, format!("67{newline}1{newline}")));
+            }
+            if let Some(index) = layout {
+                changes.push((
+                    record.start + fields[index].value_start,
+                    record.start + fields[index].value_end,
+                    name.clone(),
+                ));
+            } else {
+                changes.push((insertion, insertion, format!("410{newline}{name}{newline}")));
+            }
+        }
+    }
 }
 
 fn encode_constraint_kind(
@@ -5774,8 +6273,11 @@ fn is_page_setup_structural_field(
         )
 }
 
-fn serialize_layouts(layouts: &crate::LayoutCollection, source: &str, handle: &mut u64) -> String {
-    let existing = source_layout_names(source);
+fn serialize_layouts(
+    layouts: &crate::LayoutCollection,
+    existing: &[String],
+    handle: &mut u64,
+) -> String {
     let names = layouts
         .names()
         .filter(|name| !existing.iter().any(|item| item.eq_ignore_ascii_case(name)))
@@ -5788,45 +6290,352 @@ fn serialize_layouts(layouts: &crate::LayoutCollection, source: &str, handle: &m
         .enumerate()
         .filter_map(|(index, name)| {
             let layout = layouts.get(name)?;
-            let setup = layout.setup();
-            let paper = setup.paper();
-            let margins = setup.margins();
-            let (numerator, denominator) = (setup.scale(), 1.0);
-            let rotation = matches!(setup.orientation(), crate::Orientation::Landscape) as u8;
-            let flags = setup.centered() as u8 * 4 + setup.fit_to_paper() as u8 * 16;
-            let (area, window) = match setup.plot_area() {
-                crate::PlotArea::Extents => (1, [0.0; 4]),
-                crate::PlotArea::Window(bounds) => (4, bounds),
-                crate::PlotArea::Layout => (5, [0.0; 4]),
-            };
-            let result = format!(
-                "0\nLAYOUT\n5\n{:X}\n100\nAcDbPlotSettings\n40\n{}\n41\n{}\n42\n{}\n43\n{}\n44\n{}\n45\n{}\n46\n{}\n47\n{}\n48\n{}\n49\n{}\n140\n{}\n141\n{}\n70\n{}\n73\n{}\n74\n{}\n75\n{}\n72\n1\n142\n{}\n143\n{}\n147\n1.0\n100\nAcDbLayout\n1\n{}\n70\n0\n71\n{}\n",
-                *handle,
-                margins[0],
-                margins[1],
-                margins[2],
-                margins[3],
-                paper[0],
-                paper[1],
-                setup.plot_offset()[0],
-                setup.plot_offset()[1],
-                window[0],
-                window[1],
-                window[2],
-                window[3],
-                flags,
-                rotation,
-                area,
-                if setup.fit_to_paper() { 0 } else { 1 },
-                numerator,
-                denominator,
-                name,
-                index
-            );
+            let result = serialize_layout_record(name, layout, *handle, index, "\n");
             *handle = handle.saturating_add(1);
             Some(result)
         })
         .collect()
+}
+
+fn serialize_layout_record(
+    name: &str,
+    layout: &crate::Layout,
+    handle: u64,
+    index: usize,
+    newline: &str,
+) -> String {
+    let setup = layout.setup();
+    let paper = setup.paper();
+    let margins = setup.margins();
+    let (numerator, denominator) = (setup.scale(), 1.0);
+    let rotation = matches!(setup.orientation(), crate::Orientation::Landscape) as u8;
+    let flags = setup.centered() as u8 * 4 + setup.fit_to_paper() as u8 * 16;
+    let (area, window) = match setup.plot_area() {
+        crate::PlotArea::Extents => (1, [0.0; 4]),
+        crate::PlotArea::Window(bounds) => (4, bounds),
+        crate::PlotArea::Layout => (5, [0.0; 4]),
+    };
+    format!(
+        "0{newline}LAYOUT{newline}5{newline}{handle:X}{newline}100{newline}AcDbPlotSettings{newline}40{newline}{}{newline}41{newline}{}{newline}42{newline}{}{newline}43{newline}{}{newline}44{newline}{}{newline}45{newline}{}{newline}46{newline}{}{newline}47{newline}{}{newline}48{newline}{}{newline}49{newline}{}{newline}140{newline}{}{newline}141{newline}{}{newline}70{newline}{flags}{newline}73{newline}{rotation}{newline}74{newline}{area}{newline}75{newline}{}{newline}72{newline}1{newline}142{newline}{numerator}{newline}143{newline}{denominator}{newline}147{newline}1.0{newline}100{newline}AcDbLayout{newline}1{newline}{name}{newline}70{newline}0{newline}71{newline}{index}{newline}",
+        margins[0],
+        margins[1],
+        margins[2],
+        margins[3],
+        paper[0],
+        paper[1],
+        setup.plot_offset()[0],
+        setup.plot_offset()[1],
+        window[0],
+        window[1],
+        window[2],
+        window[3],
+        if setup.fit_to_paper() { 0 } else { 1 },
+    )
+}
+
+fn layout_record_spans(source: &str) -> Vec<(String, usize, usize, u64)> {
+    let mut groups = Groups::new(source);
+    let mut objects = false;
+    let mut spans = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code == 2 && marker.value == "OBJECTS" {
+            objects = true;
+            continue;
+        }
+        if !objects {
+            continue;
+        }
+        if marker.code == 0 && marker.value == "ENDSEC" {
+            break;
+        }
+        if marker.code != 0 || marker.value != "LAYOUT" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let end = groups
+            .peek()
+            .ok()
+            .flatten()
+            .map_or(source.len(), |next| next.start);
+        let layout_fields = subclass_fields(&fields, "AcDbLayout").unwrap_or(&fields);
+        let Some(name) = layout_fields
+            .iter()
+            .find(|field| field.code == 1)
+            .map(|field| field.value.to_owned())
+        else {
+            continue;
+        };
+        let handle = fields
+            .iter()
+            .find(|field| field.code == 5)
+            .and_then(|field| u64::from_str_radix(field.value.trim(), 16).ok())
+            .unwrap_or(0);
+        spans.push((name, marker.start, end, handle));
+    }
+    spans
+}
+
+fn layout_record_matches(
+    source: &str,
+    start: usize,
+    end: usize,
+    name: &str,
+    layout: &crate::Layout,
+) -> bool {
+    let Some(record) = source.get(start..end) else {
+        return false;
+    };
+    let mut groups = Groups::new(record);
+    let Ok(Some(_)) = groups.next() else {
+        return false;
+    };
+    let Ok(fields) = record_fields(&mut groups) else {
+        return false;
+    };
+    let layout_fields = subclass_fields(&fields, "AcDbLayout").unwrap_or(&fields);
+    let plot_fields = subclass_fields(&fields, "AcDbPlotSettings").unwrap_or(&fields);
+    let source_name = layout_fields
+        .iter()
+        .find(|field| field.code == 1)
+        .map(|field| field.value);
+    source_name == Some(name)
+        && parse_native_page_setup(plot_fields, 0).is_some_and(|setup| setup == layout.setup())
+}
+
+fn patch_layout_record(
+    source: &str,
+    start: usize,
+    end: usize,
+    name: &str,
+    layout: &crate::Layout,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let Some(record) = source.get(start..end) else {
+        return;
+    };
+    let mut groups = Groups::new(record);
+    let Ok(Some(_)) = groups.next() else {
+        return;
+    };
+    let Ok(fields) = record_fields(&mut groups) else {
+        return;
+    };
+    let newline = if record.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    patch_layout_plot_settings(&fields, start, newline, layout, changes);
+
+    patch_layout_fields(
+        &fields,
+        "AcDbLayout",
+        &[(1, name.to_owned())],
+        start,
+        newline,
+        changes,
+    );
+}
+
+fn patch_layout_plot_settings(
+    fields: &[Group<'_>],
+    record_start: usize,
+    newline: &str,
+    layout: &crate::Layout,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let source_plot = subclass_fields(fields, "AcDbPlotSettings");
+    let setup_changed = source_plot
+        .and_then(|plot_fields| parse_native_page_setup(plot_fields, 0))
+        .is_none_or(|source_setup| source_setup != layout.setup());
+    if !setup_changed {
+        return;
+    }
+
+    let setup = layout.setup();
+    let paper = setup.paper();
+    let margins = setup.margins();
+    let window = match setup.plot_area() {
+        crate::PlotArea::Window(bounds) => bounds,
+        _ => [0.0; 4],
+    };
+    let source_flags = source_plot
+        .and_then(|plot| plot.iter().find(|field| field.code == 70))
+        .and_then(|field| field.value.parse::<i64>().ok())
+        .unwrap_or(0);
+    let centered_flag = i64::from(u8::from(setup.centered())) * 4;
+    let fit_to_paper_flag = i64::from(u8::from(setup.fit_to_paper())) * 16;
+    let modeled_flags = centered_flag + fit_to_paper_flag;
+    let flags = (source_flags & !20) | modeled_flags;
+    let area = match setup.plot_area() {
+        crate::PlotArea::Extents => 1,
+        crate::PlotArea::Window(_) => 4,
+        crate::PlotArea::Layout => 5,
+    };
+    let values = [
+        (40, margins[0].to_string()),
+        (41, margins[1].to_string()),
+        (42, margins[2].to_string()),
+        (43, margins[3].to_string()),
+        (44, paper[0].to_string()),
+        (45, paper[1].to_string()),
+        (46, setup.plot_offset()[0].to_string()),
+        (47, setup.plot_offset()[1].to_string()),
+        (48, window[0].to_string()),
+        (49, window[1].to_string()),
+        (140, window[2].to_string()),
+        (141, window[3].to_string()),
+        (70, flags.to_string()),
+        (
+            73,
+            u8::from(matches!(setup.orientation(), crate::Orientation::Landscape)).to_string(),
+        ),
+        (74, area.to_string()),
+        (75, u8::from(setup.fit_to_paper()).to_string()),
+        (72, "1".to_owned()),
+        (142, setup.scale().to_string()),
+        (143, "1.0".to_owned()),
+        (147, "1.0".to_owned()),
+    ];
+    patch_layout_fields(
+        fields,
+        "AcDbPlotSettings",
+        &values,
+        record_start,
+        newline,
+        changes,
+    );
+}
+
+fn patch_layout_fields(
+    all_fields: &[Group<'_>],
+    subclass: &str,
+    values: &[(u16, String)],
+    record_start: usize,
+    newline: &str,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let fields = subclass_fields(all_fields, subclass).unwrap_or(all_fields);
+    let mut missing = Vec::new();
+    for (code, value) in values {
+        if let Some(field) = fields.iter().find(|field| field.code == *code) {
+            changes.push((
+                record_start + field.value_start,
+                record_start + field.value_end,
+                value.clone(),
+            ));
+        } else {
+            missing.push(format!("{}{newline}{}{newline}", code, value));
+        }
+    }
+    if missing.is_empty() {
+        return;
+    }
+    let existing_marker = all_fields
+        .iter()
+        .find(|field| field.code == 100 && field.value == subclass);
+    let (insertion, prefix) = if let Some(marker) = existing_marker {
+        (
+            record_start + marker.value_end + newline.len(),
+            String::new(),
+        )
+    } else if subclass == "AcDbPlotSettings" {
+        if let Some(layout_marker) = all_fields
+            .iter()
+            .find(|field| field.code == 100 && field.value == "AcDbLayout")
+        {
+            (
+                record_start + layout_marker.start,
+                format!("100{newline}AcDbPlotSettings{newline}"),
+            )
+        } else {
+            append_layout_fields_position(all_fields, record_start, newline)
+        }
+    } else {
+        append_layout_fields_position(all_fields, record_start, newline)
+    };
+    changes.push((
+        insertion,
+        insertion,
+        format!("{prefix}{}", missing.into_iter().collect::<String>()),
+    ));
+}
+
+fn append_layout_fields_position(
+    all_fields: &[Group<'_>],
+    record_start: usize,
+    newline: &str,
+) -> (usize, String) {
+    let insertion = all_fields.last().map_or(record_start, |field| {
+        record_start + field.value_end + newline.len()
+    });
+    (insertion, String::new())
+}
+
+fn patch_layout_owned_records(
+    source: &str,
+    layouts: &crate::LayoutCollection,
+    mapping: &[(&str, &str)],
+    removed: &HashSet<String>,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let mut groups = Groups::new(source);
+    let clip_handles = viewport_clip_handles(source);
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code != 0
+            || marker.value == "ENDSEC"
+            || !matches!(marker.value, "VIEWPORT" | "LWPOLYLINE")
+        {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let end = groups
+            .peek()
+            .ok()
+            .flatten()
+            .map_or(source.len(), |next| next.start);
+        let Some(layout) = fields
+            .iter()
+            .find(|field| field.code == 410)
+            .map(|field| field.value)
+        else {
+            continue;
+        };
+        if marker.value == "LWPOLYLINE"
+            && !fields
+                .iter()
+                .find(|field| field.code == 5)
+                .is_some_and(|field| clip_handles.contains(field.value))
+        {
+            continue;
+        }
+        if removed.iter().any(|name| name.eq_ignore_ascii_case(layout))
+            && canonical_layout_name(layouts, layout).is_none()
+        {
+            changes.push((marker.start, end, String::new()));
+            continue;
+        }
+        let Some((_, replacement)) = mapping
+            .iter()
+            .find(|(source_name, _)| source_name.eq_ignore_ascii_case(layout))
+        else {
+            continue;
+        };
+        if replacement.eq_ignore_ascii_case(layout) {
+            continue;
+        }
+        if let Some(field) = fields.iter().find(|field| field.code == 410) {
+            changes.push((
+                field.value_start,
+                field.value_end,
+                (*replacement).to_owned(),
+            ));
+        }
+    }
 }
 
 fn source_layout_names(source: &str) -> Vec<String> {
@@ -5860,6 +6669,80 @@ fn source_layout_names(source: &str) -> Vec<String> {
         }
     }
     names
+}
+
+fn read_active_layout(source: &str) -> Option<String> {
+    let mut groups = Groups::new(source);
+    let mut header = false;
+    let mut ctab = None;
+    let mut tilemode = None;
+    while let Ok(Some(group)) = groups.next() {
+        if group.code == 2 && group.value == "HEADER" {
+            header = true;
+            continue;
+        }
+        if !header {
+            continue;
+        }
+        if group.code == 0 && group.value == "ENDSEC" {
+            break;
+        }
+        if group.code != 9 {
+            continue;
+        }
+        let Ok(Some(value)) = groups.next() else {
+            break;
+        };
+        if value.code == 2 && group.value == "$CTAB" && !value.value.trim().is_empty() {
+            ctab = Some(value.value.to_owned());
+        } else if value.code == 70 && group.value == "$TILEMODE" {
+            tilemode = value.value.trim().parse::<i32>().ok();
+        }
+    }
+    if tilemode == Some(1) {
+        Some("Model".to_owned())
+    } else {
+        ctab
+    }
+}
+
+fn ensure_active_header(output: &mut String, active: &str) {
+    let has_ctab = output.contains("\n$CTAB\n") || output.contains("\r\n$CTAB\r\n");
+    let has_tilemode = output.contains("\n$TILEMODE\n") || output.contains("\r\n$TILEMODE\r\n");
+    if has_ctab && has_tilemode {
+        return;
+    }
+    let newline = if output.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let header_marker = format!("0{newline}SECTION{newline}2{newline}HEADER{newline}");
+    let end_marker = format!("0{newline}ENDSEC{newline}");
+    let Some(header_start) = output.find(&header_marker) else {
+        return;
+    };
+    let Some(relative_end) = output[header_start + header_marker.len()..].find(&end_marker) else {
+        return;
+    };
+    let at = header_start + header_marker.len() + relative_end;
+    let mut fields = String::new();
+    if !has_ctab {
+        fields.push_str(&format!(
+            "9{newline}$CTAB{newline}2{newline}{active}{newline}"
+        ));
+    }
+    if !has_tilemode {
+        let tilemode = if active.eq_ignore_ascii_case("Model") {
+            1
+        } else {
+            0
+        };
+        fields.push_str(&format!(
+            "9{newline}$TILEMODE{newline}70{newline}{tilemode}{newline}"
+        ));
+    }
+    output.insert_str(at, &fields);
 }
 
 fn next_handle(source: &str) -> u64 {
@@ -5953,25 +6836,36 @@ fn import_viewports(input: &str, layouts: &mut crate::LayoutCollection) {
 
 fn serialize_viewports(
     layouts: &crate::LayoutCollection,
-    _source: &str,
+    source: &str,
+    current_layout_names: &[String],
     handle: &mut u64,
     newline: &str,
 ) -> String {
+    let existing_counts = source_viewport_counts(source, current_layout_names);
     let mut output = String::new();
     for name in layouts.names().filter(|name| *name != "Model") {
         let Some(layout) = layouts.get(name) else {
             continue;
         };
-        for viewport in layout.viewports() {
+        let existing_count = existing_counts
+            .iter()
+            .find(|(source_name, _)| source_name.eq_ignore_ascii_case(name))
+            .map_or(0, |(_, count)| *count);
+        for viewport in layout.viewports().iter().skip(existing_count) {
             let world = viewport.world();
             let paper = viewport.paper();
             let width = paper[2] - paper[0];
             let height = paper[3] - paper[1];
-            let world_height = world[3] - world[1];
+            let world_width = (width / viewport.scale()).max(f64::EPSILON);
+            let world_height = (height / viewport.scale()).max(f64::EPSILON);
             let paper_cx = (paper[0] + paper[2]) / 2.0;
             let paper_cy = (paper[1] + paper[3]) / 2.0;
-            let world_cx = (world[0] + world[2]) / 2.0;
-            let world_cy = (world[1] + world[3]) / 2.0;
+            // VIEWPORT stores the visible world span, while CHSPACE uses the
+            // lower-left world origin and the affine scale.  Derive the
+            // serialized center from that origin and visible span so a
+            // non-fitting viewport keeps its transform after reopening.
+            let world_cx = world[0] + world_width / 2.0;
+            let world_cy = world[1] + world_height / 2.0;
             let clip_handle = viewport
                 .clip_boundary()
                 .filter(|points| points.len() >= 3)
@@ -6007,6 +6901,48 @@ fn serialize_viewports(
         }
     }
     output
+}
+
+fn source_viewport_counts(source: &str, current_layout_names: &[String]) -> Vec<(String, usize)> {
+    let mut groups = Groups::new(source);
+    let fallback = source_layout_names(source)
+        .into_iter()
+        .find(|name| !name.eq_ignore_ascii_case("Model"));
+    let source_layouts = layout_record_spans(source)
+        .into_iter()
+        .map(|(name, _, _, _)| name)
+        .collect::<Vec<_>>();
+    let mut counts: Vec<(String, usize)> = Vec::new();
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code != 0 || marker.value != "VIEWPORT" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        let source_name = fields
+            .iter()
+            .find(|field| field.code == 410)
+            .map(|field| field.value.to_owned())
+            .or_else(|| fallback.clone());
+        let Some(source_name) = source_name else {
+            continue;
+        };
+        let name = source_layouts
+            .iter()
+            .position(|candidate| candidate.eq_ignore_ascii_case(&source_name))
+            .and_then(|index| current_layout_names.get(index).cloned())
+            .unwrap_or(source_name);
+        if let Some((_, count)) = counts
+            .iter_mut()
+            .find(|(existing, _)| existing.eq_ignore_ascii_case(&name))
+        {
+            *count += 1;
+        } else {
+            counts.push((name, 1));
+        }
+    }
+    counts
 }
 
 fn viewport_clip_handles(input: &str) -> HashSet<String> {
@@ -6167,7 +7103,7 @@ fn read_handle(group: Group<'_>, handles: &mut HashSet<u64>) -> Result<(), DxfEr
     Ok(())
 }
 
-const COMMON_ENTITY_CODES: &[u16] = &[5, 8, 6, 62, 48];
+const COMMON_ENTITY_CODES: &[u16] = &[5, 8, 6, 62, 48, 67, 410];
 
 fn read_entity_properties(
     fields: &[Group<'_>],

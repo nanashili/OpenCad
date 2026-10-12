@@ -154,10 +154,15 @@ impl OpenCadApp {
                     for name in layout_names {
                         let selected = self.layouts.active().name() == name;
                         if ui.selectable_label(selected, &name).clicked() {
-                            if let Err(error) = self.layouts.set_active(&name) {
-                                self.message(error.to_string(), true);
-                            } else {
-                                self.message(format!("Layout {name} active."), false);
+                            match self.editor.activate_layout(&name) {
+                                Ok(true) => {
+                                    self.layouts = self.editor.layouts().clone();
+                                    self.message(format!("Layout {name} active."), false);
+                                }
+                                Ok(false) => {
+                                    self.message(format!("Layout {name} is already active."), false)
+                                }
+                                Err(error) => self.message(error.to_string(), true),
                             }
                         }
                     }
@@ -394,7 +399,9 @@ impl OpenCadApp {
                         Vec::new()
                     };
                     for (index, entity) in self.editor.entities().iter().enumerate() {
-                        if !self.editor.is_entity_visible(index) {
+                        if !self.editor.is_entity_visible(index)
+                            || !self.entity_in_active_space(index)
+                        {
                             continue;
                         }
                         if let Ok(expanded) =
@@ -426,13 +433,9 @@ impl OpenCadApp {
                 }
                 if self.layouts.active().name() != "Model" {
                     let [paper_w, paper_h] = self.layouts.active().setup().dimensions();
-                    let paper = Rect::from_center_size(
-                        rect.center(),
-                        egui::vec2(
-                            (paper_w * self.camera.scale) as f32,
-                            (paper_h * self.camera.scale) as f32,
-                        ),
-                    );
+                    let paper = self
+                        .paper_rect([0.0, 0.0], [paper_w, paper_h], rect)
+                        .unwrap_or(rect);
                     painter.rect_filled(paper, 0.0, Color32::from_gray(225));
                     painter.rect_stroke(
                         paper,
@@ -442,18 +445,9 @@ impl OpenCadApp {
                     );
                     for viewport in self.layouts.active().viewports() {
                         let p = viewport.paper();
-                        let viewport_rect = Rect::from_min_max(
-                            rect.center()
-                                + egui::vec2(
-                                    (p[0] * self.camera.scale) as f32,
-                                    -(p[3] * self.camera.scale) as f32,
-                                ),
-                            rect.center()
-                                + egui::vec2(
-                                    (p[2] * self.camera.scale) as f32,
-                                    -(p[1] * self.camera.scale) as f32,
-                                ),
-                        );
+                        let viewport_rect = self
+                            .paper_rect([p[0], p[1]], [p[2], p[3]], rect)
+                            .unwrap_or(rect);
                         painter.rect_stroke(
                             viewport_rect,
                             0.0,
@@ -467,22 +461,18 @@ impl OpenCadApp {
                                 .iter()
                                 .zip(boundary.iter().cycle().skip(1).take(boundary.len()))
                             {
-                                let a = rect.center()
-                                    + egui::vec2(
-                                        (pair.0.x() * self.camera.scale) as f32,
-                                        -(pair.0.y() * self.camera.scale) as f32,
+                                if let (Some(a), Some(b)) = (
+                                    self.camera.screen_point(*pair.0, rect),
+                                    self.camera.screen_point(*pair.1, rect),
+                                ) {
+                                    painter.line_segment(
+                                        [a, b],
+                                        Stroke::new(2.0, Color32::from_rgb(210, 90, 90)),
                                     );
-                                let b = rect.center()
-                                    + egui::vec2(
-                                        (pair.1.x() * self.camera.scale) as f32,
-                                        -(pair.1.y() * self.camera.scale) as f32,
-                                    );
-                                painter.line_segment(
-                                    [a, b],
-                                    Stroke::new(2.0, Color32::from_rgb(210, 90, 90)),
-                                );
+                                }
                             }
                         }
+                        self.draw_model_viewport(&painter, viewport, viewport_rect, rect);
                     }
                 }
                 let break_preview_source = self.break_preview_source();
@@ -501,6 +491,7 @@ impl OpenCadApp {
                 let mut block_render_error = None;
                 for (index, entity) in self.editor.entities().iter().enumerate() {
                     if !self.editor.is_entity_visible(index)
+                        || !self.entity_in_active_space(index)
                         || break_preview_source == Some(index)
                         || pedit_range_source == Some(index)
                         || lengthen_preview
@@ -529,7 +520,7 @@ impl OpenCadApp {
                                 let [r, g, b] = self
                                     .editor
                                     .document()
-                                    .entity_rgb(index, false)
+                                    .entity_rgb(index, self.drawing_on_white_background())
                                     .expect("entity style exists");
                                 Color32::from_rgb(r, g, b)
                             },
@@ -847,10 +838,76 @@ impl OpenCadApp {
         }
     }
 
+    fn paper_rect(&self, first: [f64; 2], second: [f64; 2], rect: Rect) -> Option<Rect> {
+        let a = self.camera.screen(first[0], first[1], rect)?;
+        let b = self.camera.screen(second[0], second[1], rect)?;
+        Some(Rect::from_min_max(
+            egui::pos2(a.x.min(b.x), a.y.min(b.y)),
+            egui::pos2(a.x.max(b.x), a.y.max(b.y)),
+        ))
+    }
+
+    fn drawing_on_white_background(&self) -> bool {
+        !matches!(self.editor.active_space(), crate::EntitySpace::Model)
+    }
+
+    fn draw_model_viewport(
+        &self,
+        painter: &Painter,
+        viewport: &crate::Viewport,
+        viewport_rect: Rect,
+        rect: Rect,
+    ) {
+        let Ok(transform) = super::feature_spaces::viewport_transform(
+            viewport.world(),
+            viewport.paper(),
+            viewport.scale(),
+            false,
+        ) else {
+            return;
+        };
+        let clipped = painter.with_clip_rect(viewport_rect);
+        for (index, entity) in self.editor.entities().iter().enumerate() {
+            if !self
+                .editor
+                .layer_for_entity(index)
+                .is_some_and(crate::Layer::is_visible)
+                || !matches!(
+                    self.editor.entity_space(index),
+                    Some(crate::EntitySpace::Model)
+                )
+            {
+                continue;
+            }
+            let Ok(expanded) =
+                crate::block_expansion::expand_entity(self.editor.document(), entity)
+            else {
+                continue;
+            };
+            for child in expanded {
+                let Ok(mapped) = child.transformed(transform) else {
+                    continue;
+                };
+                let color = self
+                    .editor
+                    .document()
+                    .entity_rgb(index, true)
+                    .expect("entity style exists");
+                self.draw_styled_entity(
+                    &clipped,
+                    &mapped,
+                    index,
+                    rect,
+                    Stroke::new(1.0, Color32::from_rgb(color[0], color[1], color[2])),
+                );
+            }
+        }
+    }
+
     fn visible_expanded_geometry(&self) -> Result<Vec<Entity>, String> {
         let mut geometry = Vec::new();
         for (index, entity) in self.editor.entities().iter().enumerate() {
-            if !self.editor.is_entity_visible(index) {
+            if !self.editor.is_entity_visible(index) || !self.entity_in_active_space(index) {
                 continue;
             }
             let expanded = crate::block_expansion::expand_entity(self.editor.document(), entity)
@@ -1728,7 +1785,7 @@ impl OpenCadApp {
             let mut nearest = None;
             let mut distance = 9.0;
             for (index, entity) in self.editor.entities().iter().enumerate() {
-                if !self.editor.is_entity_visible(index) {
+                if !self.editor.is_entity_visible(index) || !self.entity_in_active_space(index) {
                     continue;
                 }
                 if let Ok(geometry) =
@@ -1829,7 +1886,7 @@ impl OpenCadApp {
         let mut closest = None;
         let mut distance = 8.0;
         for (index, entity) in self.editor.entities().iter().enumerate() {
-            if !self.editor.is_entity_visible(index) {
+            if !self.editor.is_entity_visible(index) || !self.entity_in_active_space(index) {
                 continue;
             }
             let d = match entity {

@@ -269,14 +269,15 @@ pub fn render_entities_svg(entities: &[Entity]) -> Result<String, SvgError> {
 
 /// Export visible document entities with resolved styles on a white background.
 pub fn render_document_svg(document: &DxfDocument) -> Result<String, SvgError> {
-    render_document_svg_with_bounds(document).map(|(svg, _)| svg)
+    let layout_name = document.layouts().active().name().to_owned();
+    render_document_svg_for_layout_with_bounds(document, Some(&layout_name)).map(|(svg, _)| svg)
 }
 
-/// Export visible document entities and return the bounds used for SVG normalization.
-pub(crate) fn render_document_svg_with_bounds(
+pub(crate) fn render_document_svg_for_layout_with_bounds(
     document: &DxfDocument,
+    layout_name: Option<&str>,
 ) -> Result<(String, [f64; 4]), SvgError> {
-    let prepared = prepare_document_svg(document)?;
+    let prepared = prepare_document_svg(document, layout_name)?;
     let bounds = entity_bounds(&prepared.entities)?;
     let svg = render_styled_entities_svg(
         &prepared.entities,
@@ -292,11 +293,23 @@ struct PreparedDocumentSvg {
     patterns: Vec<Vec<PatternPart>>,
 }
 
-fn prepare_document_svg(document: &DxfDocument) -> Result<PreparedDocumentSvg, SvgError> {
+fn prepare_document_svg(
+    document: &DxfDocument,
+    layout_name: Option<&str>,
+) -> Result<PreparedDocumentSvg, SvgError> {
     let mut entities = Vec::new();
     let mut colors = Vec::new();
     let mut parents = Vec::new();
     for (index, entity) in document.entities().iter().enumerate() {
+        let in_scope = document
+            .entity_space(index)
+            .is_none_or(|space| match layout_name {
+                Some(name) => space.matches_layout(name),
+                None => space.matches_layout("Model"),
+            });
+        if !in_scope {
+            continue;
+        }
         let layer = document
             .layer_for_entity(index)
             .expect("entity layer exists");

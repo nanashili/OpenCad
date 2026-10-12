@@ -239,6 +239,7 @@ fn command_for_action(action: &str) -> Option<&'static str> {
         "ID_Intersect" => "INTERSECT",
         "ID_ImageClip" => "IMAGECLIP",
         "ID_VportClip" => "VPCLIP",
+        "ID_CHSPACE" => "CHSPACE",
         "ID_Qselect" => "QSELECT",
         "ID_SelSimilar" => "SELECTSIMILAR",
         "ID_GROUP" => "GROUP",
@@ -1452,13 +1453,16 @@ impl OpenCadApp {
             }
             "ID_ModelSpace" | "ID_AnnotationScale" => {
                 let caption = if item.id == "ID_ModelSpace" {
-                    "Model"
+                    match self.editor.active_space() {
+                        EntitySpace::Model => "Model".to_owned(),
+                        EntitySpace::Paper(name) => format!("Paper: {name}"),
+                    }
                 } else {
-                    "1:1"
+                    "1:1".to_owned()
                 };
                 let response = ui.add_enabled(
                     false,
-                    Button::new(RichText::new(caption).size(10.0))
+                    Button::new(RichText::new(&caption).size(10.0))
                         .frame(false)
                         .min_size(egui::vec2(32.0, 23.0)),
                 );

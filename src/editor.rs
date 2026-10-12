@@ -1,8 +1,8 @@
 use crate::constraints::{Anchor, ConstraintError, ConstraintKind, ConstraintRecord};
 use crate::{
     BlockDefinition, BoundaryMode, Corner, CornerParameter, DxfDocument, Entity, EntityGroup,
-    EntityStyle, EntityStyleError, GeometryError, Layer, LayerError, LayoutCollection, Lengthen,
-    Linetype, LinetypeError, Offset, OffsetLayer, OffsetOptions, Point3, Transform,
+    EntitySpace, EntityStyle, EntityStyleError, GeometryError, Layer, LayerError, LayoutCollection,
+    Lengthen, Linetype, LinetypeError, Offset, OffsetLayer, OffsetOptions, Point3, Transform,
 };
 use std::{error::Error, fmt};
 
@@ -178,7 +178,7 @@ impl Editor {
             .filter_map(|index| inverse.get(*index).copied())
             .collect();
         self.checkpoint();
-        self.current.document = candidate;
+        self.install_document(candidate);
         self.current.selection = selection;
         Ok(true)
     }
@@ -189,10 +189,11 @@ impl Editor {
     }
 
     pub fn new(document: DxfDocument) -> Self {
+        let layouts = document.layouts().clone();
         Self {
             current: Snapshot {
                 document,
-                layouts: LayoutCollection::default(),
+                layouts,
                 selection: Vec::new(),
                 revision: 0,
             },
@@ -218,6 +219,43 @@ impl Editor {
     pub fn layouts(&self) -> &LayoutCollection {
         &self.current.layouts
     }
+    pub fn active_space(&self) -> EntitySpace {
+        let name = self.current.layouts.active().name();
+        if name.eq_ignore_ascii_case("Model") {
+            EntitySpace::Model
+        } else {
+            EntitySpace::Paper(name.to_owned())
+        }
+    }
+    pub fn entity_space(&self, index: usize) -> Option<&EntitySpace> {
+        self.current.document.entity_space(index)
+    }
+    fn canonical_layout_name(&self, name: &str) -> Option<String> {
+        self.current
+            .layouts
+            .names()
+            .find(|candidate| candidate.eq_ignore_ascii_case(name))
+            .map(str::to_owned)
+    }
+    fn canonical_entity_space(&self, space: EntitySpace) -> Result<EntitySpace, EditError> {
+        match space {
+            EntitySpace::Model => Ok(EntitySpace::Model),
+            EntitySpace::Paper(layout) => {
+                let canonical_layout = if layout.eq_ignore_ascii_case("Model") {
+                    None
+                } else {
+                    self.canonical_layout_name(&layout)
+                };
+                canonical_layout.map(EntitySpace::Paper).ok_or_else(|| {
+                    crate::DxfError {
+                        line: 0,
+                        kind: crate::DxfErrorKind::UnsupportedProperty(410),
+                    }
+                    .into()
+                })
+            }
+        }
+    }
     pub fn constraints(&self) -> &[ConstraintRecord] {
         self.current.document.constraints()
     }
@@ -230,7 +268,7 @@ impl Editor {
         let mut candidate = self.current.document.clone();
         let id = candidate.add_constraint(kind, value)?;
         self.checkpoint();
-        self.current.document = candidate;
+        self.install_document(candidate);
         Ok(id)
     }
 
@@ -242,7 +280,7 @@ impl Editor {
         let mut candidate = self.current.document.clone();
         let id = candidate.add_fixed_constraint(anchor, point)?;
         self.checkpoint();
-        self.current.document = candidate;
+        self.install_document(candidate);
         Ok(id)
     }
 
@@ -281,7 +319,7 @@ impl Editor {
             }
         }
         self.checkpoint();
-        self.current.document = candidate;
+        self.install_document(candidate);
         Ok(ids)
     }
 
@@ -289,7 +327,7 @@ impl Editor {
         let mut candidate = self.current.document.clone();
         let removed = candidate.remove_constraint(id)?;
         self.checkpoint();
-        self.current.document = candidate;
+        self.install_document(candidate);
         Ok(removed)
     }
 
@@ -337,7 +375,7 @@ impl Editor {
             }
         }
         self.checkpoint();
-        self.current.document = candidate;
+        self.install_document(candidate);
         Ok(true)
     }
 
@@ -362,7 +400,7 @@ impl Editor {
             }
         }
         self.checkpoint();
-        self.current.document = candidate;
+        self.install_document(candidate);
         Ok(true)
     }
     pub fn layers(&self) -> &[Layer] {
@@ -420,7 +458,11 @@ impl Editor {
         self.current.document.entity_style(index)
     }
     pub fn is_entity_visible(&self, index: usize) -> bool {
+        let active_layout = self.current.layouts.active().name();
         self.layer_for_entity(index).is_some_and(Layer::is_visible)
+            && self
+                .entity_space(index)
+                .is_some_and(|space| space.matches_layout(active_layout))
     }
     pub fn visible_entities(&self) -> Vec<Entity> {
         self.entities()
@@ -461,7 +503,7 @@ impl Editor {
             return Ok(false);
         }
         self.checkpoint();
-        self.current.document = document;
+        self.install_document(document);
         self.select(self.selection().to_vec());
         Ok(true)
     }
@@ -472,7 +514,8 @@ impl Editor {
     pub fn commit_document(&mut self, mut candidate: DxfDocument) -> Result<bool, EditError> {
         candidate.solve_constraints()?;
         for (index, existing) in self.entities().iter().enumerate() {
-            let changed = candidate.entities().get(index) != Some(existing);
+            let changed = candidate.entities().get(index) != Some(existing)
+                || self.entity_space(index) != candidate.entity_space(index);
             if changed {
                 self.editable_layer(self.entity_layer(index).expect("existing entity layer"))?;
             }
@@ -484,8 +527,8 @@ impl Editor {
             .filter(|index| *index < candidate.entities().len())
             .collect();
         self.checkpoint();
-        self.current.document = candidate;
-        self.current.selection = selection;
+        self.install_document(candidate);
+        self.select(selection);
         self.layer_visibility_restore = None;
         self.layer_previous_state = None;
         Ok(true)
@@ -499,9 +542,135 @@ impl Editor {
 
     /// Replace paper-space layout state as one undoable editor transaction.
     pub fn set_layouts(&mut self, layouts: LayoutCollection) -> bool {
-        self.checkpoint();
-        self.current.layouts = layouts;
+        let mut document = self.current.document.clone();
+        document.set_layouts(layouts);
+        self.commit_layout_document(document, self.selection().to_vec());
         true
+    }
+
+    pub fn create_layout(
+        &mut self,
+        name: &str,
+        setup: crate::PageSetup,
+    ) -> Result<bool, EditError> {
+        if name.trim().is_empty()
+            || name.chars().any(char::is_control)
+            || self.canonical_layout_name(name).is_some()
+        {
+            return Err(crate::DxfError {
+                line: 0,
+                kind: crate::DxfErrorKind::UnsupportedProperty(2),
+            }
+            .into());
+        }
+        let mut document = self.current.document.clone();
+        document.layouts_mut().create(name, setup)?;
+        self.commit_layout_document(document, self.selection().to_vec());
+        Ok(true)
+    }
+
+    pub fn activate_layout(&mut self, name: &str) -> Result<bool, EditError> {
+        if self
+            .current
+            .layouts
+            .active()
+            .name()
+            .eq_ignore_ascii_case(name)
+        {
+            return Ok(false);
+        }
+        let name = self
+            .canonical_layout_name(name)
+            .ok_or(GeometryError::UnsupportedPolylineConversion)?;
+        let mut document = self.current.document.clone();
+        document.layouts_mut().set_active(&name)?;
+        self.commit_layout_document(document, self.selection().to_vec());
+        Ok(true)
+    }
+
+    pub fn copy_layout(&mut self, source: &str, target: &str) -> Result<bool, EditError> {
+        let source = self
+            .canonical_layout_name(source)
+            .ok_or(GeometryError::UnsupportedPolylineConversion)?;
+        if source.eq_ignore_ascii_case("Model") || target.eq_ignore_ascii_case("Model") {
+            return Err(crate::DxfError {
+                line: 0,
+                kind: crate::DxfErrorKind::UnsupportedProperty(2),
+            }
+            .into());
+        }
+        if target.trim().is_empty() || self.canonical_layout_name(target).is_some() {
+            return Err(crate::DxfError {
+                line: 0,
+                kind: crate::DxfErrorKind::UnsupportedProperty(2),
+            }
+            .into());
+        }
+        for index in 0..self.entities().len() {
+            let space = self.entity_space(index).expect("existing entity space");
+            if space.matches_layout(&source) {
+                let layer = self.entity_layer(index).expect("existing source layer");
+                self.editable_layer(layer)?;
+            }
+        }
+        let mut document = self.current.document.clone();
+        document.copy_layout(&source, target)?;
+        self.commit_layout_document(document, self.selection().to_vec());
+        Ok(true)
+    }
+
+    pub fn rename_layout(&mut self, old: &str, new: &str) -> Result<bool, EditError> {
+        let old = self
+            .canonical_layout_name(old)
+            .ok_or(GeometryError::UnsupportedPolylineConversion)?;
+        if old.eq_ignore_ascii_case(new) {
+            return Ok(false);
+        }
+        if self.canonical_layout_name(new).is_some() || new.trim().is_empty() {
+            return Err(crate::DxfError {
+                line: 0,
+                kind: crate::DxfErrorKind::UnsupportedProperty(2),
+            }
+            .into());
+        }
+        let mut document = self.current.document.clone();
+        document.rename_layout(&old, new)?;
+        self.commit_layout_document(document, self.selection().to_vec());
+        Ok(true)
+    }
+
+    pub fn delete_layout(&mut self, name: &str) -> Result<bool, EditError> {
+        let name = self
+            .canonical_layout_name(name)
+            .ok_or(GeometryError::UnsupportedPolylineConversion)?;
+        let removed: Vec<_> = (0..self.entities().len())
+            .filter(|index| {
+                self.entity_space(*index)
+                    .is_some_and(|space| space.matches_layout(&name))
+            })
+            .collect();
+        for &index in &removed {
+            let layer = self
+                .entity_layer(index)
+                .expect("existing paper-space entity layer");
+            self.editable_layer(layer)?;
+        }
+        let selected = self.selection().to_vec();
+        let mut document = self.current.document.clone();
+        document.delete_layout(&name)?;
+        let selection = selected
+            .into_iter()
+            .filter(|index| !removed.contains(index))
+            .map(|index| index - removed.iter().filter(|removed| **removed < index).count())
+            .collect();
+        self.commit_layout_document(document, selection);
+        Ok(true)
+    }
+
+    fn commit_layout_document(&mut self, document: DxfDocument, selection: Vec<usize>) {
+        self.checkpoint();
+        self.install_document(document);
+        self.select(selection);
     }
 
     /// Create a named group from the current selection as one undoable edit.
@@ -838,16 +1007,27 @@ impl Editor {
         self.next_revision += 1;
     }
 
+    fn install_document(&mut self, document: DxfDocument) {
+        self.current.layouts = document.layouts().clone();
+        self.current.document = document;
+    }
+
     pub fn add(&mut self, entities: Vec<Entity>) -> Result<bool, LayerError> {
         if entities.is_empty() {
             return Ok(false);
         }
         self.editable_layer(&self.active_layer)?;
         let mut candidate = self.current.document.clone();
+        let space = self.active_space();
         let first = candidate.entities().len();
         for entity in entities {
             candidate
-                .push_on_layer(entity, &self.active_layer)
+                .push_with_style_in_space(
+                    entity,
+                    &self.active_layer,
+                    EntityStyle::default(),
+                    space.clone(),
+                )
                 .expect("validated current layer");
         }
         let new_selection = (first..candidate.entities().len()).collect();
@@ -882,13 +1062,17 @@ impl Editor {
             .entity_style(selected[0])
             .cloned()
             .ok_or(EntityStyleError::UnknownEntity(selected[0]))?;
+        let space = self
+            .entity_space(selected[0])
+            .cloned()
+            .expect("existing selected entity space");
         let mut candidate = self.current.document.clone();
         for index in selected.iter().rev() {
             candidate.remove(*index);
         }
         let first = candidate.entities().len();
         for entity in entities {
-            candidate.push_with_style(entity, &layer, style.clone())?;
+            candidate.push_with_style_in_space(entity, &layer, style.clone(), space.clone())?;
         }
         let new_selection = (first..candidate.entities().len()).collect();
         self.commit_geometry_candidate(candidate, new_selection)
@@ -920,22 +1104,39 @@ impl Editor {
             .map(|index| self.entities()[*index].translated(-base.x(), -base.y(), -base.z()))
             .collect::<Result<Vec<_>, _>>()?;
         let definition = crate::BlockDefinition::new(name, base, local);
-        let layer = self.current_layer().to_owned();
-        self.editable_layer(&layer)?;
-        self.checkpoint();
-        self.current.document.add_block_definition(definition)?;
+        let mut candidate = self.current.document.clone();
+        candidate.add_block_definition(definition)?;
+        let mut new_selection = Vec::new();
         if replace_selection_with_insert {
+            let source = selected[0];
+            let layer = self
+                .entity_layer(source)
+                .expect("selected source layer")
+                .to_owned();
+            self.editable_layer(&layer)?;
+            let style = self
+                .entity_style(source)
+                .cloned()
+                .expect("selected source style");
+            let space = self
+                .entity_space(source)
+                .cloned()
+                .expect("selected source space");
             for index in selected.iter().rev() {
-                self.current.document.remove(*index);
+                candidate.remove(*index);
             }
             let insert = crate::Insert::new(name, base);
-            let index = self.entities().len();
-            self.current
-                .document
-                .push_on_layer(crate::Entity::Insert(insert), &layer)
+            let index = candidate.entities().len();
+            candidate
+                .push_with_style_in_space(crate::Entity::Insert(insert), &layer, style, space)
                 .expect("validated current layer");
-            self.select(vec![index]);
+            new_selection.push(index);
+        } else {
+            new_selection = selected;
         }
+        self.checkpoint();
+        self.install_document(candidate);
+        self.select(new_selection);
         Ok(true)
     }
 
@@ -949,7 +1150,7 @@ impl Editor {
         let mut document = self.current.document.clone();
         document.add_block_definition(definition)?;
         self.checkpoint();
-        self.current.document = document;
+        self.install_document(document);
         Ok(true)
     }
 
@@ -988,7 +1189,7 @@ impl Editor {
         let mut document = self.current.document.clone();
         document.replace_block_definition(definition)?;
         self.checkpoint();
-        self.current.document = document;
+        self.install_document(document);
         Ok(true)
     }
 
@@ -1141,6 +1342,68 @@ impl Editor {
         self.map_selection(copy, |entity| entity.transformed(transform))
     }
 
+    pub fn change_selection_space(
+        &mut self,
+        target: EntitySpace,
+        transform: Transform,
+    ) -> Result<bool, EditError> {
+        let selected = self.selection().to_vec();
+        self.change_entities_space(&selected, target, transform)
+    }
+
+    /// Move explicit source indices into a layout space after a validated transform.
+    /// Explicit indices let CHSPACE transfer model entities while a paper layout is active.
+    pub fn change_entities_space(
+        &mut self,
+        indices: &[usize],
+        target: EntitySpace,
+        transform: Transform,
+    ) -> Result<bool, EditError> {
+        if indices.is_empty() {
+            return Ok(false);
+        }
+        let target = self.canonical_entity_space(target)?;
+        let replacements = self.plan_space_changes(indices, &target, transform)?;
+        if replacements.is_empty() {
+            return Ok(false);
+        }
+        let selection = replacements.iter().map(|(index, _)| *index).collect();
+        let mut candidate = self.current.document.clone();
+        for (index, entity) in replacements {
+            candidate
+                .replace_entity(index, entity)
+                .expect("space transform preserves entity type and handle");
+            candidate.set_entity_space(index, target.clone())?;
+        }
+        self.commit_geometry_candidate(candidate, selection)
+    }
+
+    fn plan_space_changes(
+        &self,
+        indices: &[usize],
+        target: &EntitySpace,
+        transform: Transform,
+    ) -> Result<Vec<(usize, Entity)>, EditError> {
+        let mut indices = indices.to_vec();
+        indices.sort_unstable();
+        indices.dedup();
+        let mut replacements = Vec::with_capacity(indices.len());
+        for index in indices {
+            let source = self
+                .entities()
+                .get(index)
+                .ok_or(LayerError::MissingEntity(index))?;
+            let layer = self.entity_layer(index).expect("existing source layer");
+            self.editable_layer(layer)?;
+            let transformed = source.transformed(transform)?;
+            let source_space = self.entity_space(index).expect("existing source space");
+            if transformed != *source || source_space != target {
+                replacements.push((index, transformed));
+            }
+        }
+        Ok(replacements)
+    }
+
     /// Apply a geometry operation to the current selection in one transaction.
     /// The operation is evaluated completely before the document is changed.
     pub fn map_selection_with(
@@ -1165,13 +1428,15 @@ impl Editor {
         selection: Vec<usize>,
     ) -> Result<bool, EditError> {
         candidate.solve_constraints()?;
-        let changed = self.entities() != candidate.entities();
+        let changed = self.entities() != candidate.entities()
+            || (0..self.entities().len().min(candidate.entities().len()))
+                .any(|index| self.entity_space(index) != candidate.entity_space(index));
         if !changed {
             return Ok(false);
         }
         for (index, (before, after)) in self.entities().iter().zip(candidate.entities()).enumerate()
         {
-            if before != after {
+            if before != after || self.entity_space(index) != candidate.entity_space(index) {
                 self.editable_layer(
                     self.entity_layer(index)
                         .ok_or(LayerError::MissingEntity(index))?,
@@ -1179,7 +1444,7 @@ impl Editor {
             }
         }
         self.checkpoint();
-        self.current.document = candidate;
+        self.install_document(candidate);
         self.select(selection);
         Ok(true)
     }
@@ -1209,13 +1474,16 @@ impl Editor {
                             .expect("valid selection")
                             .to_owned(),
                         self.entity_style(*index).expect("valid selection").clone(),
+                        self.entity_space(*index)
+                            .expect("valid selection space")
+                            .clone(),
                     )
                 })
                 .collect();
             let first = candidate.entities().len();
-            for (entity, (layer, style)) in transformed.into_iter().zip(styles) {
+            for (entity, (layer, style, space)) in transformed.into_iter().zip(styles) {
                 candidate
-                    .push_with_style(entity, &layer, style)
+                    .push_with_style_in_space(entity, &layer, style, space)
                     .expect("existing source layer");
             }
             let new_selection = (first..candidate.entities().len()).collect();
@@ -1261,24 +1529,29 @@ impl Editor {
                     .expect("valid selection")
                     .to_owned();
                 let style = self.entity_style(*index).expect("valid selection").clone();
-                Ok((entity, layer, style))
+                let space = self
+                    .entity_space(*index)
+                    .expect("valid selection space")
+                    .clone();
+                Ok((entity, layer, style, space))
             })
             .collect::<Result<_, EditError>>()?;
         let mut copies = Vec::with_capacity(count);
         for transform in transforms {
-            for (entity, layer, style) in &sources {
+            for (entity, layer, style, space) in &sources {
                 copies.push((
                     entity.transformed(*transform)?,
                     layer.clone(),
                     style.clone(),
+                    space.clone(),
                 ));
             }
         }
         let mut candidate = self.current.document.clone();
         let first = candidate.entities().len();
-        for (entity, layer, style) in copies {
+        for (entity, layer, style, space) in copies {
             candidate
-                .push_with_style(entity, &layer, style)
+                .push_with_style_in_space(entity, &layer, style, space)
                 .expect("validated source layer");
         }
         let new_selection = (first..candidate.entities().len()).collect();
@@ -1364,13 +1637,17 @@ impl Editor {
             .entity_style(index)
             .expect("existing source style")
             .clone();
+        let space = self
+            .entity_space(index)
+            .expect("existing source space")
+            .clone();
         let mut candidate = self.current.document.clone();
         if options.erase_source {
             candidate.remove(index).expect("validated source index");
         }
         let created = candidate.entities().len();
         candidate
-            .push_with_style(entity, &target_layer, style)
+            .push_with_style_in_space(entity, &target_layer, style, space)
             .expect("validated target layer");
         self.commit_geometry_candidate(candidate, vec![created])
     }
@@ -1521,6 +1798,10 @@ impl Editor {
             self.editable_layer(&connector_layer)?;
         }
         let mut candidate = self.current.document.clone();
+        let space = self
+            .entity_space(first)
+            .expect("existing first source space")
+            .clone();
         if trim {
             candidate
                 .replace_entity(first, Entity::Line(result.first()))
@@ -1533,7 +1814,12 @@ impl Editor {
         if let Some(connector) = result.connector() {
             selected.push(candidate.entities().len());
             candidate
-                .push_on_layer(connector.clone(), &connector_layer)
+                .push_with_style_in_space(
+                    connector.clone(),
+                    &connector_layer,
+                    EntityStyle::default(),
+                    space,
+                )
                 .expect("validated connector layer");
         }
         self.commit_geometry_candidate(candidate, selected)
@@ -1566,6 +1852,10 @@ impl Editor {
             .entity_style(index)
             .expect("existing source style")
             .clone();
+        let space = self
+            .entity_space(index)
+            .expect("existing source space")
+            .clone();
         let same_type = parts
             .first()
             .is_some_and(|part| part.name() == source.name());
@@ -1582,7 +1872,7 @@ impl Editor {
         for part in parts {
             selected.push(candidate.entities().len());
             candidate
-                .push_with_style(part, &layer, style.clone())
+                .push_with_style_in_space(part, &layer, style.clone(), space.clone())
                 .expect("validated source layer");
         }
         self.commit_geometry_candidate(candidate, selected)
@@ -1603,7 +1893,11 @@ impl Editor {
                 _ => continue,
             };
             let style = self.entity_style(index).expect("existing source style");
-            plans.push((index, layer.to_owned(), style.clone(), parts));
+            let space = self
+                .entity_space(index)
+                .expect("existing source space")
+                .clone();
+            plans.push((index, layer.to_owned(), style.clone(), space, parts));
         }
         let count = plans.len();
         if count == 0 {
@@ -1614,10 +1908,10 @@ impl Editor {
             candidate.remove(*index).expect("validated source index");
         }
         let first = candidate.entities().len();
-        for (_, layer, style, parts) in plans {
+        for (_, layer, style, space, parts) in plans {
             for part in parts {
                 candidate
-                    .push_with_style(part, &layer, style.clone())
+                    .push_with_style_in_space(part, &layer, style.clone(), space.clone())
                     .expect("validated source layer");
             }
         }

@@ -24,6 +24,7 @@ mod feature_references;
 mod feature_regions;
 mod feature_selection;
 mod feature_solid;
+mod feature_spaces;
 mod feature_tables;
 mod feature_utility;
 mod feature_views;
@@ -42,8 +43,9 @@ mod trimming;
 pub use shell::{MenuItem, MenuStatus, menu_action_status, native_menus, queue_menu_action};
 
 use crate::{
-    Arc3, BoundaryMode, Circle3, Corner, CornerParameter, DxfDocument, Editor, Entity, EntityStyle,
-    Lengthen, Line3, Linetype, Offset, OffsetLayer, OffsetOptions, Point3, Polyline2, Transform,
+    Arc3, BoundaryMode, Circle3, Corner, CornerParameter, DxfDocument, Editor, Entity, EntitySpace,
+    EntityStyle, Lengthen, Line3, Linetype, Offset, OffsetLayer, OffsetOptions, Point3, Polyline2,
+    Transform,
 };
 use eframe::egui::{self, Color32, Key, Modifiers};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -608,6 +610,7 @@ impl OpenCadApp {
                     DxfDocument::parse(include_str!("../../examples/courtyard.dxf"))
                         .expect("validated study"),
                 );
+                self.layouts = self.editor.layouts().clone();
                 self.layer_color = LayerColorInput::default();
                 self.linetype_input = LinetypeInput::default();
                 self.path = None;
