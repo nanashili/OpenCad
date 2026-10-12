@@ -207,6 +207,7 @@ fn command_for_action(action: &str) -> Option<&'static str> {
         "ID_Mleader_Align" => "MLEADERALIGN 10,5",
         "ID_Mleader_Collect" => "MLEADERCOLLECT",
         "ID_Mleader_Style" => "MLEADERSTYLE LIST",
+        "ID_Bedit" => "BEDIT",
         "ID_Style" => "STYLE LIST",
         "ID_DimstyleA" => "DIMSTYLE LIST",
         "ID_Table" => "TABLE",

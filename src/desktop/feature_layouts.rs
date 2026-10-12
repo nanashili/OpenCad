@@ -649,40 +649,9 @@ fn append_raster_plot_image(
 }
 
 fn flatten_entities(document: &DxfDocument) -> Result<Vec<Entity>, String> {
-    fn visit(
-        document: &DxfDocument,
-        source: &[Entity],
-        depth: usize,
-        out: &mut Vec<Entity>,
-    ) -> Result<(), String> {
-        if depth > 32 {
-            return Err("INSERT nesting exceeds 32 levels".into());
-        }
-        for entity in source {
-            if let Entity::Insert(insert) = entity {
-                let Some(block) = document.block(insert.block_name()) else {
-                    return Err(format!("unresolved INSERT block {}", insert.block_name()));
-                };
-                let expanded = insert.explode(block).map_err(|e| e.to_string())?;
-                visit(document, &expanded, depth + 1, out)?;
-            } else {
-                out.push(entity.clone());
-                if let Entity::MLeader(leader) = entity
-                    && let crate::MLeaderContent::Block(insert) = leader.content()
-                {
-                    let Some(block) = document.block(insert.block_name()) else {
-                        return Err(format!("unresolved MLEADER block {}", insert.block_name()));
-                    };
-                    let expanded = insert.explode(block).map_err(|e| e.to_string())?;
-                    visit(document, &expanded, depth + 1, out)?;
-                }
-            }
-        }
-        Ok(())
-    }
-    let mut out = Vec::new();
-    visit(document, document.entities(), 0, &mut out)?;
-    Ok(out)
+    crate::block_expansion::expand_entities(document)
+        .map(|expanded| expanded.into_iter().map(|item| item.entity).collect())
+        .map_err(|error| error.to_string())
 }
 
 fn resolve_underlay_sizes(

@@ -117,6 +117,12 @@ impl OpenCadApp {
         let rest = rest.trim();
         let token_storage = command_tokens(rest)?;
         let tokens: Vec<&str> = token_storage.iter().map(String::as_str).collect();
+        if let Some(result) = self.feature_block_editor_command(verb, rest, &tokens) {
+            return result;
+        }
+        if let Some(result) = self.feature_dynamic_blocks_command(verb, rest, &tokens) {
+            return result;
+        }
         if rest.is_empty()
             && let Some(form) = feature_forms::FeatureForm::for_command(verb)
         {
@@ -1047,6 +1053,9 @@ impl OpenCadApp {
             "UNDO" => self.undo(false),
             "REDO" => self.undo(true),
             "U" => self.undo_line_point(),
+            "CLOSE" if self.block_edit_session.is_some() => {
+                return Err("Use BCLOSE SAVE or BCLOSE DISCARD while editing a block.".into());
+            }
             "CLOSE" => self.close_line(),
             "ZOOM" if rest.eq_ignore_ascii_case("EXTENTS") || rest.eq_ignore_ascii_case("E") => {
                 self.fit_pending = true;
@@ -1086,9 +1095,17 @@ impl OpenCadApp {
             }
             "REGEN" => {}
 
+            "NEW" | "OPEN" if self.block_edit_session.is_some() => {
+                return Err(
+                    "Finish the active block editor session before changing drawings.".into(),
+                );
+            }
             "NEW" => self.request(PendingAction::New),
             "OPEN" => self.request(PendingAction::Open(path_argument(rest))),
             "SAVE" | "SAVEAS" => {
+                if self.block_edit_session.is_some() {
+                    return Err("Use BSAVE or BSAVEAS while editing a block.".into());
+                }
                 if let Some(path) = path_argument(rest) {
                     let exists_elsewhere = path.exists() && self.path.as_ref() != Some(&path);
                     if exists_elsewhere

@@ -4,6 +4,7 @@ mod annotation;
 mod annotation_styles;
 mod arc;
 mod block;
+mod block_expansion;
 mod breaking;
 mod circle;
 mod color;
@@ -12,6 +13,7 @@ mod construction;
 mod corner;
 mod drawing_data;
 mod dxf;
+mod dynamic_block;
 mod editor;
 mod ellipse;
 mod entity_style;
@@ -57,6 +59,7 @@ pub use annotation::{
 pub use annotation_styles::{DimensionStyle, MLeaderStyle, TextStyle};
 pub use arc::Arc3;
 pub use block::{Attribute, AttributeDefinition, BlockDefinition, BlockInsert, Insert};
+pub use block_expansion::{BlockExpansionError, ExpandedEntity, expand_entities, expand_entity};
 pub use circle::{Circle3, Entity};
 pub use constraints::{
     Anchor, ConstraintError, ConstraintKind, ConstraintRecord, ConstraintSet, LinePair,
@@ -70,6 +73,11 @@ pub use drawing_data::{
     update_named_field, update_named_fields,
 };
 pub use dxf::{DxfDocument, DxfError, DxfErrorKind, read_dxf, write_dxf};
+pub use dynamic_block::{
+    DynamicAction, DynamicBlockDefinition, DynamicBlockError, DynamicBlockOverrides,
+    DynamicParameter, DynamicParameterType, DynamicValue, DynamicVisibilityState,
+    evaluate_dynamic_insert, evaluate_insert, evaluate_local_entities,
+};
 pub use editor::{DrawOrder, EditError, Editor};
 pub use ellipse::Ellipse3;
 pub use entity_style::{EntityStyle, EntityStyleError};

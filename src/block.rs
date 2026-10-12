@@ -4,7 +4,10 @@
 //! definition by name, so definitions remain acyclic even when an application
 //! stores them in a drawing-wide library.
 
-use crate::{Arc3, Circle3, Entity, GeometryError, Line3, Point3, PolylineWidth};
+use crate::{
+    Arc3, Circle3, Entity, GeometryError, Line3, Point3, PolylineWidth,
+    dynamic_block::{DynamicBlockDefinition, DynamicBlockOverrides},
+};
 use std::f64::consts::TAU;
 
 /// A tag and default value attached to a block definition.
@@ -81,7 +84,10 @@ pub struct BlockDefinition {
     name: String,
     base: Point3,
     entities: Vec<Entity>,
+    entity_ids: Vec<u64>,
+    next_entity_id: u64,
     attribute_definitions: Vec<AttributeDefinition>,
+    dynamic_definition: Option<DynamicBlockDefinition>,
     xref_path: Option<String>,
     xref_overlay: bool,
 }
@@ -91,8 +97,11 @@ impl BlockDefinition {
         Self {
             name: name.into(),
             base,
+            entity_ids: (1..=entities.len() as u64).collect(),
+            next_entity_id: entities.len() as u64 + 1,
             entities,
             attribute_definitions: Vec::new(),
+            dynamic_definition: None,
             xref_path: None,
             xref_overlay: false,
         }
@@ -105,6 +114,15 @@ impl BlockDefinition {
     }
     pub fn entities(&self) -> &[Entity] {
         &self.entities
+    }
+    pub fn entity_ids(&self) -> &[u64] {
+        &self.entity_ids
+    }
+    pub fn dynamic_definition(&self) -> Option<&DynamicBlockDefinition> {
+        self.dynamic_definition.as_ref()
+    }
+    pub fn set_dynamic_definition(&mut self, definition: Option<DynamicBlockDefinition>) {
+        self.dynamic_definition = definition;
     }
     pub fn attribute_definitions(&self) -> &[AttributeDefinition] {
         &self.attribute_definitions
@@ -120,13 +138,45 @@ impl BlockDefinition {
         self.xref_overlay = overlay;
     }
     pub fn set_entities(&mut self, entities: Vec<Entity>) {
+        self.entity_ids.truncate(entities.len());
         self.entities = entities;
+        while self.entity_ids.len() < self.entities.len() {
+            self.entity_ids.push(self.next_entity_id);
+            self.next_entity_id = self.next_entity_id.saturating_add(1);
+        }
+    }
+    pub fn set_entities_with_ids(
+        &mut self,
+        entities: Vec<Entity>,
+        ids: Vec<u64>,
+    ) -> Result<(), GeometryError> {
+        if entities.len() != ids.len()
+            || ids.contains(&0)
+            || ids
+                .iter()
+                .enumerate()
+                .any(|(index, id)| ids[..index].contains(id))
+        {
+            return Err(GeometryError::NonFiniteParameter);
+        }
+        self.entities = entities;
+        self.entity_ids = ids;
+        self.next_entity_id = self
+            .entity_ids
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+        Ok(())
     }
     pub fn set_attribute_definitions(&mut self, definitions: Vec<AttributeDefinition>) {
         self.attribute_definitions = definitions;
     }
     pub fn add_entity(&mut self, entity: Entity) {
         self.entities.push(entity);
+        self.entity_ids.push(self.next_entity_id);
+        self.next_entity_id = self.next_entity_id.saturating_add(1);
     }
     pub fn add_attribute_definition(&mut self, definition: AttributeDefinition) {
         self.attribute_definitions.push(definition);
@@ -145,6 +195,7 @@ pub struct Insert {
     columns: Option<usize>,
     row_spacing: f64,
     column_spacing: f64,
+    dynamic_overrides: DynamicBlockOverrides,
 }
 
 /// Descriptive alias for APIs that distinguish block inserts from other inserts.
@@ -162,6 +213,7 @@ impl Insert {
             columns: None,
             row_spacing: 0.0,
             column_spacing: 0.0,
+            dynamic_overrides: DynamicBlockOverrides::new(),
         }
     }
     pub fn block_name(&self) -> &str {
@@ -190,6 +242,15 @@ impl Insert {
     }
     pub fn column_spacing(&self) -> f64 {
         self.column_spacing
+    }
+    pub fn dynamic_overrides(&self) -> &DynamicBlockOverrides {
+        &self.dynamic_overrides
+    }
+    pub fn set_dynamic_overrides(&mut self, overrides: DynamicBlockOverrides) {
+        self.dynamic_overrides = overrides;
+    }
+    pub fn reset_dynamic_overrides(&mut self) {
+        self.dynamic_overrides.reset_all();
     }
 
     pub fn set_scale(&mut self, scale: [f64; 3]) -> Result<(), GeometryError> {

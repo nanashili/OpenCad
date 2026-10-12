@@ -74,6 +74,22 @@ impl OpenCadApp {
             ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(11.0));
             ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(11.0));
             egui::ScrollArea::vertical().id_salt("inspector_content").auto_shrink([false,false]).show(ui, |ui| {
+            if self.block_edit_session.is_some() {
+                ui.heading("Block Editor");
+                ui.horizontal(|ui| {
+                    if ui.button("Save block").clicked()
+                        && let Err(error) = self.command_result("BSAVE")
+                    {
+                        self.message(error, true);
+                    }
+                    if ui.button("Close block").clicked()
+                        && let Err(error) = self.command_result("BCLOSE DISCARD")
+                    {
+                        self.message(error, true);
+                    }
+                });
+                ui.separator();
+            }
             if self.workspace.layers {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 11.0;

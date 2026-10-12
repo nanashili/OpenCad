@@ -88,7 +88,7 @@ impl Transform {
     }
 
     pub(crate) fn point(self, point: Point3) -> Result<Point3, GeometryError> {
-        if self.is_identity() || point == self.base {
+        if self.is_identity() {
             return Ok(point);
         }
         let dx = point.x() - self.base.x();
@@ -97,7 +97,11 @@ impl Transform {
             return Err(GeometryError::NonFiniteResult);
         }
         let (x, y, z) = match self.kind {
-            TransformKind::Translate(dx, dy, dz) => (dx, dy, point.z() + dz - self.base.z()),
+            TransformKind::Translate(dx, dy, dz) => (
+                point.x() - self.base.x() + dx,
+                point.y() - self.base.y() + dy,
+                point.z() + dz - self.base.z(),
+            ),
             TransformKind::Rotate(angle) => {
                 let (sin, cos) = sin_cos(angle);
                 (

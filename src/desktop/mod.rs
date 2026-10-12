@@ -5,10 +5,12 @@ mod commands;
 mod corners;
 mod exploding;
 mod feature_annotations;
+mod feature_block_editor;
 mod feature_blocks;
 mod feature_constraints;
 mod feature_construction;
 mod feature_data;
+mod feature_dynamic_blocks;
 pub(super) mod feature_forms;
 mod feature_groups;
 mod feature_interchange;
@@ -202,6 +204,7 @@ pub struct OpenCadApp {
     layouts: crate::LayoutCollection,
     references: feature_references::ReferenceWorkspace,
     current_mline_style: String,
+    block_edit_session: Option<feature_block_editor::BlockEditSession>,
 }
 
 impl OpenCadApp {
@@ -264,6 +267,7 @@ impl OpenCadApp {
             layouts: crate::LayoutCollection::default(),
             references: feature_references::ReferenceWorkspace::default(),
             current_mline_style: "STANDARD".into(),
+            block_edit_session: None,
         }
     }
 
@@ -554,6 +558,18 @@ impl OpenCadApp {
     }
 
     fn request(&mut self, action: PendingAction) {
+        if self.block_edit_session.is_some()
+            && matches!(
+                action,
+                PendingAction::New | PendingAction::Open(_) | PendingAction::CloseDrawing
+            )
+        {
+            self.message(
+                "Finish the active block editor session with BCLOSE before changing drawings.",
+                true,
+            );
+            return;
+        }
         if self.editor.is_dirty() {
             self.pending = Some(action);
         } else {
@@ -1202,6 +1218,11 @@ pub fn run_script_file(script: &Path, output: &Path, input: Option<&Path>) -> Re
             },
         )
         .map_err(|error| error.to_string())?;
+    if app.block_edit_session.is_some() {
+        return Err(
+            "Script ended while BEDIT was active; save or close the block before exporting.".into(),
+        );
+    }
     let dxf = app.document_snapshot().to_dxf();
     atomic_write(output, dxf.as_bytes())
         .map_err(|error| format!("Cannot write {}: {error}", output.display()))

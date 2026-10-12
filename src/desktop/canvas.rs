@@ -175,8 +175,13 @@ impl OpenCadApp {
                 });
                 if self.fit_pending {
                     self.fit_pending = false;
-                    if let Err(e) = self.camera.fit(&self.editor.visible_entities(), rect) {
-                        self.message(e, true);
+                    match self.visible_expanded_geometry() {
+                        Ok(geometry) => {
+                            if let Err(error) = self.camera.fit(&geometry, rect) {
+                                self.message(error, true);
+                            }
+                        }
+                        Err(error) => self.message(error, true),
                     }
                 }
                 let pointer = response
@@ -392,8 +397,9 @@ impl OpenCadApp {
                         if !self.editor.is_entity_visible(index) {
                             continue;
                         }
-                        if let Ok([x1, y1, x2, y2]) =
-                            crate::svg::entity_bounds(std::slice::from_ref(entity))
+                        if let Ok(expanded) =
+                            crate::block_expansion::expand_entity(self.editor.document(), entity)
+                            && let Ok([x1, y1, x2, y2]) = crate::svg::entity_bounds(&expanded)
                             && let (Some(a), Some(b)) = (
                                 self.camera.screen(x1, y1, rect),
                                 self.camera.screen(x2, y2, rect),
@@ -492,6 +498,7 @@ impl OpenCadApp {
                 } else {
                     None
                 };
+                let mut block_render_error = None;
                 for (index, entity) in self.editor.entities().iter().enumerate() {
                     if !self.editor.is_entity_visible(index)
                         || break_preview_source == Some(index)
@@ -501,6 +508,12 @@ impl OpenCadApp {
                             .is_some_and(|(source, _)| *source == index)
                     {
                         continue;
+                    }
+                    if requires_block_expansion(entity)
+                        && let Err(error) =
+                            crate::block_expansion::expand_entity(self.editor.document(), entity)
+                    {
+                        block_render_error.get_or_insert_with(|| error.to_string());
                     }
                     let selected = self.editor.selection().contains(&index);
                     self.draw_styled_entity(
@@ -524,11 +537,14 @@ impl OpenCadApp {
                     );
                     if selected {
                         let grips = match entity {
-                            Entity::Line(_) => usize::MAX,
+                            Entity::Line(_) | Entity::Insert(_) => usize::MAX,
                             Entity::Polyline(polyline) => polyline.vertices().len(),
                             _ => 1,
                         };
-                        for point in entity_points(entity).into_iter().take(grips) {
+                        let geometry =
+                            crate::block_expansion::expand_entity(self.editor.document(), entity)
+                                .unwrap_or_else(|_| vec![entity.clone()]);
+                        for point in geometry.iter().flat_map(entity_points).take(grips) {
                             if let Some(p) = self.camera.screen_point(point, rect)
                                 && rect.contains(p)
                             {
@@ -540,6 +556,9 @@ impl OpenCadApp {
                             }
                         }
                     }
+                }
+                if let Some(error) = block_render_error {
+                    self.message(format!("Cannot evaluate block reference: {error}"), true);
                 }
                 self.draw_polar_guide(&painter, rect);
                 self.draw_preview(&painter, rect);
@@ -828,18 +847,37 @@ impl OpenCadApp {
         }
     }
 
-    fn draw_entity(&self, painter: &Painter, entity: &Entity, rect: Rect, stroke: Stroke) {
-        self.draw_entity_at_depth(painter, entity, rect, stroke, 0);
+    fn visible_expanded_geometry(&self) -> Result<Vec<Entity>, String> {
+        let mut geometry = Vec::new();
+        for (index, entity) in self.editor.entities().iter().enumerate() {
+            if !self.editor.is_entity_visible(index) {
+                continue;
+            }
+            let expanded = crate::block_expansion::expand_entity(self.editor.document(), entity)
+                .map_err(|error| format!("Cannot evaluate block references: {error}"))?;
+            geometry.extend(expanded);
+        }
+        Ok(geometry)
     }
 
-    fn draw_entity_at_depth(
-        &self,
-        painter: &Painter,
-        entity: &Entity,
-        rect: Rect,
-        stroke: Stroke,
-        depth: usize,
-    ) {
+    fn draw_entity(&self, painter: &Painter, entity: &Entity, rect: Rect, stroke: Stroke) {
+        if let Entity::Insert(insert) = entity {
+            self.draw_insert_marker(painter, insert, rect, stroke);
+        }
+        match crate::block_expansion::expand_entity(self.editor.document(), entity) {
+            Ok(expanded) => {
+                for child in expanded {
+                    self.draw_expanded_entity(painter, &child, rect, stroke);
+                }
+            }
+            Err(_) if !matches!(entity, Entity::Insert(_)) => {
+                self.draw_expanded_entity(painter, entity, rect, stroke);
+            }
+            Err(_) => {}
+        }
+    }
+
+    fn draw_expanded_entity(&self, painter: &Painter, entity: &Entity, rect: Rect, stroke: Stroke) {
         match entity {
             Entity::Line(line) => {
                 if let (Some(a), Some(b)) = (
@@ -970,13 +1008,9 @@ impl OpenCadApp {
                     crate::MLeaderContent::MText(text) => {
                         self.draw_text(painter, text.text(), rect, stroke)
                     }
-                    crate::MLeaderContent::Block(insert) => self.draw_entity_at_depth(
-                        painter,
-                        &Entity::Insert(insert.clone()),
-                        rect,
-                        stroke,
-                        depth + 1,
-                    ),
+                    crate::MLeaderContent::Block(insert) => {
+                        self.draw_insert_marker(painter, insert, rect, stroke)
+                    }
                 }
             }
             Entity::Table(table) => {
@@ -1065,34 +1099,7 @@ impl OpenCadApp {
                 }
             }
             Entity::Insert(insert) => {
-                if let Some(definition) = self.editor.document().block(insert.block_name())
-                    && let Ok(expanded) = insert.explode(definition)
-                {
-                    // Keep preview expansion bounded: cyclic block references must never recurse through the renderer.
-                    for child in expanded {
-                        if depth < 32 {
-                            self.draw_entity_at_depth(painter, &child, rect, stroke, depth + 1);
-                        }
-                    }
-                }
-                if let Some(at) = self.camera.screen_point(insert.insertion(), rect) {
-                    painter.circle_stroke(at, 4.0, stroke);
-                    painter.line_segment(
-                        [at + egui::vec2(-6.0, 0.0), at + egui::vec2(6.0, 0.0)],
-                        stroke,
-                    );
-                    painter.line_segment(
-                        [at + egui::vec2(0.0, -6.0), at + egui::vec2(0.0, 6.0)],
-                        stroke,
-                    );
-                    painter.text(
-                        at + egui::vec2(7.0, -7.0),
-                        Align2::LEFT_TOP,
-                        insert.block_name(),
-                        FontId::proportional(11.0),
-                        stroke.color,
-                    );
-                }
+                self.draw_insert_marker(painter, insert, rect, stroke);
             }
             Entity::Face3(face) => {
                 let (vertices, count) = face.vertices();
@@ -1482,6 +1489,34 @@ impl OpenCadApp {
         }
     }
 
+    fn draw_insert_marker(
+        &self,
+        painter: &Painter,
+        insert: &crate::Insert,
+        rect: Rect,
+        stroke: Stroke,
+    ) {
+        let Some(at) = self.camera.screen_point(insert.insertion(), rect) else {
+            return;
+        };
+        painter.circle_stroke(at, 4.0, stroke);
+        painter.line_segment(
+            [at + egui::vec2(-6.0, 0.0), at + egui::vec2(6.0, 0.0)],
+            stroke,
+        );
+        painter.line_segment(
+            [at + egui::vec2(0.0, -6.0), at + egui::vec2(0.0, 6.0)],
+            stroke,
+        );
+        painter.text(
+            at + egui::vec2(7.0, -7.0),
+            Align2::LEFT_TOP,
+            insert.block_name(),
+            FontId::proportional(11.0),
+            stroke.color,
+        );
+    }
+
     fn draw_text(&self, painter: &Painter, text: &crate::Text, rect: Rect, stroke: Stroke) {
         if let Some(at) = self.camera.screen_point(text.location(), rect) {
             let size = (text.height() * self.camera.scale).clamp(7.0, 96.0) as f32;
@@ -1696,12 +1731,16 @@ impl OpenCadApp {
                 if !self.editor.is_entity_visible(index) {
                     continue;
                 }
-                for candidate in entity_points(entity) {
-                    let d = (candidate.x() - point.x()).hypot(candidate.y() - point.y())
-                        * self.camera.scale;
-                    if d < distance {
-                        distance = d;
-                        nearest = Some(candidate);
+                if let Ok(geometry) =
+                    crate::block_expansion::expand_entity(self.editor.document(), entity)
+                {
+                    for candidate in geometry.iter().flat_map(entity_points) {
+                        let d = (candidate.x() - point.x()).hypot(candidate.y() - point.y())
+                            * self.camera.scale;
+                        if d < distance {
+                            distance = d;
+                            nearest = Some(candidate);
+                        }
                     }
                 }
             }
@@ -1856,7 +1895,26 @@ impl OpenCadApp {
                             .map(|point| position.distance(point))
                             .collect::<Vec<_>>(),
                     })
+                    .chain(match leader.content() {
+                        crate::MLeaderContent::MText(_) => Vec::new(),
+                        crate::MLeaderContent::Block(insert) => {
+                            vec![self.expanded_entity_distance(
+                                &Entity::Insert(insert.clone()),
+                                position,
+                                rect,
+                                &line_distance,
+                                &arc_distance,
+                            )]
+                        }
+                    })
                     .fold(f32::INFINITY, f32::min),
+                Entity::Insert(_) => self.expanded_entity_distance(
+                    entity,
+                    position,
+                    rect,
+                    &line_distance,
+                    &arc_distance,
+                ),
                 Entity::Point(point) => self
                     .camera
                     .screen_point(point.position(), rect)
@@ -1931,6 +1989,66 @@ impl OpenCadApp {
         }
         closest
     }
+
+    fn expanded_entity_distance(
+        &self,
+        entity: &Entity,
+        position: Pos2,
+        rect: Rect,
+        line_distance: &impl Fn(Line3) -> Option<f32>,
+        arc_distance: &impl Fn(Arc3) -> Option<f32>,
+    ) -> f32 {
+        let Ok(entities) = crate::block_expansion::expand_entity(self.editor.document(), entity)
+        else {
+            return f32::INFINITY;
+        };
+
+        entities
+            .iter()
+            .map(|entity| match entity {
+                Entity::Line(line) => line_distance(*line).unwrap_or(f32::INFINITY),
+                Entity::Polyline(polyline) => polyline
+                    .segments()
+                    .filter_map(|segment| match segment.ok()? {
+                        crate::PolylineSegment::Line(line) => line_distance(line),
+                        crate::PolylineSegment::Arc { arc, .. } => arc_distance(arc),
+                    })
+                    .fold(f32::INFINITY, f32::min),
+                Entity::Polyline3(polyline) => polyline
+                    .segments()
+                    .filter_map(line_distance)
+                    .fold(f32::INFINITY, f32::min),
+                Entity::Circle(circle) => self
+                    .camera
+                    .screen(circle.center().x(), circle.center().y(), rect)
+                    .map_or(f32::INFINITY, |center| {
+                        (position.distance(center) - (circle.radius() * self.camera.scale) as f32)
+                            .abs()
+                    }),
+                Entity::Arc(arc) => arc_distance(*arc).unwrap_or(f32::INFINITY),
+                _ => crate::svg::entity_bounds(std::slice::from_ref(entity))
+                    .ok()
+                    .and_then(|[x1, y1, x2, y2]| {
+                        Some(
+                            Rect::from_two_pos(
+                                self.camera.screen(x1, y1, rect)?,
+                                self.camera.screen(x2, y2, rect)?,
+                            )
+                            .distance_to_pos(position),
+                        )
+                    })
+                    .unwrap_or(f32::INFINITY),
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+}
+
+fn requires_block_expansion(entity: &Entity) -> bool {
+    matches!(entity, Entity::Insert(_))
+        || matches!(
+            entity,
+            Entity::MLeader(leader) if matches!(leader.content(), crate::MLeaderContent::Block(_))
+        )
 }
 
 fn underlay_plot_vectors(

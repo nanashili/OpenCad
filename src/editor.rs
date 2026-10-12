@@ -11,6 +11,7 @@ type LayerState = (String, bool, bool, bool, bool);
 #[derive(Debug)]
 pub enum EditError {
     Geometry(GeometryError),
+    BlockExpansion(crate::BlockExpansionError),
     Constraint(ConstraintError),
     Layer(LayerError),
     Style(EntityStyleError),
@@ -28,6 +29,7 @@ impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Geometry(error) => error.fmt(f),
+            Self::BlockExpansion(error) => error.fmt(f),
             Self::Constraint(error) => error.fmt(f),
             Self::Layer(error) => error.fmt(f),
             Self::Style(error) => error.fmt(f),
@@ -39,6 +41,11 @@ impl Error for EditError {}
 impl From<GeometryError> for EditError {
     fn from(error: GeometryError) -> Self {
         Self::Geometry(error)
+    }
+}
+impl From<crate::BlockExpansionError> for EditError {
+    fn from(error: crate::BlockExpansionError) -> Self {
+        Self::BlockExpansion(error)
     }
 }
 impl From<ConstraintError> for EditError {
@@ -1097,6 +1104,24 @@ impl Editor {
             .map_err(Self::geometry_commit_layer_error)
     }
 
+    /// Apply validated replacements to the current selection in one undo step.
+    pub fn update_selection_atomic(
+        &mut self,
+        replacements: Vec<(usize, Entity)>,
+    ) -> Result<bool, EditError> {
+        if replacements.is_empty() {
+            return Ok(false);
+        }
+        let mut candidate = self.current.document.clone();
+        for (index, entity) in replacements {
+            if self.entities().get(index).is_none() {
+                return Err(LayerError::MissingEntity(index).into());
+            }
+            candidate.replace_entity(index, entity);
+        }
+        self.commit_geometry_candidate(candidate, self.selection().to_vec())
+    }
+
     pub fn translate_selection(
         &mut self,
         dx: f64,
@@ -1572,7 +1597,9 @@ impl Editor {
             self.editable_layer(layer)?;
             let parts = match &self.entities()[index] {
                 Entity::Polyline(polyline) => polyline.explode()?,
-                Entity::Insert(insert) => expand_insert(insert, &self.current.document, 0)?,
+                Entity::Insert(insert) => {
+                    crate::expand_entity(&self.current.document, &Entity::Insert(insert.clone()))?
+                }
                 _ => continue,
             };
             let style = self.entity_style(index).expect("existing source style");
@@ -1758,31 +1785,6 @@ impl Editor {
         }
         true
     }
-}
-
-fn expand_insert(
-    insert: &crate::Insert,
-    document: &DxfDocument,
-    depth: usize,
-) -> Result<Vec<Entity>, GeometryError> {
-    if depth >= 8 {
-        return Err(GeometryError::UnsupportedPolylineConversion);
-    }
-    let definition = document
-        .block(insert.block_name())
-        .ok_or(GeometryError::UnsupportedPolylineConversion)?;
-    let mut output = insert.explode(definition)?;
-    // INSERT transformation currently supports the concrete drawable entities;
-    // nested INSERTs are expanded with a bounded recursion guard.
-    let mut expanded = Vec::with_capacity(output.len());
-    for entity in output.drain(..) {
-        if let Entity::Insert(nested) = entity {
-            expanded.extend(expand_insert(&nested, document, depth + 1)?);
-        } else {
-            expanded.push(entity);
-        }
-    }
-    Ok(expanded)
 }
 
 #[cfg(test)]

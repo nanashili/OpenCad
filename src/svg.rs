@@ -11,6 +11,7 @@ pub enum SvgError {
     BoundsTooLarge,
     Linetype(LinetypeError),
     UnresolvedInsert,
+    BlockExpansion(String),
     UnsupportedPdfUnderlay,
     UnresolvedPdfUnderlay,
 }
@@ -24,6 +25,7 @@ impl fmt::Display for SvgError {
             Self::UnresolvedInsert => {
                 write!(f, "INSERT requires a document block definition registry")
             }
+            Self::BlockExpansion(error) => write!(f, "cannot evaluate block reference: {error}"),
             Self::UnsupportedPdfUnderlay => {
                 write!(f, "SVG export cannot embed PDF underlays")
             }
@@ -277,7 +279,7 @@ pub fn render_document_svg(document: &DxfDocument) -> Result<String, SvgError> {
         if !layer.is_visible() {
             continue;
         }
-        let expanded = expand_document_entity(document, entity, 0)?;
+        let expanded = expand_document_entity(document, entity)?;
         let color = document
             .entity_rgb(index, true)
             .expect("entity style exists");
@@ -309,40 +311,9 @@ pub fn render_document_svg(document: &DxfDocument) -> Result<String, SvgError> {
 fn expand_document_entity(
     document: &DxfDocument,
     entity: &Entity,
-    depth: usize,
 ) -> Result<Vec<Entity>, SvgError> {
-    if depth >= 32 {
-        return Err(SvgError::UnresolvedInsert);
-    }
-    if let Entity::MLeader(leader) = entity
-        && let crate::MLeaderContent::Block(insert) = leader.content()
-    {
-        let definition = document
-            .block(insert.block_name())
-            .ok_or(SvgError::UnresolvedInsert)?;
-        let mut result = vec![entity.clone()];
-        for child in insert
-            .explode(definition)
-            .map_err(|_| SvgError::UnresolvedInsert)?
-        {
-            result.extend(expand_document_entity(document, &child, depth + 1)?);
-        }
-        return Ok(result);
-    }
-    let Entity::Insert(insert) = entity else {
-        return Ok(vec![entity.clone()]);
-    };
-    let definition = document
-        .block(insert.block_name())
-        .ok_or(SvgError::UnresolvedInsert)?;
-    let mut result = Vec::new();
-    for child in insert
-        .explode(definition)
-        .map_err(|_| SvgError::UnresolvedInsert)?
-    {
-        result.extend(expand_document_entity(document, &child, depth + 1)?);
-    }
-    Ok(result)
+    crate::block_expansion::expand_entity(document, entity)
+        .map_err(|error| SvgError::BlockExpansion(error.to_string()))
 }
 
 fn render_styled_entities_svg(

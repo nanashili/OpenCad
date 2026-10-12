@@ -125,8 +125,12 @@ fn parse_drawing(tokens: &[String]) -> Result<Drawing, Box<dyn Error>> {
 
 fn document_meshes(document: &DxfDocument) -> Result<Vec<Mesh3>, Box<dyn Error>> {
     let mut meshes = Vec::new();
-    for entity in document.entities() {
-        collect_entity_meshes(entity, document, &mut meshes, 0)?;
+    for expanded in opencad::expand_entities(document)? {
+        match expanded.entity {
+            Entity::Face3(face) => meshes.push(Mesh3::new(vec![face])?),
+            Entity::Mesh(mesh) => meshes.push(mesh),
+            _ => {}
+        }
     }
     if meshes.is_empty() {
         return Err("DXF contains no convertible Face3, Mesh, or block geometry".into());
@@ -137,31 +141,6 @@ fn document_meshes(document: &DxfDocument) -> Result<Vec<Mesh3>, Box<dyn Error>>
 fn merge_meshes(meshes: Vec<Mesh3>) -> Result<Mesh3, Box<dyn Error>> {
     let faces = meshes.into_iter().flat_map(Mesh3::into_faces).collect();
     Ok(Mesh3::new(faces)?)
-}
-
-fn collect_entity_meshes(
-    entity: &Entity,
-    document: &DxfDocument,
-    meshes: &mut Vec<Mesh3>,
-    depth: usize,
-) -> Result<(), Box<dyn Error>> {
-    if depth > 32 {
-        return Err("block expansion exceeds the recursion limit".into());
-    }
-    match entity {
-        Entity::Face3(face) => meshes.push(Mesh3::new(vec![*face])?),
-        Entity::Mesh(mesh) => meshes.push(mesh.clone()),
-        Entity::Insert(insert) => {
-            let block = document
-                .block(insert.block_name())
-                .ok_or_else(|| format!("unresolved block INSERT: {}", insert.block_name()))?;
-            for expanded in insert.explode(block)? {
-                collect_entity_meshes(&expanded, document, meshes, depth + 1)?;
-            }
-        }
-        _ => {}
-    }
-    Ok(())
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
