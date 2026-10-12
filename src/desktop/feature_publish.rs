@@ -143,21 +143,25 @@ impl OpenCadApp {
             );
             return Ok(());
         }
-        let request = parse_publish_request(tokens, &self.layouts)?;
-        let layouts = self.prepare_publish_layouts(&request)?;
-        let bytes = super::feature_layouts::vector_pdf_layouts(
-            self.editor.document(),
-            &layouts,
-            self.path.as_deref(),
-        )?;
+        let current_layouts = self.layouts_for_persistence()?;
+        let request = parse_publish_request(tokens, &current_layouts)?;
+        let layouts = self.prepare_publish_layouts(&request, &current_layouts)?;
+        let mut document = self.editor.document().clone();
+        document.set_layouts(current_layouts);
+        let bytes =
+            super::feature_layouts::vector_pdf_layouts(&document, &layouts, self.path.as_deref())?;
         write_published_pdf(request.output(), &bytes)
     }
 
-    fn prepare_publish_layouts(&self, request: &PublishRequest) -> Result<Vec<Layout>, String> {
+    fn prepare_publish_layouts(
+        &self,
+        request: &PublishRequest,
+        source: &crate::LayoutCollection,
+    ) -> Result<Vec<Layout>, String> {
         let override_setup = request
             .setup_name()
             .map(|name| {
-                self.layouts
+                source
                     .page_setups()
                     .get(name)
                     .map(|entry| entry.setup())
@@ -168,8 +172,7 @@ impl OpenCadApp {
             .layout_names()
             .iter()
             .map(|name| {
-                let mut layout = self
-                    .layouts
+                let mut layout = source
                     .get(name)
                     .cloned()
                     .ok_or_else(|| format!("Layout {name} was not found."))?;

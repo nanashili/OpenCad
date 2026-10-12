@@ -1453,19 +1453,38 @@ impl OpenCadApp {
             }
             "ID_ModelSpace" | "ID_AnnotationScale" => {
                 let caption = if item.id == "ID_ModelSpace" {
-                    match self.editor.active_space() {
-                        EntitySpace::Model => "Model".to_owned(),
-                        EntitySpace::Paper(name) => format!("Paper: {name}"),
+                    if let Some(active) = &self.active_viewport {
+                        format!("Model: VP{}", active.index + 1)
+                    } else {
+                        match self.editor.active_space() {
+                            EntitySpace::Model => "Model".to_owned(),
+                            EntitySpace::Paper(name) => format!("Paper: {name}"),
+                        }
                     }
                 } else {
                     "1:1".to_owned()
                 };
                 let response = ui.add_enabled(
-                    false,
+                    item.id == "ID_ModelSpace",
                     Button::new(RichText::new(&caption).size(10.0))
                         .frame(false)
                         .min_size(egui::vec2(32.0, 23.0)),
                 );
+                if item.id == "ID_ModelSpace" && response.clicked() {
+                    let result = if self.active_viewport.is_some() {
+                        self.leave_model_space()
+                    } else if self.layouts.active().name().eq_ignore_ascii_case("Model") {
+                        Ok(())
+                    } else {
+                        self.remembered_viewport_index().map_or_else(
+                            || Err("The active layout has no viewports.".into()),
+                            |index| self.enter_model_space(index),
+                        )
+                    };
+                    if let Err(error) = result {
+                        self.message(error, true);
+                    }
+                }
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(egui::WidgetType::Button, false, item.label)
                 });

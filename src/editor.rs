@@ -88,6 +88,7 @@ pub struct Editor {
     active_layer: String,
     layer_visibility_restore: Option<Vec<LayerState>>,
     layer_previous_state: Option<Vec<LayerState>>,
+    interaction_space: Option<EntitySpace>,
 }
 
 impl Default for Editor {
@@ -204,6 +205,7 @@ impl Editor {
             active_layer: "0".into(),
             layer_visibility_restore: None,
             layer_previous_state: None,
+            interaction_space: None,
         }
     }
 
@@ -220,12 +222,27 @@ impl Editor {
         &self.current.layouts
     }
     pub fn active_space(&self) -> EntitySpace {
+        if let Some(space) = &self.interaction_space {
+            return space.clone();
+        }
         let name = self.current.layouts.active().name();
         if name.eq_ignore_ascii_case("Model") {
             EntitySpace::Model
         } else {
             EntitySpace::Paper(name.to_owned())
         }
+    }
+    pub fn set_interaction_space(&mut self, space: Option<EntitySpace>) {
+        self.interaction_space = space;
+        let active_space = self.active_space();
+        let visible_selection = self
+            .current
+            .selection
+            .iter()
+            .copied()
+            .filter(|index| self.entity_matches_space(*index, &active_space))
+            .collect();
+        self.current.selection = visible_selection;
     }
     pub fn entity_space(&self, index: usize) -> Option<&EntitySpace> {
         self.current.document.entity_space(index)
@@ -458,11 +475,16 @@ impl Editor {
         self.current.document.entity_style(index)
     }
     pub fn is_entity_visible(&self, index: usize) -> bool {
-        let active_layout = self.current.layouts.active().name();
         self.layer_for_entity(index).is_some_and(Layer::is_visible)
-            && self
-                .entity_space(index)
-                .is_some_and(|space| space.matches_layout(active_layout))
+            && self.entity_matches_space(index, &self.active_space())
+    }
+
+    fn entity_matches_space(&self, index: usize, active_space: &EntitySpace) -> bool {
+        self.entity_space(index)
+            .is_some_and(|space| match active_space {
+                EntitySpace::Model => matches!(space, EntitySpace::Model),
+                EntitySpace::Paper(name) => space.matches_layout(name),
+            })
     }
     pub fn visible_entities(&self) -> Vec<Entity> {
         self.entities()

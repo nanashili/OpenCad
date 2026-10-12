@@ -85,6 +85,19 @@ enum Tool {
     Pedit,
     Pan,
 }
+
+#[derive(Clone, Copy)]
+struct PaperCameraState {
+    center: [f64; 2],
+    scale: f64,
+}
+
+struct ActiveViewport {
+    layout: String,
+    index: usize,
+    paper_camera: PaperCameraState,
+    model_camera: PaperCameraState,
+}
 impl Tool {
     fn name(self) -> &'static str {
         match self {
@@ -206,6 +219,8 @@ pub struct OpenCadApp {
     recent_list: bool,
     feature_form: Option<feature_forms::FeatureForm>,
     layouts: crate::LayoutCollection,
+    active_viewport: Option<ActiveViewport>,
+    last_viewports: HashMap<String, usize>,
     references: feature_references::ReferenceWorkspace,
     current_mline_style: String,
     block_edit_session: Option<feature_block_editor::BlockEditSession>,
@@ -268,6 +283,8 @@ impl OpenCadApp {
             recent_search: String::new(),
             recent_list: false,
             feature_form: None,
+            active_viewport: None,
+            last_viewports: HashMap::new(),
             layouts: crate::LayoutCollection::default(),
             references: feature_references::ReferenceWorkspace::default(),
             current_mline_style: "STANDARD".into(),
@@ -582,6 +599,12 @@ impl OpenCadApp {
     }
 
     fn perform(&mut self, action: PendingAction) {
+        if self.active_viewport.is_some()
+            && let Err(error) = self.leave_model_space()
+        {
+            self.message(format!("Cannot leave model space: {error}"), true);
+            return;
+        }
         match action {
             PendingAction::New | PendingAction::CloseDrawing => {
                 let closing = matches!(action, PendingAction::CloseDrawing);
@@ -589,6 +612,7 @@ impl OpenCadApp {
                 self.workspace.start = closing;
                 self.editor = Editor::default();
                 self.layouts = crate::LayoutCollection::default();
+                self.last_viewports.clear();
                 self.references = feature_references::ReferenceWorkspace::default();
                 self.current_mline_style = "STANDARD".into();
                 self.layer_color = LayerColorInput::default();
@@ -611,6 +635,7 @@ impl OpenCadApp {
                         .expect("validated study"),
                 );
                 self.layouts = self.editor.layouts().clone();
+                self.last_viewports.clear();
                 self.layer_color = LayerColorInput::default();
                 self.linetype_input = LinetypeInput::default();
                 self.path = None;
@@ -676,6 +701,7 @@ impl OpenCadApp {
                 let imported_layouts = self.editor.document().layouts().clone();
                 self.layouts = imported_layouts.clone();
                 self.editor.set_layouts(imported_layouts);
+                self.last_viewports.clear();
                 self.layer_color = LayerColorInput::default();
                 self.linetype_input = LinetypeInput::default();
                 self.name = path
@@ -734,11 +760,18 @@ impl OpenCadApp {
         self.save_path(path)
     }
 
-    fn document_snapshot(&self) -> DxfDocument {
+    fn document_snapshot(&self) -> Result<DxfDocument, String> {
         let mut document = self.editor.document().clone();
-        document.set_layouts(self.layouts.clone());
+        document.set_layouts(self.layouts_for_persistence()?);
         let _ = document.set_current_ucs(document.current_ucs_name().to_owned(), self.ucs);
-        let (center, height, width) = self.camera.named_view_viewport();
+        let (center, height, width) = self
+            .active_viewport
+            .as_ref()
+            .map(|active| {
+                self.camera
+                    .named_view_viewport_at(active.paper_camera.center, active.paper_camera.scale)
+            })
+            .unwrap_or_else(|| self.camera.named_view_viewport());
         let name = document
             .active_view()
             .map(|view| view.name().to_owned())
@@ -750,12 +783,18 @@ impl OpenCadApp {
                 .set_associated_ucs(Some(self.ucs), Some(document.current_ucs_name().to_owned()));
             document.set_active_view(Some(view));
         }
-        document
+        Ok(document)
     }
 
     fn save_path(&mut self, path: PathBuf) -> bool {
         self.editor.set_layouts(self.layouts.clone());
-        let document = self.document_snapshot();
+        let document = match self.document_snapshot() {
+            Ok(document) => document,
+            Err(error) => {
+                self.message(format!("Save failed: {error}"), true);
+                return false;
+            }
+        };
         if let Err(error) = self.editor.commit_document(document) {
             self.message(format!("Save failed: {error}"), true);
             return false;
@@ -829,6 +868,10 @@ impl OpenCadApp {
     }
 
     fn undo(&mut self, redo: bool) {
+        if let Err(error) = self.leave_model_space() {
+            self.message(format!("Cannot leave model space: {error}"), true);
+            return;
+        }
         self.finish();
         let changed = if redo {
             self.editor.redo()
@@ -1228,7 +1271,7 @@ pub fn run_script_file(script: &Path, output: &Path, input: Option<&Path>) -> Re
             "Script ended while BEDIT was active; save or close the block before exporting.".into(),
         );
     }
-    let dxf = app.document_snapshot().to_dxf();
+    let dxf = app.document_snapshot()?.to_dxf();
     atomic_write(output, dxf.as_bytes())
         .map_err(|error| format!("Cannot write {}: {error}", output.display()))
 }

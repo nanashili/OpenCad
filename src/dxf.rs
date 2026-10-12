@@ -2295,6 +2295,7 @@ impl DxfDocument {
             &self.removed_layout_names,
             &mut changes,
         );
+        patch_existing_viewports(&self.source, &self.layouts, &layout_mapping, &mut changes);
         for (index, (source_name, start, end, _source_handle)) in layout_spans.iter().enumerate() {
             let current_name = self
                 .layout_source_names
@@ -6638,6 +6639,114 @@ fn patch_layout_owned_records(
     }
 }
 
+fn patch_existing_viewports(
+    source: &str,
+    layouts: &crate::LayoutCollection,
+    mapping: &[(&str, &str)],
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let mut groups = Groups::new(source);
+    let mut viewport_indices: HashMap<String, usize> = HashMap::new();
+    let fallback_source_name = source_layout_names(source)
+        .into_iter()
+        .find(|name| !name.eq_ignore_ascii_case("Model"));
+    while let Ok(Some(marker)) = groups.next() {
+        if marker.code != 0 || marker.value != "VIEWPORT" {
+            continue;
+        }
+        let Ok(fields) = record_fields(&mut groups) else {
+            break;
+        };
+        if is_overall_paper_viewport(&fields) {
+            continue;
+        }
+        let source_name = fields
+            .iter()
+            .find(|field| field.code == 410)
+            .map(|field| field.value)
+            .or(fallback_source_name.as_deref());
+        let Some(source_name) = source_name else {
+            continue;
+        };
+        let current_name = mapping
+            .iter()
+            .find(|(original, _)| original.eq_ignore_ascii_case(source_name))
+            .map_or(source_name, |(_, current)| *current);
+        let viewport_index = viewport_indices
+            .entry(current_name.to_ascii_lowercase())
+            .or_insert(0);
+        let current_index = *viewport_index;
+        *viewport_index += 1;
+        let Some(viewport) = layouts
+            .get(current_name)
+            .and_then(|layout| layout.viewports().get(current_index))
+        else {
+            continue;
+        };
+        let record_end = groups
+            .peek()
+            .ok()
+            .flatten()
+            .map_or(source.len(), |next| next.start);
+        let newline = if source[marker.start..record_end].contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
+        patch_existing_viewport_fields(&fields, record_end, newline, viewport, changes);
+    }
+}
+
+fn patch_existing_viewport_fields(
+    fields: &[Group<'_>],
+    record_end: usize,
+    newline: &str,
+    viewport: &crate::Viewport,
+    changes: &mut Vec<(usize, usize, String)>,
+) {
+    let paper = viewport.paper();
+    let width = paper[2] - paper[0];
+    let height = paper[3] - paper[1];
+    let world = viewport.world();
+    let world_width = (width / viewport.scale()).max(f64::EPSILON);
+    let world_height = (height / viewport.scale()).max(f64::EPSILON);
+    let values = [
+        (10, ((paper[0] + paper[2]) / 2.0).to_string()),
+        (20, ((paper[1] + paper[3]) / 2.0).to_string()),
+        (40, width.to_string()),
+        (41, height.to_string()),
+        (12, (world[0] + world_width / 2.0).to_string()),
+        (22, (world[1] + world_height / 2.0).to_string()),
+        (45, world_height.to_string()),
+    ];
+    let mut missing = String::new();
+    for (code, value) in values {
+        let Some(field) = fields.iter().find(|field| field.code == code) else {
+            missing.push_str(&format!("{code}{newline}{value}{newline}"));
+            continue;
+        };
+        if numeric_values_equal(field.value, &value) {
+            continue;
+        }
+        changes.push((field.value_start, field.value_end, value));
+    }
+    if missing.is_empty() {
+        return;
+    }
+    let insertion = fields
+        .iter()
+        .find(|field| field.code == 100 && field.value == "AcDbViewport")
+        .map_or(record_end, |marker| marker.value_end + newline.len());
+    changes.push((insertion, insertion, missing));
+}
+
+fn numeric_values_equal(left: &str, right: &str) -> bool {
+    match (left.parse::<f64>(), right.parse::<f64>()) {
+        (Ok(left), Ok(right)) if left.is_finite() && right.is_finite() => left == right,
+        _ => left == right,
+    }
+}
+
 fn source_layout_names(source: &str) -> Vec<String> {
     let mut groups = Groups::new(source);
     let mut objects = false;
@@ -6758,6 +6867,28 @@ fn next_handle(source: &str) -> u64 {
     maximum.saturating_add(1).max(1)
 }
 
+fn native_viewport_id(fields: &[Group<'_>]) -> Option<u64> {
+    fields
+        .iter()
+        .find(|field| field.code == 69)
+        .and_then(|field| field.value.parse::<u64>().ok())
+}
+
+fn is_overall_paper_viewport(fields: &[Group<'_>]) -> bool {
+    native_viewport_id(fields) == Some(1)
+}
+
+fn allocate_native_viewport_id(used_ids: &mut Vec<u64>) -> Option<u64> {
+    let mut candidate = 2_u64;
+    loop {
+        if !used_ids.contains(&candidate) {
+            used_ids.push(candidate);
+            return Some(candidate);
+        }
+        candidate = candidate.checked_add(1)?;
+    }
+}
+
 fn import_viewports(input: &str, layouts: &mut crate::LayoutCollection) {
     let fallback_target = layouts
         .names()
@@ -6773,6 +6904,9 @@ fn import_viewports(input: &str, layouts: &mut crate::LayoutCollection) {
         let Ok(fields) = record_fields(&mut groups) else {
             break;
         };
+        if is_overall_paper_viewport(&fields) {
+            continue;
+        }
         let target = fields
             .iter()
             .find(|field| field.code == 410)
@@ -6841,17 +6975,21 @@ fn serialize_viewports(
     handle: &mut u64,
     newline: &str,
 ) -> String {
-    let existing_counts = source_viewport_counts(source, current_layout_names);
+    let existing_states = source_viewport_states(source, current_layout_names);
     let mut output = String::new();
     for name in layouts.names().filter(|name| *name != "Model") {
         let Some(layout) = layouts.get(name) else {
             continue;
         };
-        let existing_count = existing_counts
+        let (existing_count, used_ids) = existing_states
             .iter()
-            .find(|(source_name, _)| source_name.eq_ignore_ascii_case(name))
-            .map_or(0, |(_, count)| *count);
+            .find(|(source_name, _, _)| source_name.eq_ignore_ascii_case(name))
+            .map_or((0, Vec::new()), |(_, count, ids)| (*count, ids.clone()));
+        let mut used_ids = used_ids;
         for viewport in layout.viewports().iter().skip(existing_count) {
+            let Some(native_id) = allocate_native_viewport_id(&mut used_ids) else {
+                continue;
+            };
             let world = viewport.world();
             let paper = viewport.paper();
             let width = paper[2] - paper[0];
@@ -6893,8 +7031,9 @@ fn serialize_viewports(
                 |value| format!("90{newline}{clip_flags}{newline}340{newline}{value:X}{newline}"),
             );
             output.push_str(&format!(
-                "0{newline}VIEWPORT{newline}5{newline}{:X}{newline}100{newline}AcDbEntity{newline}8{newline}0{newline}67{newline}1{newline}410{newline}{name}{newline}100{newline}AcDbViewport{newline}10{newline}{paper_cx}{newline}20{newline}{paper_cy}{newline}40{newline}{width}{newline}41{newline}{height}{newline}12{newline}{world_cx}{newline}22{newline}{world_cy}{newline}45{newline}{world_height}{newline}{clip_fields}69{newline}{handle}{newline}",
+                "0{newline}VIEWPORT{newline}5{newline}{:X}{newline}100{newline}AcDbEntity{newline}8{newline}0{newline}67{newline}1{newline}410{newline}{name}{newline}100{newline}AcDbViewport{newline}10{newline}{paper_cx}{newline}20{newline}{paper_cy}{newline}40{newline}{width}{newline}41{newline}{height}{newline}12{newline}{world_cx}{newline}22{newline}{world_cy}{newline}45{newline}{world_height}{newline}{clip_fields}69{newline}{}{newline}",
                 *handle,
+                native_id,
                 clip_fields = clip_fields,
             ));
             *handle = handle.saturating_add(1);
@@ -6903,7 +7042,10 @@ fn serialize_viewports(
     output
 }
 
-fn source_viewport_counts(source: &str, current_layout_names: &[String]) -> Vec<(String, usize)> {
+fn source_viewport_states(
+    source: &str,
+    current_layout_names: &[String],
+) -> Vec<(String, usize, Vec<u64>)> {
     let mut groups = Groups::new(source);
     let fallback = source_layout_names(source)
         .into_iter()
@@ -6912,7 +7054,7 @@ fn source_viewport_counts(source: &str, current_layout_names: &[String]) -> Vec<
         .into_iter()
         .map(|(name, _, _, _)| name)
         .collect::<Vec<_>>();
-    let mut counts: Vec<(String, usize)> = Vec::new();
+    let mut states: Vec<(String, usize, Vec<u64>)> = Vec::new();
     while let Ok(Some(marker)) = groups.next() {
         if marker.code != 0 || marker.value != "VIEWPORT" {
             continue;
@@ -6920,6 +7062,10 @@ fn source_viewport_counts(source: &str, current_layout_names: &[String]) -> Vec<
         let Ok(fields) = record_fields(&mut groups) else {
             break;
         };
+        if is_overall_paper_viewport(&fields) {
+            continue;
+        }
+        let native_id = native_viewport_id(&fields);
         let source_name = fields
             .iter()
             .find(|field| field.code == 410)
@@ -6933,16 +7079,19 @@ fn source_viewport_counts(source: &str, current_layout_names: &[String]) -> Vec<
             .position(|candidate| candidate.eq_ignore_ascii_case(&source_name))
             .and_then(|index| current_layout_names.get(index).cloned())
             .unwrap_or(source_name);
-        if let Some((_, count)) = counts
+        if let Some((_, count, ids)) = states
             .iter_mut()
-            .find(|(existing, _)| existing.eq_ignore_ascii_case(&name))
+            .find(|(existing, _, _)| existing.eq_ignore_ascii_case(&name))
         {
             *count += 1;
+            if let Some(native_id) = native_id {
+                ids.push(native_id);
+            }
         } else {
-            counts.push((name, 1));
+            states.push((name, 1, native_id.into_iter().collect()));
         }
     }
-    counts
+    states
 }
 
 fn viewport_clip_handles(input: &str) -> HashSet<String> {

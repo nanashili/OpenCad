@@ -598,6 +598,17 @@ impl Viewport {
         self.scale = s;
         Ok(())
     }
+    pub fn set_view(&mut self, world: [f64; 4], scale: f64) -> Result<(), GeometryError> {
+        if world.iter().any(|value| !value.is_finite())
+            || world[2] <= world[0]
+            || world[3] <= world[1]
+        {
+            return Err(GeometryError::DegenerateCurve);
+        }
+        self.set_scale(scale)?;
+        self.world = world;
+        Ok(())
+    }
     pub fn map(&self, p: [f64; 2]) -> [f64; 2] {
         [
             self.paper[0] + (p[0] - self.world[0]) * self.scale,
@@ -751,6 +762,10 @@ impl LayoutCollection {
     }
     pub fn get(&self, n: &str) -> Option<&Layout> {
         self.layouts.get(n)
+    }
+
+    pub fn get_mut(&mut self, n: &str) -> Option<&mut Layout> {
+        self.layouts.get_mut(n)
     }
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.layouts.keys().map(String::as_str)

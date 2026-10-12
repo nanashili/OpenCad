@@ -1066,7 +1066,7 @@ impl OpenCadApp {
             "FIT" => self.fit_pending = true,
             "ZOOM" if rest.to_ascii_uppercase().ends_with('X') => {
                 let factor = number(&rest[..rest.len() - 1])?;
-                self.camera.zoom(factor)?;
+                self.zoom_camera(factor)?;
             }
             "PAN" if !rest.is_empty() => self.camera.pan(rest)?,
             "PAN" | "P" => self.set_tool(Tool::Pan),

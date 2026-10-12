@@ -21,6 +21,14 @@ impl OpenCadApp {
         _rest: &str,
         tokens: &[&str],
     ) -> Option<Result<(), String>> {
+        if matches!(
+            verb.to_ascii_uppercase().as_str(),
+            "PAGESETUP" | "MVIEW" | "VPCLIP"
+        ) && self.active_viewport.is_some()
+            && let Err(error) = self.leave_model_space()
+        {
+            return Some(Err(error));
+        }
         let result = match verb.to_ascii_uppercase().as_str() {
             "LAYOUT" => self.layout_command(tokens),
             "PAGESETUP" => self.pagesetup_command(tokens),
@@ -43,6 +51,12 @@ impl OpenCadApp {
         if t.is_empty() {
             return Err("LAYOUT syntax: NEW|SET|COPY|RENAME|DELETE|LIST ...".into());
         };
+        if matches!(
+            t[0].to_ascii_uppercase().as_str(),
+            "NEW" | "SET" | "COPY" | "RENAME" | "DELETE"
+        ) {
+            self.leave_model_space()?;
+        }
         match t[0].to_ascii_uppercase().as_str() {
             "NEW" => {
                 if t.len() != 2 {
@@ -199,23 +213,23 @@ impl OpenCadApp {
             return Err("PLOT output.svg.".into());
         };
         let layout_name = self.layouts.active().name().to_owned();
-        let viewports = self.layouts.active().viewports();
+        let layouts = self.layouts_for_persistence()?;
+        let active_layout = layouts.active();
+        let viewports = active_layout.viewports();
         let model_scope_needed = layout_name == "Model" || !viewports.is_empty();
+        let mut document = self.editor.document().clone();
+        document.set_layouts(layouts.clone());
         let (inner, plot_bounds) = if model_scope_needed {
-            render_layout_svg(self.editor.document(), None, layout_name != "Model")?
+            render_layout_svg(&document, None, layout_name != "Model")?
         } else {
             empty_layout_svg()
         };
         let paper = if layout_name == "Model" {
             None
         } else {
-            Some(render_layout_svg(
-                self.editor.document(),
-                Some(&layout_name),
-                true,
-            )?)
+            Some(render_layout_svg(&document, Some(&layout_name), true)?)
         };
-        let setup = self.layouts.active().setup();
+        let setup = active_layout.setup();
         let plotted = render_svg_plot(
             &inner,
             plot_bounds,
@@ -229,9 +243,12 @@ impl OpenCadApp {
         if t.len() != 1 {
             return Err("EXPORTPDF output.pdf.".into());
         };
-        let layout = self.layouts.active();
-        let bytes = vector_pdf(self.editor.document(), layout, self.path.as_deref())
-            .map_err(|e| e.to_string())?;
+        let layouts = self.layouts_for_persistence()?;
+        let layout = layouts.active().clone();
+        let mut document = self.editor.document().clone();
+        document.set_layouts(layouts);
+        let bytes =
+            vector_pdf(&document, &layout, self.path.as_deref()).map_err(|e| e.to_string())?;
         fs::write(t[0], bytes).map_err(|e| format!("Cannot write PDF: {e}"))
     }
 }

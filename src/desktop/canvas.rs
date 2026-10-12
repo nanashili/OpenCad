@@ -31,6 +31,19 @@ impl Default for Camera {
     }
 }
 impl Camera {
+    pub(super) fn view_state(&self) -> ([f64; 2], f64) {
+        (self.center, self.scale)
+    }
+
+    pub(super) fn set_view_state(&mut self, center: [f64; 2], scale: f64) -> Result<(), String> {
+        if center.iter().any(|value| !value.is_finite()) || !scale.is_finite() || scale <= 0.0 {
+            return Err("Viewport camera has invalid values.".into());
+        }
+        self.center = center;
+        self.scale = scale.clamp(1e-8, 1e6);
+        Ok(())
+    }
+
     pub(super) fn clear_pdf_cache(&self) {
         self.pdf_cache.borrow_mut().clear();
     }
@@ -60,10 +73,10 @@ impl Camera {
         Ok(())
     }
 
-    fn screen(&self, x: f64, y: f64, rect: Rect) -> Option<Pos2> {
+    pub(super) fn screen(&self, x: f64, y: f64, rect: Rect) -> Option<Pos2> {
         self.screen_point(Point3::new(x, y, 0.0).ok()?, rect)
     }
-    fn screen_point(&self, point: Point3, rect: Rect) -> Option<Pos2> {
+    pub(super) fn screen_point(&self, point: Point3, rect: Rect) -> Option<Pos2> {
         let projected = self.view.project(point).ok()?;
         let x = f64::from(rect.center().x) + (projected.x() - self.center[0]) * self.scale;
         let y = f64::from(rect.center().y) - (projected.y() - self.center[1]) * self.scale;
@@ -91,11 +104,20 @@ impl Camera {
     pub(super) fn set_ucs(&mut self, ucs: crate::Ucs3) {
         self.ucs = ucs;
     }
+
     pub(super) fn named_view_viewport(&self) -> ([f64; 2], f64, f64) {
+        self.named_view_viewport_at(self.center, self.scale)
+    }
+
+    pub(super) fn named_view_viewport_at(
+        &self,
+        center: [f64; 2],
+        scale: f64,
+    ) -> ([f64; 2], f64, f64) {
         (
-            self.center,
-            self.last_canvas_size[1] / self.scale,
-            self.last_canvas_size[0] / self.scale,
+            center,
+            self.last_canvas_size[1] / scale,
+            self.last_canvas_size[0] / scale,
         )
     }
 
@@ -141,6 +163,13 @@ impl Camera {
         self.scale = scale.min(1e6);
         Ok(())
     }
+
+    fn center_for_screen_rect(&mut self, viewport: Rect, canvas: Rect) {
+        let dx = f64::from(viewport.center().x - canvas.center().x) / self.scale;
+        let dy = f64::from(viewport.center().y - canvas.center().y) / self.scale;
+        self.center[0] -= dx;
+        self.center[1] += dy;
+    }
 }
 
 impl OpenCadApp {
@@ -154,7 +183,12 @@ impl OpenCadApp {
                     for name in layout_names {
                         let selected = self.layouts.active().name() == name;
                         if ui.selectable_label(selected, &name).clicked() {
-                            match self.editor.activate_layout(&name) {
+                            let result = self.leave_model_space().and_then(|()| {
+                                self.editor
+                                    .activate_layout(&name)
+                                    .map_err(|e| e.to_string())
+                            });
+                            match result {
                                 Ok(true) => {
                                     self.layouts = self.editor.layouts().clone();
                                     self.message(format!("Layout {name} active."), false);
@@ -182,19 +216,27 @@ impl OpenCadApp {
                     self.fit_pending = false;
                     match self.visible_expanded_geometry() {
                         Ok(geometry) => {
-                            if let Err(error) = self.camera.fit(&geometry, rect) {
+                            let fit_rect = self.active_viewport_rect(rect).unwrap_or(rect);
+                            if let Err(error) = self.camera.fit(&geometry, fit_rect) {
                                 self.message(error, true);
+                            } else if let Some(viewport_rect) = self.active_viewport_rect(rect) {
+                                self.camera.center_for_screen_rect(viewport_rect, rect);
                             }
                         }
                         Err(error) => self.message(error, true),
                     }
                 }
-                let pointer = response
+                let raw_pointer = response
                     .hover_pos()
                     .or_else(|| response.interact_pointer_pos());
-                let panning = response.dragged_by(PointerButton::Middle)
-                    || response.dragged_by(PointerButton::Secondary)
-                    || (response.dragged_by(PointerButton::Primary) && self.tool == Tool::Pan);
+                let active_rect = self.active_viewport_rect(rect);
+                let pointer = raw_pointer.filter(|position| {
+                    active_rect.is_none_or(|viewport_rect| viewport_rect.contains(*position))
+                });
+                let panning = pointer.is_some()
+                    && (response.dragged_by(PointerButton::Middle)
+                        || response.dragged_by(PointerButton::Secondary)
+                        || (response.dragged_by(PointerButton::Primary) && self.tool == Tool::Pan));
                 if panning {
                     let delta = ui.input(|i| i.pointer.delta());
                     let next = [
@@ -206,7 +248,7 @@ impl OpenCadApp {
                     }
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                 }
-                if response.hovered() {
+                if pointer.is_some() {
                     let scroll = ui.input(|i| i.smooth_scroll_delta.y);
                     let pinch = ui.input(|i| i.zoom_delta());
                     let factor = (f64::from(scroll) * 0.002).exp() * f64::from(pinch);
@@ -379,6 +421,7 @@ impl OpenCadApp {
                     self.message(error, true);
                 }
                 if response.drag_started_by(PointerButton::Primary)
+                    && pointer.is_some()
                     && (matches!(self.tool, Tool::Select | Tool::Explode | Tool::Join)
                         || self.pedit_joining())
                 {
@@ -426,10 +469,51 @@ impl OpenCadApp {
                     self.editor.select(selection);
                 }
                 if response.double_clicked() && self.tool == Tool::Select {
-                    self.fit_pending = true;
+                    if self.active_viewport.is_some() {
+                        if raw_pointer.is_some_and(|position| {
+                            active_rect
+                                .is_none_or(|viewport_rect| !viewport_rect.contains(position))
+                        }) && let Err(error) = self.leave_model_space()
+                        {
+                            self.message(error, true);
+                        }
+                    } else if self.layouts.active().name() != "Model"
+                        && let Some(position) = raw_pointer
+                        && let Some((index, _)) = self
+                            .layouts
+                            .active()
+                            .viewports()
+                            .iter()
+                            .enumerate()
+                            .find_map(|(index, viewport)| {
+                                let paper = viewport.paper();
+                                self.paper_rect([paper[0], paper[1]], [paper[2], paper[3]], rect)
+                                    .filter(|viewport_rect| viewport_rect.contains(position))
+                                    .map(|viewport_rect| (index, viewport_rect))
+                            })
+                    {
+                        if let Err(error) = self.enter_model_space(index) {
+                            self.message(error, true);
+                        }
+                    } else {
+                        self.fit_pending = true;
+                    }
                 }
+                let active_rect = self.active_viewport_rect(rect);
                 if self.grid {
-                    self.draw_grid(&painter, rect);
+                    if let Some(viewport_rect) = active_rect {
+                        self.draw_grid(&painter.with_clip_rect(viewport_rect), rect);
+                    } else {
+                        self.draw_grid(&painter, rect);
+                    }
+                }
+                let model_camera_state = self.camera.view_state();
+                if let Some(active) = self.active_viewport.as_ref()
+                    && let Err(error) = self
+                        .camera
+                        .set_view_state(active.paper_camera.center, active.paper_camera.scale)
+                {
+                    self.message(format!("Cannot render paper camera: {error}"), true);
                 }
                 if self.layouts.active().name() != "Model" {
                     let [paper_w, paper_h] = self.layouts.active().setup().dimensions();
@@ -443,7 +527,9 @@ impl OpenCadApp {
                         Stroke::new(1.0, Color32::from_gray(80)),
                         egui::StrokeKind::Inside,
                     );
-                    for viewport in self.layouts.active().viewports() {
+                    for (viewport_index, viewport) in
+                        self.layouts.active().viewports().iter().enumerate()
+                    {
                         let p = viewport.paper();
                         let viewport_rect = self
                             .paper_rect([p[0], p[1]], [p[2], p[3]], rect)
@@ -472,8 +558,20 @@ impl OpenCadApp {
                                 }
                             }
                         }
-                        self.draw_model_viewport(&painter, viewport, viewport_rect, rect);
+                        let is_active = self
+                            .active_viewport
+                            .as_ref()
+                            .is_some_and(|active| active.index == viewport_index);
+                        if !is_active {
+                            self.draw_model_viewport(&painter, viewport, viewport_rect, rect);
+                        }
                     }
+                }
+                if let Err(error) = self
+                    .camera
+                    .set_view_state(model_camera_state.0, model_camera_state.1)
+                {
+                    self.message(format!("Cannot restore model camera: {error}"), true);
                 }
                 let break_preview_source = self.break_preview_source();
                 let pedit_range_source = self.pedit_range_preview_source();
@@ -507,8 +605,11 @@ impl OpenCadApp {
                         block_render_error.get_or_insert_with(|| error.to_string());
                     }
                     let selected = self.editor.selection().contains(&index);
+                    let entity_painter =
+                        active_rect.map(|viewport_rect| painter.with_clip_rect(viewport_rect));
+                    let entity_painter = entity_painter.as_ref().unwrap_or(&painter);
                     self.draw_styled_entity(
-                        &painter,
+                        entity_painter,
                         entity,
                         index,
                         rect,
@@ -537,9 +638,9 @@ impl OpenCadApp {
                                 .unwrap_or_else(|_| vec![entity.clone()]);
                         for point in geometry.iter().flat_map(entity_points).take(grips) {
                             if let Some(p) = self.camera.screen_point(point, rect)
-                                && rect.contains(p)
+                                && active_rect.unwrap_or(rect).contains(p)
                             {
-                                painter.rect_filled(
+                                entity_painter.rect_filled(
                                     Rect::from_center_size(p, egui::vec2(5.0, 5.0)),
                                     0.0,
                                     SELECTED,
@@ -551,8 +652,27 @@ impl OpenCadApp {
                 if let Some(error) = block_render_error {
                     self.message(format!("Cannot evaluate block reference: {error}"), true);
                 }
-                self.draw_polar_guide(&painter, rect);
-                self.draw_preview(&painter, rect);
+                if let Some(active) = self.active_viewport.as_ref() {
+                    if let Err(error) = self
+                        .camera
+                        .set_view_state(active.paper_camera.center, active.paper_camera.scale)
+                    {
+                        self.message(format!("Cannot render paper annotations: {error}"), true);
+                    } else {
+                        self.draw_active_paper_entities(&painter, rect);
+                    }
+                    if let Err(error) = self
+                        .camera
+                        .set_view_state(model_camera_state.0, model_camera_state.1)
+                    {
+                        self.message(format!("Cannot restore model camera: {error}"), true);
+                    }
+                }
+                let overlay_painter =
+                    active_rect.map(|viewport_rect| painter.with_clip_rect(viewport_rect));
+                let overlay_painter = overlay_painter.as_ref().unwrap_or(&painter);
+                self.draw_polar_guide(overlay_painter, rect);
+                self.draw_preview(overlay_painter, rect);
                 if let Some((start, point, _)) = self.pedit_range_start()
                     && let Some(position) = self.camera.screen_point(point, rect)
                     && rect.contains(position)
@@ -838,7 +958,7 @@ impl OpenCadApp {
         }
     }
 
-    fn paper_rect(&self, first: [f64; 2], second: [f64; 2], rect: Rect) -> Option<Rect> {
+    pub(super) fn paper_rect(&self, first: [f64; 2], second: [f64; 2], rect: Rect) -> Option<Rect> {
         let a = self.camera.screen(first[0], first[1], rect)?;
         let b = self.camera.screen(second[0], second[1], rect)?;
         Some(Rect::from_min_max(
@@ -900,6 +1020,37 @@ impl OpenCadApp {
                     rect,
                     Stroke::new(1.0, Color32::from_rgb(color[0], color[1], color[2])),
                 );
+            }
+        }
+    }
+
+    fn draw_active_paper_entities(&self, painter: &Painter, rect: Rect) {
+        let layout_name = self.layouts.active().name();
+        for (index, entity) in self.editor.entities().iter().enumerate() {
+            if !self
+                .editor
+                .layer_for_entity(index)
+                .is_some_and(crate::Layer::is_visible)
+                || !matches!(
+                    self.editor.entity_space(index),
+                    Some(crate::EntitySpace::Paper(name)) if name.eq_ignore_ascii_case(layout_name)
+                )
+            {
+                continue;
+            }
+            let color = self
+                .editor
+                .document()
+                .entity_rgb(index, true)
+                .expect("entity style exists");
+            let stroke = Stroke::new(1.0, Color32::from_rgb(color[0], color[1], color[2]));
+            let Ok(expanded) =
+                crate::block_expansion::expand_entity(self.editor.document(), entity)
+            else {
+                continue;
+            };
+            for child in expanded {
+                self.draw_styled_entity(painter, &child, index, rect, stroke);
             }
         }
     }
