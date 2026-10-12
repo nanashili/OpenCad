@@ -285,6 +285,7 @@ impl Linetype {
             ),
             Entity::Circle(circle) => (circle.radius() * std::f64::consts::TAU, true),
             Entity::Polyline(_) => unreachable!("polyline segments handled above"),
+            _ => (0.0, false),
         };
         if length == 0.0 {
             return Ok(vec![PatternPart::Geometry(entity.clone())]);
@@ -310,6 +311,7 @@ impl Linetype {
                             )
                         }
                         Entity::Polyline(_) => unreachable!("polyline segments handled above"),
+                        _ => return Err(LinetypeError::GeometryTooLarge),
                     }
                     .map_err(|_| LinetypeError::GeometryTooLarge)
                 };
@@ -346,6 +348,7 @@ impl Linetype {
                             .map_err(|_| LinetypeError::GeometryTooLarge)?,
                         ),
                         Entity::Polyline(_) => unreachable!("polyline segments handled above"),
+                        _ => entity.clone(),
                     }),
                 })
             })

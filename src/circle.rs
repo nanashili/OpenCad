@@ -1,4 +1,7 @@
-use crate::{Arc3, GeometryError, Line3, Point3, Polyline2};
+use crate::{
+    Arc3, Dimension, Ellipse3, Face3, GeometryError, Hatch, Insert, Leader, Line3, MText, Point3,
+    PointEntity, Polyline2, Spline3, Table, Text,
+};
 
 /// A finite circle in the world XY plane, at the center's Z elevation.
 /// Radius updates follow the observed geometry contract: negative radii use
@@ -43,25 +46,48 @@ impl Circle3 {
 /// Drawing entities supported by the editor and R12 document model.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Entity {
+    Point(PointEntity),
     Line(Line3),
     Circle(Circle3),
     Arc(Arc3),
     Polyline(Polyline2),
+    Ellipse(Ellipse3),
+    Spline(Spline3),
+    Text(Text),
+    MText(MText),
+    Leader(Leader),
+    Table(Table),
+    Dimension(Dimension),
+    Hatch(Hatch),
+    Insert(Insert),
+    Face3(Face3),
 }
 
 impl Entity {
     pub fn name(&self) -> &'static str {
         match self {
+            Self::Point(_) => "POINT",
             Self::Line(_) => "LINE",
             Self::Circle(_) => "CIRCLE",
             Self::Arc(_) => "ARC",
             Self::Polyline(_) => "POLYLINE",
+            Self::Ellipse(_) => "ELLIPSE",
+            Self::Spline(_) => "SPLINE",
+            Self::Text(_) => "TEXT",
+            Self::MText(_) => "MTEXT",
+            Self::Leader(_) => "LEADER",
+            Self::Table(_) => "ACAD_TABLE",
+            Self::Dimension(_) => "DIMENSION",
+            Self::Hatch(_) => "HATCH",
+            Self::Insert(_) => "INSERT",
+            Self::Face3(_) => "3DFACE",
         }
     }
 
     pub fn translated(&self, dx: f64, dy: f64, dz: f64) -> Result<Self, GeometryError> {
         let point = |p: Point3| Point3::new(p.x() + dx, p.y() + dy, p.z() + dz);
         Ok(match self {
+            Self::Point(point_entity) => Self::Point(point_entity.translated(dx, dy, dz)?),
             Self::Line(line) => Self::Line(Line3::new(point(line.start())?, point(line.end())?)),
             Self::Circle(circle) => {
                 Self::Circle(Circle3::new(point(circle.center())?, circle.radius())?)
@@ -83,11 +109,45 @@ impl Entity {
                 )?;
                 Self::Polyline(result)
             }
+            Self::Ellipse(ellipse) => Self::Ellipse(ellipse.translated(dx, dy, dz)?),
+            Self::Spline(spline) => Self::Spline(spline.translated(dx, dy, dz)?),
+            Self::Text(text) => {
+                Self::Text(text.transformed(crate::Transform::translation(dx, dy, dz))?)
+            }
+            Self::MText(text) => {
+                Self::MText(text.transformed(crate::Transform::translation(dx, dy, dz))?)
+            }
+            Self::Leader(leader) => {
+                Self::Leader(leader.transformed(crate::Transform::translation(dx, dy, dz))?)
+            }
+            Self::Table(table) => {
+                Self::Table(table.transformed(crate::Transform::translation(dx, dy, dz))?)
+            }
+            Self::Dimension(dimension) => {
+                Self::Dimension(dimension.transformed(crate::Transform::translation(dx, dy, dz))?)
+            }
+            Self::Hatch(hatch) => {
+                Self::Hatch(hatch.transformed(crate::Transform::translation(dx, dy, dz))?)
+            }
+            Self::Insert(_) => return Err(GeometryError::UnsupportedPolylineConversion),
+            Self::Face3(face) => {
+                let (mut vertices, count) = face.vertices();
+                for p in vertices.iter_mut().take(count) {
+                    *p = point(*p)?;
+                }
+                Self::Face3(Face3::new(vertices, count as u8, face.invisible_edges())?)
+            }
         })
     }
 
     pub(crate) fn coordinate(&self, code: u16) -> f64 {
         match self {
+            Self::Point(point_entity) => match code {
+                10 => point_entity.position().x(),
+                20 => point_entity.position().y(),
+                30 => point_entity.position().z(),
+                _ => unreachable!("validated POINT coordinate field"),
+            },
             Self::Line(line) => match code {
                 10 => line.start().x(),
                 20 => line.start().y(),
@@ -119,6 +179,19 @@ impl Entity {
                 70 => f64::from(u8::from(polyline.is_closed())),
                 _ => unreachable!("validated POLYLINE header field"),
             },
+            Self::Ellipse(ellipse) => match code {
+                10 => ellipse.center().x(),
+                20 => ellipse.center().y(),
+                30 => ellipse.center().z(),
+                11 => ellipse.major_axis().x(),
+                21 => ellipse.major_axis().y(),
+                31 => ellipse.major_axis().z(),
+                40 => ellipse.ratio(),
+                41 => ellipse.start_parameter(),
+                42 => ellipse.end_parameter(),
+                _ => unreachable!("validated ELLIPSE coordinate field"),
+            },
+            _ => 0.0,
         }
     }
 }

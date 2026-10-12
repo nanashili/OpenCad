@@ -196,6 +196,23 @@ fn command_for_action(action: &str) -> Option<&'static str> {
         "ID_CircleRad" => "CIRCLE",
         "ID_ArcCeStEn" => "ARC",
         "ID_Rectang" => "RECTANG",
+        "ID_PointSing" | "ID_PointMult" => "POINT",
+        "ID_EllipseCe" | "ID_EllipseAx" | "ID_EllipseAr" => "ELLIPSE",
+        "ID_Spline" => "SPLINE",
+        "ID_Text" | "ID_TextOnly" => "TEXT",
+        "ID_Leader" | "ID_LeaderOnly" => "LEADER",
+        "ID_Table" => "TABLE",
+        "ID_Dimlinear" => "DIMLINEAR",
+        "ID_Dimaligne" => "DIMALIGNED",
+        "ID_Dimradius" => "DIMRADIUS",
+        "ID_Dimdiamet" => "DIMDIAMETRIC",
+        "ID_Dimangula" => "DIMANGULAR",
+        "ID_Hatchedit" => "HATCH",
+        "ID_Bhatch" => "HATCH",
+        "ID_Mtext" => "MTEXT",
+        "ID_Bmake" => "BLOCK",
+        "ID_BattMan" => "ATTEDIT",
+        "ID_3DROTATE" => "3DORBIT",
         "ID_Move" => "MOVE",
         "ID_Copy" => "COPY",
         "ID_Rotate" => "ROTATE",
@@ -377,7 +394,12 @@ impl OpenCadApp {
             if menu_action_status(ctx, &action).enabled
                 && let Some(command) = command_for_action(&action)
             {
-                self.execute(command);
+                if let Some(form) = crate::desktop::feature_forms::FeatureForm::for_command(command)
+                {
+                    self.feature_form = Some(form);
+                } else {
+                    self.execute(command);
+                }
                 self.publish_menu_state(ctx);
             }
         }

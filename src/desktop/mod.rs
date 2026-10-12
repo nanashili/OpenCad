@@ -4,6 +4,12 @@ mod catalog;
 mod commands;
 mod corners;
 mod exploding;
+mod feature_annotations;
+mod feature_blocks;
+pub(super) mod feature_forms;
+mod feature_modify;
+mod feature_solid;
+mod feature_utility;
 mod joining;
 mod lengthening;
 mod offsets;
@@ -147,6 +153,8 @@ pub struct OpenCadApp {
     chamfer_method: corners::ChamferMethod,
     chamfer_angle: [f64; 2],
     camera: canvas::Camera,
+    view_camera: crate::Camera3,
+    ucs: crate::Ucs3,
     fit_pending: bool,
     grid: bool,
     grid_snap: bool,
@@ -177,6 +185,7 @@ pub struct OpenCadApp {
     recent_files: Vec<PathBuf>,
     recent_search: String,
     recent_list: bool,
+    feature_form: Option<feature_forms::FeatureForm>,
 }
 
 impl OpenCadApp {
@@ -239,6 +248,9 @@ impl OpenCadApp {
             chamfer_method: corners::ChamferMethod::default(),
             chamfer_angle: [0.0, 0.0],
             camera: canvas::Camera::default(),
+            view_camera: crate::Camera3::new(Point3::default(), 100.0, crate::ViewOrientation::Top)
+                .expect("valid default view"),
+            ucs: crate::Ucs3::world(),
             fit_pending: true,
             grid: false,
             grid_snap: false,
@@ -269,6 +281,7 @@ impl OpenCadApp {
             recent_files: Vec::new(),
             recent_search: String::new(),
             recent_list: false,
+            feature_form: None,
         };
         if let Some(storage) = cc.storage {
             app.restore_preferences(storage);
@@ -1013,6 +1026,19 @@ impl eframe::App for OpenCadApp {
             self.canvas(ui);
         }
         self.command_panel(&ctx);
+        if let Some(mut form) = self.feature_form.take() {
+            match form.show(&ctx) {
+                feature_forms::FeatureFormResult::Pending => self.feature_form = Some(form),
+                feature_forms::FeatureFormResult::Cancelled => {}
+                feature_forms::FeatureFormResult::Created(command) => {
+                    self.history.push_back((format!("> {command}"), false));
+                    if let Err(error) = self.command_result(&command) {
+                        self.message(error, true);
+                        self.feature_form = Some(form);
+                    }
+                }
+            }
+        }
         self.dialogs(&ctx);
         self.publish_menu_state(&ctx);
         if std::mem::take(&mut self.workspace.save_preferences_requested)

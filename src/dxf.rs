@@ -3,8 +3,9 @@
 //! contents are retained without interpreting their contents.
 
 use crate::{
-    Arc3, Circle3, CornerParameter, Entity, EntityStyle, EntityStyleError, GeometryError, Layer,
-    LayerError, Line3, Linetype, LinetypeError, Point3, Polyline2, PolylineWidth,
+    Arc3, BlockDefinition, Circle3, CornerParameter, Dimension, DimensionKind, Entity, EntityStyle,
+    EntityStyleError, Face3, GeometryError, Hatch, HatchPattern, Insert, Layer, LayerError, Leader,
+    Line3, Linetype, LinetypeError, MText, Point3, Polyline2, PolylineWidth, Spline3, Table, Text,
 };
 use std::collections::HashSet;
 use std::error::Error;
@@ -274,6 +275,9 @@ pub struct DxfDocument {
     layer_data: LayerData,
     linetype_data: LinetypeData,
     dimension_data: DimensionData,
+    block_definitions: Vec<BlockDefinition>,
+    imported_block_count: usize,
+    block_replacements: Vec<BlockDefinition>,
 }
 
 impl DxfDocument {
@@ -304,6 +308,7 @@ impl DxfDocument {
                 let layer_data = read_layers(input)?;
                 let linetype_data = read_linetypes(input)?;
                 let dimension_data = read_dimensions(input)?;
+                let block_definitions = read_block_definitions(input)?;
                 let entity_layers = records
                     .iter()
                     .map(|record| {
@@ -345,6 +350,9 @@ impl DxfDocument {
                     layer_data,
                     linetype_data,
                     dimension_data,
+                    imported_block_count: block_definitions.len(),
+                    block_definitions,
+                    block_replacements: Vec::new(),
                 });
             }
             if (marker.code, marker.value) != (0, "SECTION") {
@@ -398,8 +406,24 @@ impl DxfDocument {
                             insertion = group.start;
                             break;
                         }
-                        (0, "LINE" | "CIRCLE" | "ARC") => {
+                        (0, "POINT" | "LINE" | "CIRCLE" | "ARC" | "ELLIPSE" | "3DFACE") => {
                             let (entity, record) = read_entity(&mut groups, group, &mut handles)?;
+                            entities.push(entity);
+                            records.push(Some(record));
+                        }
+                        (
+                            0,
+                            "SPLINE" | "TEXT" | "MTEXT" | "LEADER" | "MULTILEADER" | "TABLE"
+                            | "ACAD_TABLE" | "DIMENSION" | "HATCH",
+                        ) => {
+                            let (entity, record) =
+                                read_extended_entity(&mut groups, group, &mut handles)?;
+                            entities.push(entity);
+                            records.push(Some(record));
+                        }
+                        (0, "INSERT") => {
+                            let (entity, record) =
+                                read_insert_entity(&mut groups, group, &mut handles)?;
                             entities.push(entity);
                             records.push(Some(record));
                         }
@@ -418,7 +442,7 @@ impl DxfDocument {
                             return Err(DxfError {
                                 line: group.line,
                                 kind: DxfErrorKind::Expected(
-                                    "LINE, CIRCLE, ARC, POLYLINE, or ENDSEC in group 0",
+                                    "supported entity or ENDSEC in group 0",
                                 ),
                             });
                         }
@@ -430,6 +454,60 @@ impl DxfDocument {
 
     pub fn entities(&self) -> &[Entity] {
         &self.entities
+    }
+
+    /// Definitions registered for INSERT expansion. Existing opaque BLOCKS records remain
+    /// source-preserved; definitions added through this API are emitted as standard BLOCK/ENDBLK
+    /// records when the document is written.
+    pub fn block_definitions(&self) -> &[BlockDefinition] {
+        &self.block_definitions
+    }
+    pub fn block(&self, name: &str) -> Option<&BlockDefinition> {
+        self.block_definitions
+            .iter()
+            .find(|block| block.name().eq_ignore_ascii_case(name))
+    }
+    pub fn add_block_definition(&mut self, block: BlockDefinition) -> Result<(), DxfError> {
+        if block.name().is_empty() || self.block(block.name()).is_some() {
+            return Err(DxfError {
+                line: 0,
+                kind: DxfErrorKind::UnsupportedProperty(2),
+            });
+        }
+        self.block_definitions.push(block);
+        Ok(())
+    }
+
+    /// Replace a named block definition while retaining its registry position.
+    /// Writers can use the returned registry to emit the changed definition in
+    /// place of an imported BLOCK record.
+    pub fn replace_block_definition(&mut self, block: BlockDefinition) -> Result<(), DxfError> {
+        let Some(existing) = self
+            .block_definitions
+            .iter_mut()
+            .find(|item| item.name().eq_ignore_ascii_case(block.name()))
+        else {
+            return Err(DxfError {
+                line: 0,
+                kind: DxfErrorKind::UnsupportedProperty(2),
+            });
+        };
+        *existing = block.clone();
+        if let Some(replacement) = self
+            .block_replacements
+            .iter_mut()
+            .find(|item| item.name().eq_ignore_ascii_case(block.name()))
+        {
+            *replacement = block;
+        } else if self
+            .block_definitions
+            .iter()
+            .position(|item| item.name().eq_ignore_ascii_case(block.name()))
+            .is_some_and(|index| index < self.imported_block_count)
+        {
+            self.block_replacements.push(block);
+        }
+        Ok(())
     }
 
     pub fn layers(&self) -> &[Layer] {
@@ -695,7 +773,7 @@ impl DxfDocument {
     pub fn lines(&self) -> impl Iterator<Item = Line3> + '_ {
         self.entities.iter().filter_map(|entity| match entity {
             Entity::Line(line) => Some(*line),
-            Entity::Circle(_) | Entity::Arc(_) | Entity::Polyline(_) => None,
+            _ => None,
         })
     }
 
@@ -710,7 +788,7 @@ impl DxfDocument {
             .nth(index)?;
         match self.replace_entity(entity_index, Entity::Line(line))? {
             Entity::Line(old) => Some(old),
-            Entity::Circle(_) | Entity::Arc(_) | Entity::Polyline(_) => {
+            _ => {
                 unreachable!("selected a LINE")
             }
         }
@@ -783,6 +861,25 @@ impl DxfDocument {
                 write_entity(&mut added, entity, layer, style);
                 continue;
             };
+            if entity != &record.original
+                && matches!(
+                    entity,
+                    Entity::Face3(_)
+                        | Entity::Text(_)
+                        | Entity::MText(_)
+                        | Entity::Leader(_)
+                        | Entity::Table(_)
+                        | Entity::Dimension(_)
+                        | Entity::Hatch(_)
+                        | Entity::Insert(_)
+                        | Entity::Spline(_)
+                )
+            {
+                let mut replacement = String::new();
+                write_entity(&mut replacement, entity, layer, style);
+                changes.push((record.start, record.end, replacement));
+                continue;
+            }
             let original = &record.properties;
             let changed = [
                 layer != &original.layer.value,
@@ -948,6 +1045,50 @@ impl DxfDocument {
         if !added.is_empty() {
             changes.push((self.insertion, self.insertion, added));
         }
+        if !self.block_definitions.is_empty() {
+            let has_blocks = self.source.contains("\n2\nBLOCKS\n");
+            let mut blocks = if has_blocks {
+                String::new()
+            } else {
+                String::from("0\nSECTION\n2\nBLOCKS\n")
+            };
+            for block in &self.block_replacements {
+                let (newline, marker) = if self.source.contains("\r\n0\r\nBLOCK\r\n") {
+                    ("\r\n", format!("0\r\nBLOCK\r\n2\r\n{}\r\n", block.name()))
+                } else {
+                    ("\n", format!("0\nBLOCK\n2\n{}\n", block.name()))
+                };
+                if let Some(start) = self.source.find(&marker)
+                    && let Some(relative_end) = self.source[start + marker.len()..]
+                        .find(&format!("0{}ENDBLK{}", newline, newline))
+                {
+                    let end = start
+                        + marker.len()
+                        + relative_end
+                        + format!("0{}ENDBLK{}", newline, newline).len();
+                    changes.push((start, end, serialize_block(block, newline)));
+                }
+            }
+            for block in self
+                .block_definitions
+                .iter()
+                .skip(self.imported_block_count)
+            {
+                blocks.push_str(&serialize_block(block, "\n"));
+            }
+            if has_blocks {
+                if let Some(section) = self.source.find("0\nSECTION\n2\nBLOCKS\n")
+                    && let Some(relative) = self.source[section..].find("0\nENDSEC\n")
+                {
+                    changes.push((section + relative, section + relative, blocks));
+                }
+            } else {
+                blocks.push_str("0\nENDSEC\n");
+                if let Some(at) = self.source.find("0\nSECTION\n2\nENTITIES\n") {
+                    changes.push((at, at, blocks));
+                }
+            }
+        }
         // Insert fields at an entity boundary before deleting a following record.
         changes.sort_by_key(|change| (change.0, change.1));
         let mut output = String::with_capacity(self.source.len());
@@ -958,6 +1099,22 @@ impl DxfDocument {
             cursor = end;
         }
         output.push_str(&self.source[cursor..]);
+        if self.entities.iter().any(|entity| {
+            matches!(
+                entity,
+                Entity::Spline(_)
+                    | Entity::Text(_)
+                    | Entity::MText(_)
+                    | Entity::Leader(_)
+                    | Entity::Table(_)
+                    | Entity::Dimension(_)
+                    | Entity::Hatch(_)
+                    | Entity::Insert(_)
+            )
+        }) {
+            output = output.replacen("$ACADVER\n1\nAC1009", "$ACADVER\n1\nAC1027", 1);
+            output = output.replacen("$ACADVER\r\n1\r\nAC1009", "$ACADVER\r\n1\r\nAC1027", 1);
+        }
         output
     }
 }
@@ -1592,7 +1749,21 @@ fn read_header(groups: &mut Groups<'_>) -> Result<(), DxfError> {
                     });
                 }
                 let version = groups.required()?;
-                if version.code != 1 || version.value != "AC1009" {
+                if version.code != 1
+                    || !matches!(
+                        version.value,
+                        "AC1009"
+                            | "AC1012"
+                            | "AC1014"
+                            | "AC1015"
+                            | "AC1018"
+                            | "AC1021"
+                            | "AC1024"
+                            | "AC1027"
+                            | "AC1032"
+                            | "AC1038"
+                    )
+                {
                     return Err(DxfError {
                         line: version.line,
                         kind: DxfErrorKind::UnsupportedVersion(version.value.to_owned()),
@@ -1685,6 +1856,95 @@ fn read_preserved_section(
             });
         }
     }
+}
+
+fn read_block_definitions(input: &str) -> Result<Vec<BlockDefinition>, DxfError> {
+    let mut groups = Groups::new(input);
+    let mut in_blocks = false;
+    let mut result = Vec::new();
+    let mut handles = HashSet::new();
+    while let Some(group) = groups.next()? {
+        if group.code == 2 && group.value == "BLOCKS" {
+            in_blocks = true;
+            continue;
+        }
+        if !in_blocks {
+            continue;
+        }
+        if group.code == 0 && group.value == "ENDSEC" {
+            break;
+        }
+        if group.code != 0 || group.value != "BLOCK" {
+            continue;
+        }
+        let header = record_fields(&mut groups)?;
+        let name = unique_field(&header, 2)?
+            .map(|g| g.value.to_owned())
+            .unwrap_or_default();
+        if name.is_empty() {
+            continue;
+        }
+        let base = Point3::new(
+            field_number(&header, 10, group.line)?.unwrap_or(0.0),
+            field_number(&header, 20, group.line)?.unwrap_or(0.0),
+            field_number(&header, 30, group.line)?.unwrap_or(0.0),
+        )
+        .map_err(|_| DxfError {
+            line: group.line,
+            kind: DxfErrorKind::InvalidCoordinate(10),
+        })?;
+        let mut definition = BlockDefinition::new(name, base, Vec::new());
+        loop {
+            let Some(child) = groups.next()? else {
+                break;
+            };
+            if child.code != 0 {
+                continue;
+            }
+            if child.value == "ENDBLK" {
+                let _ = record_fields(&mut groups)?;
+                break;
+            }
+            if child.value == "ATTDEF" {
+                let fields = record_fields(&mut groups)?;
+                let tag = field_text(&fields, 2)?.unwrap_or_default();
+                let prompt = field_text(&fields, 3)?.unwrap_or_default();
+                let value = field_text(&fields, 1)?.unwrap_or_default();
+                let position = Point3::new(
+                    field_number(&fields, 10, child.line)?.unwrap_or(0.0),
+                    field_number(&fields, 20, child.line)?.unwrap_or(0.0),
+                    field_number(&fields, 30, child.line)?.unwrap_or(0.0),
+                )
+                .map_err(|_| DxfError {
+                    line: child.line,
+                    kind: DxfErrorKind::InvalidCoordinate(10),
+                })?;
+                definition.add_attribute_definition(crate::AttributeDefinition::new(
+                    tag, prompt, value, position,
+                ));
+                continue;
+            }
+            let parsed = match child.value {
+                "POINT" | "LINE" | "CIRCLE" | "ARC" | "ELLIPSE" | "3DFACE" => {
+                    read_entity(&mut groups, child, &mut handles)
+                }
+                "SPLINE" | "TEXT" | "MTEXT" | "LEADER" | "MULTILEADER" | "TABLE" | "ACAD_TABLE"
+                | "DIMENSION" | "HATCH" | "INSERT" => {
+                    read_extended_entity(&mut groups, child, &mut handles)
+                }
+                "POLYLINE" => read_polyline(&mut groups, child, &mut handles),
+                _ => {
+                    let _ = record_fields(&mut groups)?;
+                    continue;
+                }
+            };
+            if let Ok((entity, _)) = parsed {
+                definition.add_entity(entity);
+            }
+        }
+        result.push(definition);
+    }
+    Ok(result)
 }
 
 fn read_handle(group: Group<'_>, handles: &mut HashSet<u64>) -> Result<(), DxfError> {
@@ -1787,9 +2047,12 @@ fn read_entity(
     handles: &mut HashSet<u64>,
 ) -> Result<(Entity, EntityRecord), DxfError> {
     let codes: &[u16] = match marker.value {
+        "POINT" => &[10, 20, 30],
         "LINE" => &[10, 20, 30, 11, 21, 31],
         "CIRCLE" => &[10, 20, 30, 40],
         "ARC" => &[10, 20, 30, 40, 50, 51],
+        "ELLIPSE" => &[10, 20, 30, 11, 21, 31, 40, 41, 42],
+        "3DFACE" => &[10, 20, 30, 11, 21, 31, 12, 22, 32, 13, 23, 33, 70],
         _ => unreachable!("validated entity type"),
     };
     let source_fields = record_fields(groups)?;
@@ -1855,6 +2118,7 @@ fn read_entity(
         .expect("parsed coordinates are finite")
     };
     let entity = match marker.value {
+        "POINT" => Entity::Point(crate::PointEntity::new(point(0))),
         "LINE" => Entity::Line(Line3::new(point(0), point(3))),
         "CIRCLE" => Entity::Circle(
             Circle3::new(point(0), fields[3].1.value).expect("parsed radius is finite"),
@@ -1868,6 +2132,43 @@ fn read_entity(
             )
             .expect("parsed radius and angles are finite and radius is nonnegative"),
         ),
+        "ELLIPSE" => Entity::Ellipse(
+            crate::Ellipse3::new(
+                point(0),
+                point(3),
+                fields[6].1.value,
+                fields[7].1.value,
+                fields[8].1.value,
+            )
+            .map_err(|_| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::InvalidCoordinate(40),
+            })?,
+        ),
+        "3DFACE" => {
+            let vertices = [point(0), point(3), point(6), point(9)];
+            let flags = fields
+                .iter()
+                .find(|(code, _)| *code == 70)
+                .map_or(0u8, |(_, field)| field.value as u8);
+            let count = if vertices[2] == vertices[3] { 3 } else { 4 };
+            Entity::Face3(
+                Face3::new(
+                    vertices,
+                    count,
+                    [
+                        flags & 1 != 0,
+                        flags & 2 != 0,
+                        flags & 4 != 0,
+                        flags & 8 != 0,
+                    ],
+                )
+                .map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::InvalidCoordinate(10),
+                })?,
+            )
+        }
         _ => unreachable!("validated entity type"),
     };
     let end = groups.peek()?.map_or(groups.offset, |group| group.start);
@@ -1902,6 +2203,447 @@ fn validate_xy_normal(normal: [Option<f64>; 3], line: usize) -> Result<(), DxfEr
         }
     }
     Ok(())
+}
+
+fn field_number(fields: &[Group<'_>], code: u16, line: usize) -> Result<Option<f64>, DxfError> {
+    unique_field(fields, code)?
+        .map(read_number)
+        .transpose()
+        .map_err(|_| DxfError {
+            line,
+            kind: DxfErrorKind::InvalidCoordinate(code),
+        })
+}
+
+fn field_text(fields: &[Group<'_>], code: u16) -> Result<Option<String>, DxfError> {
+    Ok(fields
+        .iter()
+        .find(|g| g.code == code)
+        .map(|g| g.value.to_owned()))
+}
+
+fn point_fields(
+    fields: &[Group<'_>],
+    x: u16,
+    y: u16,
+    z: u16,
+    line: usize,
+) -> Result<Point3, DxfError> {
+    let x_code = x;
+    let x = field_number(fields, x_code, line)?.ok_or(DxfError {
+        line,
+        kind: DxfErrorKind::MissingField(x_code),
+    })?;
+    let y = field_number(fields, y, line)?.ok_or(DxfError {
+        line,
+        kind: DxfErrorKind::MissingField(y),
+    })?;
+    let z = field_number(fields, z, line)?.unwrap_or(0.0);
+    Point3::new(x, y, z).map_err(|_| DxfError {
+        line,
+        kind: DxfErrorKind::InvalidCoordinate(x_code),
+    })
+}
+
+fn extended_record(
+    entity: &Entity,
+    marker: Group<'_>,
+    properties: EntityProperties,
+    end: usize,
+) -> EntityRecord {
+    EntityRecord {
+        original: entity.clone(),
+        source_line: marker.line,
+        start: marker.start,
+        end,
+        fields_end: end,
+        fields: Vec::new(),
+        properties,
+        polyline: None,
+    }
+}
+
+fn read_insert_entity(
+    groups: &mut Groups<'_>,
+    marker: Group<'_>,
+    handles: &mut HashSet<u64>,
+) -> Result<(Entity, EntityRecord), DxfError> {
+    let (mut entity, mut record) = read_extended_entity(groups, marker, handles)?;
+    let Entity::Insert(ref mut insert) = entity else {
+        return Ok((entity, record));
+    };
+    let mut attributes = Vec::new();
+    loop {
+        let Some(next) = groups.peek()? else {
+            break;
+        };
+        if next.code != 0 {
+            let _ = groups.next()?;
+            continue;
+        }
+        if next.value == "ATTRIB" {
+            let marker = groups.next()?.expect("peeked ATTRIB");
+            let fields = record_fields(groups)?;
+            let tag = field_text(&fields, 2)?.unwrap_or_default();
+            let value = field_text(&fields, 1)?.unwrap_or_default();
+            let position = point_fields(&fields, 10, 20, 30, marker.line).ok();
+            let attribute = match position {
+                Some(p) => crate::Attribute::new(tag, value).with_position(p),
+                None => crate::Attribute::new(tag, value),
+            };
+            attributes.push(attribute);
+        } else if next.value == "SEQEND" {
+            let _ = groups.next()?;
+            let _ = record_fields(groups)?;
+            break;
+        } else {
+            break;
+        }
+    }
+    insert.set_attributes(attributes);
+    record.end = groups.peek()?.map_or(groups.offset, |group| group.start);
+    Ok((entity, record))
+}
+
+/// Read modern entities while retaining their complete source record.  Their source bytes
+/// remain authoritative when an imported entity is written back; newly created entities are
+/// emitted by `write_entity` below.
+fn read_extended_entity(
+    groups: &mut Groups<'_>,
+    marker: Group<'_>,
+    handles: &mut HashSet<u64>,
+) -> Result<(Entity, EntityRecord), DxfError> {
+    let source = record_fields(groups)?;
+    let properties = read_entity_properties(&source, marker.line, handles)?;
+    let end = groups.peek()?.map_or(groups.offset, |g| g.start);
+    let point = |x, y, z| point_fields(&source, x, y, z, marker.line);
+    let entity = match marker.value {
+        "TEXT" => {
+            let mut text = Text::new(
+                field_text(&source, 1)?.unwrap_or_default(),
+                point(10, 20, 30)?,
+                field_number(&source, 40, marker.line)?.unwrap_or(1.0),
+            )
+            .map_err(|_| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::InvalidCoordinate(40),
+            })?;
+            if let Some(v) = field_number(&source, 50, marker.line)? {
+                text.set_rotation(v.to_radians()).map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::InvalidCoordinate(50),
+                })?;
+            }
+            if let Some(v) = field_number(&source, 41, marker.line)? {
+                text.set_width_factor(v).map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::InvalidCoordinate(41),
+                })?;
+            }
+            Entity::Text(text)
+        }
+        "MTEXT" => {
+            let mut text = MText::new(
+                field_text(&source, 1)?.unwrap_or_default(),
+                point(10, 20, 30)?,
+                field_number(&source, 40, marker.line)?.unwrap_or(1.0),
+                field_number(&source, 41, marker.line)?.unwrap_or(1.0),
+            )
+            .map_err(|_| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::InvalidCoordinate(40),
+            })?;
+            if let Some(v) = field_number(&source, 50, marker.line)? {
+                text.text_mut()
+                    .set_rotation(v.to_radians())
+                    .map_err(|_| DxfError {
+                        line: marker.line,
+                        kind: DxfErrorKind::InvalidCoordinate(50),
+                    })?;
+            }
+            Entity::MText(text)
+        }
+        "LEADER" | "MULTILEADER" => {
+            let xs: Vec<f64> = source
+                .iter()
+                .filter(|g| g.code == 10)
+                .map(|g| read_number(*g))
+                .collect::<Result<_, _>>()?;
+            let ys: Vec<f64> = source
+                .iter()
+                .filter(|g| g.code == 20)
+                .map(|g| read_number(*g))
+                .collect::<Result<_, _>>()?;
+            let zs: Vec<f64> = source
+                .iter()
+                .filter(|g| g.code == 30)
+                .map(|g| read_number(*g))
+                .collect::<Result<_, _>>()?;
+            if marker.value == "MULTILEADER" && xs.len() == 1 {
+                let x2 = source
+                    .iter()
+                    .find(|g| g.code == 12)
+                    .map(|g| read_number(*g))
+                    .transpose()?
+                    .unwrap_or(xs[0]);
+                let y2 = source
+                    .iter()
+                    .find(|g| g.code == 22)
+                    .map(|g| read_number(*g))
+                    .transpose()?
+                    .unwrap_or(ys[0]);
+                let mut xs = xs;
+                let mut ys = ys;
+                xs.push(x2);
+                ys.push(y2);
+                let zs = source
+                    .iter()
+                    .filter(|g| g.code == 30)
+                    .map(|g| read_number(*g))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let vertices = xs
+                    .into_iter()
+                    .zip(ys)
+                    .enumerate()
+                    .map(|(i, (x, y))| Point3::new(x, y, zs.get(i).copied().unwrap_or(0.0)))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| DxfError {
+                        line: marker.line,
+                        kind: DxfErrorKind::InvalidCoordinate(10),
+                    })?;
+                let mut leader = Leader::new(vertices).map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::MissingField(10),
+                })?;
+                leader.set_annotation(field_text(&source, 304)?.or(field_text(&source, 3)?));
+                return Ok((
+                    Entity::Leader(leader.clone()),
+                    extended_record(&Entity::Leader(leader), marker, properties, end),
+                ));
+            }
+            if xs.len() < 2 || xs.len() != ys.len() {
+                return Err(DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::MissingField(10),
+                });
+            }
+            let vertices = xs
+                .into_iter()
+                .zip(ys)
+                .enumerate()
+                .map(|(i, (x, y))| Point3::new(x, y, zs.get(i).copied().unwrap_or(0.0)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::InvalidCoordinate(10),
+                })?;
+            let mut leader = Leader::new(vertices).map_err(|_| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::MissingField(10),
+            })?;
+            leader.set_annotation(field_text(&source, 3)?);
+            Entity::Leader(leader)
+        }
+        "SPLINE" => {
+            let degree = field_number(&source, 71, marker.line)?.unwrap_or(1.0) as usize;
+            let knots = source
+                .iter()
+                .filter(|g| g.code == 40)
+                .map(|g| read_number(*g))
+                .collect::<Result<Vec<_>, _>>()?;
+            let xs: Vec<f64> = source
+                .iter()
+                .filter(|g| g.code == 10)
+                .map(|g| read_number(*g))
+                .collect::<Result<_, _>>()?;
+            let ys: Vec<f64> = source
+                .iter()
+                .filter(|g| g.code == 20)
+                .map(|g| read_number(*g))
+                .collect::<Result<_, _>>()?;
+            let zs: Vec<f64> = source
+                .iter()
+                .filter(|g| g.code == 30)
+                .map(|g| read_number(*g))
+                .collect::<Result<_, _>>()?;
+            let weights = source
+                .iter()
+                .filter(|g| g.code == 41)
+                .map(|g| read_number(*g))
+                .collect::<Result<Vec<_>, _>>()?;
+            let points = xs
+                .into_iter()
+                .zip(ys)
+                .enumerate()
+                .map(|(i, (x, y))| Point3::new(x, y, zs.get(i).copied().unwrap_or(0.0)))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::InvalidCoordinate(10),
+                })?;
+            let weights = if weights.is_empty() {
+                vec![1.0; points.len()]
+            } else {
+                weights
+            };
+            Entity::Spline(
+                Spline3::new(
+                    degree,
+                    knots,
+                    points,
+                    weights,
+                    field_number(&source, 70, marker.line)?.unwrap_or(0.0) as i32 & 1 != 0,
+                )
+                .map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::InvalidCoordinate(71),
+                })?,
+            )
+        }
+        "TABLE" | "ACAD_TABLE" => {
+            let anchor = point(10, 20, 30)?;
+            let rows = field_number(&source, 91, marker.line)?
+                .unwrap_or(1.0)
+                .max(1.0) as usize;
+            let cols = field_number(&source, 92, marker.line)?
+                .unwrap_or(1.0)
+                .max(1.0) as usize;
+            let heights = source
+                .iter()
+                .filter(|g| g.code == 40)
+                .map(|g| read_number(*g))
+                .collect::<Result<Vec<_>, _>>()?;
+            let widths = source
+                .iter()
+                .filter(|g| g.code == 41)
+                .map(|g| read_number(*g))
+                .collect::<Result<Vec<_>, _>>()?;
+            let heights = if heights.len() == rows {
+                heights
+            } else {
+                vec![1.0; rows]
+            };
+            let widths = if widths.len() == cols {
+                widths
+            } else {
+                vec![1.0; cols]
+            };
+            let values = source
+                .iter()
+                .filter(|g| g.code == 1)
+                .map(|g| g.value.to_owned())
+                .collect::<Vec<_>>();
+            let cells = (0..rows)
+                .map(|r| {
+                    (0..cols)
+                        .map(|c| values.get(r * cols + c).cloned().unwrap_or_default())
+                        .collect()
+                })
+                .collect();
+            Entity::Table(
+                Table::new(anchor, heights, widths, cells).map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::InvalidCoordinate(40),
+                })?,
+            )
+        }
+        "DIMENSION" => {
+            let first = point(10, 20, 30)?;
+            let second = point_fields(&source, 13, 23, 33, marker.line).unwrap_or(first);
+            let offset = point_fields(&source, 14, 24, 34, marker.line).unwrap_or(first);
+            let kind = match field_number(&source, 70, marker.line)?.unwrap_or(0.0) as i32 & 7 {
+                1 => DimensionKind::Aligned {
+                    first,
+                    second,
+                    offset,
+                },
+                3 => DimensionKind::Angular {
+                    center: first,
+                    first: second,
+                    second: offset,
+                },
+                4 => DimensionKind::Diametric { first, second },
+                2 => DimensionKind::Radial {
+                    center: first,
+                    definition: second,
+                },
+                _ => DimensionKind::Linear {
+                    first,
+                    second,
+                    offset,
+                },
+            };
+            let mut d = Dimension::new(kind).map_err(|_| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::InvalidCoordinate(10),
+            })?;
+            d.set_text_override(field_text(&source, 1)?);
+            if let Some(v) = field_number(&source, 40, marker.line)? {
+                d.set_text_height(v).ok();
+            }
+            Entity::Dimension(d)
+        }
+        "HATCH" => {
+            let xs: Vec<f64> = source
+                .iter()
+                .filter(|g| g.code == 10)
+                .map(|g| read_number(*g))
+                .collect::<Result<_, _>>()?;
+            let ys: Vec<f64> = source
+                .iter()
+                .filter(|g| g.code == 20)
+                .map(|g| read_number(*g))
+                .collect::<Result<_, _>>()?;
+            let points = xs
+                .into_iter()
+                .zip(ys)
+                .map(|(x, y)| Point3::new(x, y, 0.0))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|_| DxfError {
+                    line: marker.line,
+                    kind: DxfErrorKind::InvalidCoordinate(10),
+                })?;
+            let solid = field_number(&source, 70, marker.line)?.unwrap_or(0.0) != 0.0;
+            let pattern = if solid {
+                HatchPattern::Solid
+            } else {
+                HatchPattern::Lines {
+                    angle: field_number(&source, 52, marker.line)?
+                        .unwrap_or(0.0)
+                        .to_radians(),
+                    spacing: field_number(&source, 41, marker.line)?.unwrap_or(1.0),
+                }
+            };
+            Entity::Hatch(Hatch::new(vec![points], pattern).map_err(|_| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::MissingField(10),
+            })?)
+        }
+        "INSERT" => {
+            let mut i = Insert::new(
+                field_text(&source, 2)?.unwrap_or_default(),
+                point(10, 20, 30)?,
+            );
+            i.set_scale([
+                field_number(&source, 41, marker.line)?.unwrap_or(1.0),
+                field_number(&source, 42, marker.line)?.unwrap_or(1.0),
+                field_number(&source, 43, marker.line)?.unwrap_or(1.0),
+            ])
+            .map_err(|_| DxfError {
+                line: marker.line,
+                kind: DxfErrorKind::InvalidCoordinate(41),
+            })?;
+            if let Some(v) = field_number(&source, 50, marker.line)? {
+                i.set_rotation(v.to_radians()).ok();
+            }
+            Entity::Insert(i)
+        }
+        _ => unreachable!(),
+    };
+    Ok((
+        entity.clone(),
+        extended_record(&entity, marker, properties, end),
+    ))
 }
 
 fn validate_polyline_fields(fields: &[Group<'_>], allowed: &[u16]) -> Result<(), DxfError> {
@@ -2109,13 +2851,248 @@ fn read_width(group: Group<'_>) -> Result<Coordinate, DxfError> {
     Ok(field)
 }
 
+fn serialize_block(block: &BlockDefinition, newline: &str) -> String {
+    let base = block.base();
+    let mut output = format!(
+        "0{n}BLOCK{n}2{n}{name}{n}70{n}0{n}10{n}{x}{n}20{n}{y}{n}30{n}{z}{n}",
+        n = newline,
+        name = block.name(),
+        x = base.x(),
+        y = base.y(),
+        z = base.z()
+    );
+    for entity in block.entities() {
+        write_entity(&mut output, entity, "0", &EntityStyle::default());
+    }
+    for definition in block.attribute_definitions() {
+        output.push_str(&format!("0{n}ATTDEF{n}2{n}{tag}{n}3{n}{prompt}{n}1{n}{default_value}{n}10{n}{x}{n}20{n}{y}{n}30{n}{z}{n}", n = newline, tag = definition.tag(), prompt = definition.prompt(), default_value = definition.default_value(), x = definition.position().x(), y = definition.position().y(), z = definition.position().z()));
+    }
+    output.push_str(&format!("0{n}ENDBLK{n}", n = newline));
+    output
+}
+
 fn write_entity(output: &mut String, entity: &Entity, layer: &str, style: &EntityStyle) {
-    write!(output, "0\n{}\n8\n{layer}\n", entity.name()).expect("String write");
+    let entity_name = if matches!(entity, Entity::Table(_)) {
+        "ACAD_TABLE"
+    } else {
+        entity.name()
+    };
+    write!(output, "0\n{}\n8\n{layer}\n", entity_name).expect("String write");
     write_style(output, style);
     let codes: &[u16] = match entity {
+        Entity::Point(_) => &[10, 20, 30],
         Entity::Line(_) => &[10, 20, 30, 11, 21, 31],
         Entity::Circle(_) => &[10, 20, 30, 40],
         Entity::Arc(_) => &[10, 20, 30, 40, 50, 51],
+        Entity::Ellipse(_) => &[10, 20, 30, 11, 21, 31, 40, 41, 42],
+        Entity::Face3(face) => {
+            let (vertices, count) = face.vertices();
+            let flags = face
+                .invisible_edges()
+                .iter()
+                .enumerate()
+                .map(|(i, value)| if *value { 1u8 << i } else { 0 })
+                .sum::<u8>();
+            for index in 0..4 {
+                let point = vertices[index.min(count.saturating_sub(1))];
+                let x_code = 10 + index as u16;
+                let y_code = 20 + index as u16;
+                let z_code = 30 + index as u16;
+                writeln!(
+                    output,
+                    "{x_code}\n{}\n{y_code}\n{}\n{z_code}\n{}",
+                    point.x(),
+                    point.y(),
+                    point.z()
+                )
+                .expect("String write");
+            }
+            writeln!(output, "70\n{flags}").expect("String write");
+            return;
+        }
+        Entity::Text(text) => {
+            let p = text.location();
+            writeln!(
+                output,
+                "10\n{}\n20\n{}\n30\n{}\n40\n{}\n1\n{}\n50\n{}\n41\n{}",
+                p.x(),
+                p.y(),
+                p.z(),
+                text.height(),
+                text.content(),
+                text.rotation().to_degrees(),
+                text.width_factor()
+            )
+            .expect("String write");
+            return;
+        }
+        Entity::MText(text) => {
+            let p = text.text().location();
+            writeln!(
+                output,
+                "10\n{}\n20\n{}\n30\n{}\n40\n{}\n41\n{}\n1\n{}\n50\n{}",
+                p.x(),
+                p.y(),
+                p.z(),
+                text.text().height(),
+                text.width(),
+                text.text().content(),
+                text.text().rotation().to_degrees()
+            )
+            .expect("String write");
+            return;
+        }
+        Entity::Leader(leader) => {
+            writeln!(output, "76\n0\n71\n0\n").expect("String write");
+            for p in leader.vertices() {
+                writeln!(output, "10\n{}\n20\n{}\n30\n{}", p.x(), p.y(), p.z())
+                    .expect("String write");
+            }
+            if let Some(text) = leader.annotation() {
+                writeln!(output, "3\n{text}").expect("String write");
+            }
+            return;
+        }
+        Entity::Spline(spline) => {
+            writeln!(
+                output,
+                "70\n{}\n71\n{}\n72\n{}\n73\n{}",
+                u8::from(spline.is_closed()),
+                spline.degree(),
+                spline.knots().len(),
+                spline.control_points().len()
+            )
+            .expect("String write");
+            for knot in spline.knots() {
+                writeln!(output, "40\n{knot}").expect("String write");
+            }
+            for weight in spline.weights() {
+                writeln!(output, "41\n{weight}").expect("String write");
+            }
+            for p in spline.control_points() {
+                writeln!(output, "10\n{}\n20\n{}\n30\n{}", p.x(), p.y(), p.z())
+                    .expect("String write");
+            }
+            return;
+        }
+        Entity::Table(table) => {
+            let p = table.anchor();
+            writeln!(
+                output,
+                "2\nACAD_TABLE\n10\n{}\n20\n{}\n30\n{}\n91\n{}\n92\n{}",
+                p.x(),
+                p.y(),
+                p.z(),
+                table.row_heights().len(),
+                table.column_widths().len()
+            )
+            .expect("String write");
+            for h in table.row_heights() {
+                writeln!(output, "40\n{h}").expect("String write");
+            }
+            for w in table.column_widths() {
+                writeln!(output, "41\n{w}").expect("String write");
+            }
+            for row in table.cells() {
+                for cell in row {
+                    writeln!(output, "1\n{cell}").expect("String write");
+                }
+            }
+            return;
+        }
+        Entity::Dimension(dimension) => {
+            let kind = dimension.kind();
+            let (first, second, offset, flags) = match kind {
+                DimensionKind::Linear {
+                    first,
+                    second,
+                    offset,
+                } => (first, second, offset, 0),
+                DimensionKind::Aligned {
+                    first,
+                    second,
+                    offset,
+                } => (first, second, offset, 1),
+                DimensionKind::Radial { center, definition } => (center, definition, definition, 2),
+                DimensionKind::Diametric { first, second } => (first, second, second, 3),
+                DimensionKind::Angular {
+                    center,
+                    first,
+                    second,
+                } => (center, first, second, 2),
+            };
+            writeln!(output,"70\n{flags}\n10\n{}\n20\n{}\n30\n{}\n13\n{}\n23\n{}\n33\n{}\n14\n{}\n24\n{}\n34\n{}",first.x(),first.y(),first.z(),second.x(),second.y(),second.z(),offset.x(),offset.y(),offset.z()).expect("String write");
+            return;
+        }
+        Entity::Hatch(hatch) => {
+            let solid = matches!(hatch.pattern(), HatchPattern::Solid);
+            writeln!(
+                output,
+                "70\n{}\n71\n0\n91\n{}",
+                u8::from(solid),
+                hatch.boundaries().len()
+            )
+            .expect("String write");
+            for boundary in hatch.boundaries() {
+                writeln!(output, "92\n1\n73\n1\n93\n{}", boundary.len()).expect("String write");
+                for p in boundary {
+                    writeln!(output, "10\n{}\n20\n{}", p.x(), p.y()).expect("String write");
+                }
+            }
+            if let HatchPattern::Lines { angle, spacing } = hatch.pattern() {
+                writeln!(
+                    output,
+                    "75\n0\n76\n1\n52\n{}\n41\n{}\n2\nUSER",
+                    angle.to_degrees(),
+                    spacing
+                )
+                .expect("String write");
+            }
+            return;
+        }
+        Entity::Insert(insert) => {
+            let p = insert.insertion();
+            let s = insert.scale();
+            writeln!(
+                output,
+                "2\n{}\n10\n{}\n20\n{}\n30\n{}\n41\n{}\n42\n{}\n43\n{}\n50\n{}",
+                insert.block_name(),
+                p.x(),
+                p.y(),
+                p.z(),
+                s[0],
+                s[1],
+                s[2],
+                insert.rotation().to_degrees()
+            )
+            .expect("String write");
+            if let (Some(rows), Some(cols)) = (insert.rows(), insert.columns()) {
+                writeln!(
+                    output,
+                    "70\n{cols}\n71\n{rows}\n44\n{}\n45\n{}",
+                    insert.column_spacing(),
+                    insert.row_spacing()
+                )
+                .expect("String write");
+            }
+            for attribute in insert.attributes() {
+                let p = attribute.position().unwrap_or(insert.insertion());
+                writeln!(
+                    output,
+                    "0\nATTRIB\n8\n{layer}\n10\n{}\n20\n{}\n30\n{}\n2\n{}\n1\n{}",
+                    p.x(),
+                    p.y(),
+                    p.z(),
+                    attribute.tag(),
+                    attribute.value()
+                )
+                .expect("String write");
+            }
+            if !insert.attributes().is_empty() {
+                output.push_str("0\nSEQEND\n");
+            }
+            return;
+        }
         Entity::Polyline(polyline) => {
             writeln!(
                 output,

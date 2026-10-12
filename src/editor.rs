@@ -10,6 +10,7 @@ pub enum EditError {
     Geometry(GeometryError),
     Layer(LayerError),
     Style(EntityStyleError),
+    Dxf(crate::DxfError),
 }
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -17,6 +18,7 @@ impl fmt::Display for EditError {
             Self::Geometry(error) => error.fmt(f),
             Self::Layer(error) => error.fmt(f),
             Self::Style(error) => error.fmt(f),
+            Self::Dxf(error) => error.fmt(f),
         }
     }
 }
@@ -34,6 +36,11 @@ impl From<LayerError> for EditError {
 impl From<EntityStyleError> for EditError {
     fn from(error: EntityStyleError) -> Self {
         Self::Style(error)
+    }
+}
+impl From<crate::DxfError> for EditError {
+    fn from(error: crate::DxfError) -> Self {
+        Self::Dxf(error)
     }
 }
 
@@ -330,6 +337,147 @@ impl Editor {
         Ok(true)
     }
 
+    /// Define a named block from the current selection. Geometry is stored in
+    /// local coordinates relative to `base`; optionally replace the selection
+    /// with one INSERT in the same transaction.
+    pub fn define_block(
+        &mut self,
+        name: &str,
+        base: crate::Point3,
+        replace_selection_with_insert: bool,
+    ) -> Result<bool, EditError> {
+        if name.trim().is_empty() || self.current.document.block(name).is_some() {
+            return Err(crate::DxfError {
+                line: 0,
+                kind: crate::DxfErrorKind::UnsupportedProperty(2),
+            }
+            .into());
+        }
+        let selected = self.selection().to_vec();
+        if selected.is_empty() {
+            return Ok(false);
+        }
+        self.editable_selection()?;
+        let local = selected
+            .iter()
+            .map(|index| self.entities()[*index].translated(-base.x(), -base.y(), -base.z()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let definition = crate::BlockDefinition::new(name, base, local);
+        let layer = self.current_layer().to_owned();
+        self.editable_layer(&layer)?;
+        self.checkpoint();
+        self.current.document.add_block_definition(definition)?;
+        if replace_selection_with_insert {
+            for index in selected.iter().rev() {
+                self.current.document.remove(*index);
+            }
+            let insert = crate::Insert::new(name, base);
+            let index = self.entities().len();
+            self.current
+                .document
+                .push_on_layer(crate::Entity::Insert(insert), &layer)
+                .expect("validated current layer");
+            self.select(vec![index]);
+        }
+        Ok(true)
+    }
+
+    /// Insert a validated named block on the current layer as one undo step.
+    pub fn insert_block(
+        &mut self,
+        name: &str,
+        insertion: crate::Point3,
+        scale: [f64; 3],
+        rotation: f64,
+        array: Option<(usize, usize, f64, f64)>,
+    ) -> Result<bool, EditError> {
+        let definition = self.current.document.block(name).ok_or(crate::DxfError {
+            line: 0,
+            kind: crate::DxfErrorKind::UnsupportedProperty(2),
+        })?;
+        let _ = definition;
+        let mut insert = crate::Insert::new(name, insertion);
+        insert.set_scale(scale)?;
+        insert.set_rotation(rotation)?;
+        if let Some((rows, columns, row_spacing, column_spacing)) = array {
+            if rows == 0
+                || columns == 0
+                || rows.checked_mul(columns).is_none_or(|count| count > 512)
+            {
+                return Err(GeometryError::NonFiniteParameter.into());
+            }
+            insert.set_array(Some(rows), Some(columns), row_spacing, column_spacing)?;
+        }
+        self.add(vec![crate::Entity::Insert(insert)])
+            .map_err(EditError::from)
+    }
+
+    /// Replace an INSERT's attribute values atomically while retaining its
+    /// layer, style, placement, and block reference.
+    pub fn set_insert_attributes(
+        &mut self,
+        index: usize,
+        attributes: Vec<crate::Attribute>,
+    ) -> Result<bool, EditError> {
+        let Some(crate::Entity::Insert(insert)) = self.entities().get(index) else {
+            return Err(GeometryError::UnsupportedPolylineConversion.into());
+        };
+        let mut replacement = insert.clone();
+        replacement.set_attributes(attributes);
+        if replacement == *insert {
+            return Ok(false);
+        }
+        self.editable_layer(self.entity_layer(index).expect("existing insert layer"))?;
+        self.checkpoint();
+        self.current
+            .document
+            .replace_entity(index, crate::Entity::Insert(replacement))
+            .expect("same entity type");
+        self.select(vec![index]);
+        Ok(true)
+    }
+
+    /// Add one attribute definition to an existing block in one undo step.
+    pub fn add_block_attribute_definition(
+        &mut self,
+        block: &str,
+        definition: crate::AttributeDefinition,
+    ) -> Result<bool, EditError> {
+        let Some(existing) = self.current.document.block(block) else {
+            return Err(crate::DxfError {
+                line: 0,
+                kind: crate::DxfErrorKind::UnsupportedProperty(2),
+            }
+            .into());
+        };
+        let mut replacement = existing.clone();
+        if replacement
+            .attribute_definitions()
+            .iter()
+            .any(|item| item.tag().eq_ignore_ascii_case(definition.tag()))
+        {
+            return Ok(false);
+        }
+        let insert_layers: Vec<String> = self
+            .entities()
+            .iter()
+            .enumerate()
+            .filter(|(_, entity)| {
+                matches!(entity, crate::Entity::Insert(insert) if insert.block_name().eq_ignore_ascii_case(block))
+            })
+            .map(|(index, _)| self.entity_layer(index).expect("existing insert layer").to_owned())
+            .collect();
+        for layer in insert_layers {
+            self.editable_layer(&layer)?;
+        }
+        replacement.add_attribute_definition(definition);
+        self.checkpoint();
+        self.current
+            .document
+            .replace_block_definition(replacement)?;
+        Ok(true)
+    }
+
     pub fn update(&mut self, index: usize, entity: Entity) -> Result<bool, LayerError> {
         let Some(old) = self.entities().get(index) else {
             return Ok(false);
@@ -363,6 +511,16 @@ impl Editor {
         copy: bool,
     ) -> Result<bool, EditError> {
         self.map_selection(copy, |entity| entity.transformed(transform))
+    }
+
+    /// Apply a geometry operation to the current selection in one transaction.
+    /// The operation is evaluated completely before the document is changed.
+    pub fn map_selection_with(
+        &mut self,
+        copy: bool,
+        operation: impl Fn(&Entity) -> Result<Entity, GeometryError>,
+    ) -> Result<bool, EditError> {
+        self.map_selection(copy, operation)
     }
 
     fn map_selection(
@@ -416,6 +574,111 @@ impl Editor {
                 .document
                 .replace_entity(index, entity)
                 .expect("transform preserves type");
+        }
+        Ok(true)
+    }
+
+    /// Add one transformed copy of every selected entity for each transform.
+    /// Source layer and explicit style are retained; all copies form one undo step.
+    pub fn copy_selection_many(&mut self, transforms: &[Transform]) -> Result<bool, EditError> {
+        if self.selection().is_empty() || transforms.is_empty() {
+            return Ok(false);
+        }
+        let count = self
+            .selection()
+            .len()
+            .checked_mul(transforms.len())
+            .ok_or(GeometryError::NonFiniteResult)?;
+        if count > 2048 {
+            return Err(GeometryError::NonFiniteResult.into());
+        }
+        self.editable_selection()?;
+        let sources: Vec<_> = self
+            .selection()
+            .iter()
+            .map(|index| {
+                let entity = self.entities()[*index].clone();
+                let layer = self
+                    .entity_layer(*index)
+                    .expect("valid selection")
+                    .to_owned();
+                let style = self.entity_style(*index).expect("valid selection").clone();
+                Ok((entity, layer, style))
+            })
+            .collect::<Result<_, EditError>>()?;
+        let mut copies = Vec::with_capacity(count);
+        for transform in transforms {
+            for (entity, layer, style) in &sources {
+                copies.push((
+                    entity.transformed(*transform)?,
+                    layer.clone(),
+                    style.clone(),
+                ));
+            }
+        }
+        self.checkpoint();
+        let first = self.entities().len();
+        for (entity, layer, style) in copies {
+            self.current
+                .document
+                .push_with_style(entity, &layer, style)
+                .expect("validated source layer");
+        }
+        self.select((first..self.entities().len()).collect());
+        Ok(true)
+    }
+
+    /// Copy all layer and explicit style properties from one entity to targets.
+    pub fn match_properties(
+        &mut self,
+        source: usize,
+        targets: &[usize],
+    ) -> Result<bool, EditError> {
+        let source_layer = self
+            .entity_layer(source)
+            .ok_or(LayerError::UnknownLayer(source.to_string()))?
+            .to_owned();
+        let source_style = self
+            .entity_style(source)
+            .ok_or(EntityStyleError::NoSelection)?
+            .clone();
+        let mut targets = targets.to_vec();
+        targets.sort_unstable();
+        targets.dedup();
+        for &target in &targets {
+            if target >= self.entities().len() {
+                return Err(LayerError::UnknownLayer(target.to_string()).into());
+            }
+            self.editable_layer(self.entity_layer(target).expect("valid target"))?;
+            self.editable_layer(&source_layer)?;
+        }
+        if targets.is_empty() {
+            return Ok(false);
+        }
+        let mut changed = false;
+        for &target in &targets {
+            changed |= self
+                .entity_layer(target)
+                .is_some_and(|layer| layer != source_layer)
+                || self.entity_style(target) != Some(&source_style);
+        }
+        if !changed {
+            return Ok(false);
+        }
+        self.checkpoint();
+        for target in targets {
+            self.current
+                .document
+                .set_entity_layer(target, &source_layer)?;
+            self.current
+                .document
+                .set_entity_color(target, source_style.color_index())?;
+            self.current
+                .document
+                .set_entity_linetype(target, source_style.linetype())?;
+            self.current
+                .document
+                .set_entity_linetype_scale(target, source_style.linetype_scale())?;
         }
         Ok(true)
     }
@@ -683,18 +946,18 @@ impl Editor {
         Ok(true)
     }
 
-    /// Replace selected polylines with their centerline components in one edit.
-    /// Simple entities are ignored. All fallible work precedes the checkpoint;
-    /// output records inherit source layer/style and become the new selection.
+    /// Replace selected polylines and block INSERTs with their components in one edit.
+    /// All fallible work precedes the checkpoint; output records inherit source layer/style.
     pub fn explode_selection(&mut self) -> Result<usize, EditError> {
         let mut plans = Vec::new();
         for &index in self.selection() {
-            let Entity::Polyline(polyline) = &self.entities()[index] else {
-                continue;
-            };
             let layer = self.entity_layer(index).expect("existing source layer");
             self.editable_layer(layer)?;
-            let parts = polyline.explode()?;
+            let parts = match &self.entities()[index] {
+                Entity::Polyline(polyline) => polyline.explode()?,
+                Entity::Insert(insert) => expand_insert(insert, &self.current.document, 0)?,
+                _ => continue,
+            };
             let style = self.entity_style(index).expect("existing source style");
             plans.push((index, layer.to_owned(), style.clone(), parts));
         }
@@ -888,6 +1151,31 @@ impl Editor {
         }
         true
     }
+}
+
+fn expand_insert(
+    insert: &crate::Insert,
+    document: &DxfDocument,
+    depth: usize,
+) -> Result<Vec<Entity>, GeometryError> {
+    if depth >= 8 {
+        return Err(GeometryError::UnsupportedPolylineConversion);
+    }
+    let definition = document
+        .block(insert.block_name())
+        .ok_or(GeometryError::UnsupportedPolylineConversion)?;
+    let mut output = insert.explode(definition)?;
+    // INSERT transformation currently supports the concrete drawable entities;
+    // nested INSERTs are expanded with a bounded recursion guard.
+    let mut expanded = Vec::with_capacity(output.len());
+    for entity in output.drain(..) {
+        if let Entity::Insert(nested) = entity {
+            expanded.extend(expand_insert(&nested, document, depth + 1)?);
+        } else {
+            expanded.push(entity);
+        }
+    }
+    Ok(expanded)
 }
 
 #[cfg(test)]

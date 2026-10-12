@@ -46,6 +46,21 @@ impl OpenCadApp {
                             .flat_map(|(point, bulge)| [point.x(), point.y(), *bulge]),
                     )
                     .collect(),
+                Some((_, Entity::Point(point))) => vec![
+                    point.position().x(),
+                    point.position().y(),
+                    point.position().z(),
+                ],
+                Some((_, Entity::Ellipse(ellipse))) => vec![
+                    ellipse.center().x(),
+                    ellipse.center().y(),
+                    ellipse.center().z(),
+                    ellipse.major_radius(),
+                    ellipse.ratio(),
+                    ellipse.start_parameter(),
+                    ellipse.end_parameter(),
+                ],
+                Some((_, _)) => Vec::new(),
                 None => Vec::new(),
             }
             .into_iter()
@@ -108,6 +123,9 @@ impl OpenCadApp {
                     Entity::Circle(_) => ["Center X","Center Y","Center Z","Radius"].into_iter().map(String::from).collect(),
                     Entity::Arc(_) => ["Center X","Center Y","Center Z","Radius","Start angle (°)","End angle (°)"].into_iter().map(String::from).collect(),
                     Entity::Polyline(polyline) => std::iter::once("Elevation".to_owned()).chain((1..=polyline.vertices().len()).flat_map(|index| [format!("Vertex {index} X"),format!("Vertex {index} Y"),format!("Vertex {index} bulge")])).collect(),
+                    Entity::Point(_) => ["X","Y","Z"].into_iter().map(String::from).collect(),
+                    Entity::Ellipse(_) => ["Center X","Center Y","Center Z","Major radius","Ratio","Start","End"].into_iter().map(String::from).collect(),
+                    _ => Vec::new(),
                 };
                 egui::Grid::new("coordinates").num_columns(2).spacing([4.0,2.0]).show(ui, |ui| {
                     for (position,label) in labels.iter().enumerate() {
@@ -141,7 +159,8 @@ impl OpenCadApp {
                         ui.label(RichText::new(format!("Length  {}",arc.length().map(|n|format!("{n:.4}")).unwrap_or_else(|_|"exceeds finite range".into()))).small().color(MUTED));
                         ui.label(RichText::new(format!("CCW sweep  {:.4}°",arc.sweep().to_degrees())).small().color(MUTED));
                         ui.label(RichText::new("Plane  World XY (+Z normal)").small().color(MUTED));
-                    }                    Entity::Polyline(polyline) => {
+                    }
+                    Entity::Polyline(polyline) => {
                         ui.label(RichText::new("Bulge → next vertex: 0 line, +1 CCW / −1 CW semicircle. Last bulge is used when closed.").small().color(MUTED));
                         ui.label(RichText::new(format!("{} vertices · Length {}",polyline.vertices().len(),polyline.length().map(|value|format!("{value:.4}")).unwrap_or_else(|_|"exceeds finite range".into()))).small().color(MUTED));
                         let mut closed = polyline.is_closed();
@@ -173,6 +192,7 @@ impl OpenCadApp {
                             self.modify_polyline(index, &entity, |polyline| { polyline.reverse_with_widths(reverse_widths); Ok(()) });
                         }
                     }
+                    _ => {}
                 }
             } else if self.editor.selection().is_empty() {
                 ui.add_enabled(false, Button::new("Model Space     ▾").min_size(egui::vec2(ui.available_width(), 19.0)));
@@ -682,6 +702,24 @@ impl OpenCadApp {
                 ))
             }
             Entity::Polyline(_) => unreachable!("polyline fields handled above"),
+            Entity::Point(_) => Ok(Entity::Point(crate::PointEntity::new(start))),
+            Entity::Ellipse(ellipse) => {
+                let axis = ellipse.major_axis();
+                let radius = values[3];
+                let axis_len = axis.x().hypot(axis.y());
+                let direction = if axis_len > 0.0 {
+                    (axis.x() / axis_len, axis.y() / axis_len)
+                } else {
+                    (1.0, 0.0)
+                };
+                let major = Point3::new(direction.0 * radius, direction.1 * radius, 0.0)
+                    .map_err(|e| e.to_string())?;
+                Ok(Entity::Ellipse(
+                    crate::Ellipse3::new(start, major, values[4], values[5], values[6])
+                        .map_err(|e| e.to_string())?,
+                ))
+            }
+            _ => Ok(original.clone()),
         }
     }
 

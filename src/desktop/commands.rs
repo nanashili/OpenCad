@@ -50,7 +50,7 @@ impl OpenCadApp {
         }
     }
 
-    fn command_result(&mut self, input: &str) -> Result<(), String> {
+    pub(super) fn command_result(&mut self, input: &str) -> Result<(), String> {
         if let Some(result) = self.pline_text(input) {
             return result;
         }
@@ -116,7 +116,258 @@ impl OpenCadApp {
         let (verb, rest) = input.split_once(char::is_whitespace).unwrap_or((input, ""));
         let rest = rest.trim();
         let tokens: Vec<_> = rest.split_whitespace().collect();
+        if rest.is_empty()
+            && let Some(form) = feature_forms::FeatureForm::for_command(verb)
+        {
+            self.feature_form = Some(form);
+            return Ok(());
+        }
+        if matches!(
+            verb.to_ascii_uppercase().as_str(),
+            "VIEW" | "VPOINT" | "UCS" | "PLAN" | "3DORBIT"
+        ) {
+            return self.view_command(&verb.to_ascii_uppercase(), rest, &tokens);
+        }
+        if let Some(result) = self
+            .feature_utility_command(&verb.to_ascii_uppercase(), rest, &tokens)
+            .or_else(|| self.feature_modify_command(&verb.to_ascii_uppercase(), rest, &tokens))
+            .or_else(|| self.feature_solid_command(&verb.to_ascii_uppercase(), rest, &tokens))
+            .or_else(|| self.feature_annotations_command(&verb.to_ascii_uppercase(), rest, &tokens))
+            .or_else(|| self.feature_blocks_command(&verb.to_ascii_uppercase(), rest, &tokens))
+        {
+            return result;
+        }
         match verb.to_ascii_uppercase().as_str() {
+            "POINT" => {
+                let point = parse_point(rest, self.drawing_elevation())?;
+                self.add_entities(vec![Entity::Point(crate::PointEntity::new(point))])?;
+                self.finish();
+                self.message("Point created.", false);
+            }
+            "ELLIPSE" => {
+                let args: Vec<_> = rest.split_whitespace().collect();
+                if args.len() < 3 {
+                    return Err(
+                        "ELLIPSE syntax: ELLIPSE center major-end ratio [start end].".into(),
+                    );
+                }
+                let center = parse_point(args[0], self.drawing_elevation())?;
+                let major = parse_point(args[1], center.z())?;
+                let ratio = number(args[2])?;
+                let start = args.get(3).map_or(Ok(0.0), |v| number(v))?.to_radians();
+                let end = args.get(4).map_or(Ok(0.0), |v| number(v))?.to_radians();
+                self.add_entities(vec![Entity::Ellipse(
+                    crate::Ellipse3::new(
+                        center,
+                        Point3::new(
+                            major.x() - center.x(),
+                            major.y() - center.y(),
+                            major.z() - center.z(),
+                        )
+                        .map_err(|e| e.to_string())?,
+                        ratio,
+                        start,
+                        end,
+                    )
+                    .map_err(|e| e.to_string())?,
+                )])?;
+                self.finish();
+                self.message("Ellipse created.", false);
+            }
+            "SPLINE" => {
+                let args: Vec<_> = rest.split_whitespace().collect();
+                if args.len() < 3 {
+                    return Err("SPLINE syntax: SPLINE degree point;point;point...".into());
+                }
+                let (degree_token, point_tokens): (&str, &[&str]) = if args[0].contains(',') {
+                    (
+                        args.last().copied().ok_or("SPLINE requires a degree.")?,
+                        &args[..args.len() - 1],
+                    )
+                } else {
+                    (args[0], &args[1..])
+                };
+                let degree = degree_token
+                    .parse::<usize>()
+                    .map_err(|_| "Spline degree must be a whole number.".to_owned())?;
+                let points = point_tokens
+                    .iter()
+                    .map(|v| parse_point(v.trim_matches(';'), self.drawing_elevation()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let count = points.len();
+                let knots = (0..count + degree + 1).map(|i| i as f64).collect();
+                self.add_entities(vec![Entity::Spline(
+                    crate::Spline3::unweighted(degree, knots, points, false)
+                        .map_err(|e| e.to_string())?,
+                )])?;
+                self.finish();
+                self.message("Spline created.", false);
+            }
+            "TEXT" | "MTEXT" => {
+                let mut args = rest.splitn(3, char::is_whitespace);
+                let point = parse_point(
+                    args.next().ok_or("TEXT syntax: TEXT x,y height content.")?,
+                    self.drawing_elevation(),
+                )?;
+                let height = number(args.next().ok_or("TEXT requires a height.")?)?;
+                let content = args.next().unwrap_or_default();
+                let entity = if verb.eq_ignore_ascii_case("MTEXT") {
+                    Entity::MText(
+                        crate::MText::new(content, point, height, height * 20.0)
+                            .map_err(|e| e.to_string())?,
+                    )
+                } else {
+                    Entity::Text(
+                        crate::Text::new(content, point, height).map_err(|e| e.to_string())?,
+                    )
+                };
+                self.add_entities(vec![entity])?;
+                self.finish();
+                self.message("Text created.", false);
+            }
+            "LEADER" | "MLEADER" => {
+                let points = rest
+                    .split(';')
+                    .map(|v| parse_point(v.trim(), self.drawing_elevation()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.add_entities(vec![Entity::Leader(
+                    crate::Leader::new(points).map_err(|e| e.to_string())?,
+                )])?;
+                self.finish();
+                self.message("Leader created.", false);
+            }
+            "DIMLINEAR" | "DIMALIGNED" => {
+                let points = rest
+                    .split(';')
+                    .map(|v| parse_point(v.trim(), self.drawing_elevation()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if points.len() != 3 {
+                    return Err("DIMLINEAR syntax: DIMLINEAR first;second;offset.".into());
+                }
+                let kind = if verb.eq_ignore_ascii_case("DIMALIGNED") {
+                    crate::DimensionKind::Aligned {
+                        first: points[0],
+                        second: points[1],
+                        offset: points[2],
+                    }
+                } else {
+                    crate::DimensionKind::Linear {
+                        first: points[0],
+                        second: points[1],
+                        offset: points[2],
+                    }
+                };
+                self.add_entities(vec![Entity::Dimension(
+                    crate::Dimension::new(kind).map_err(|e| e.to_string())?,
+                )])?;
+                self.finish();
+                self.message("Dimension created.", false);
+            }
+            "DIMRADIUS" | "DIMDIAMETRIC" | "DIMANGULAR" => {
+                let points = rest
+                    .split(';')
+                    .map(|v| parse_point(v.trim(), self.drawing_elevation()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let kind = match verb.to_ascii_uppercase().as_str() {
+                    "DIMRADIUS" => {
+                        if points.len() != 2 {
+                            return Err("DIMRADIUS syntax: DIMRADIUS center;definition.".into());
+                        }
+                        crate::DimensionKind::Radial {
+                            center: points[0],
+                            definition: points[1],
+                        }
+                    }
+                    "DIMDIAMETRIC" => {
+                        if points.len() != 2 {
+                            return Err("DIMDIAMETRIC syntax: DIMDIAMETRIC first;second.".into());
+                        }
+                        crate::DimensionKind::Diametric {
+                            first: points[0],
+                            second: points[1],
+                        }
+                    }
+                    _ => {
+                        if points.len() != 3 {
+                            return Err("DIMANGULAR syntax: DIMANGULAR center;first;second.".into());
+                        }
+                        crate::DimensionKind::Angular {
+                            center: points[0],
+                            first: points[1],
+                            second: points[2],
+                        }
+                    }
+                };
+                self.add_entities(vec![Entity::Dimension(
+                    crate::Dimension::new(kind).map_err(|e| e.to_string())?,
+                )])?;
+                self.finish();
+                self.message("Dimension created.", false);
+            }
+            "TABLE" => {
+                let args: Vec<_> = rest.split_whitespace().collect();
+                if args.len() < 5 {
+                    return Err(
+                        "TABLE syntax: TABLE anchor rows columns row-height column-width.".into(),
+                    );
+                }
+                let anchor = parse_point(args[0], self.drawing_elevation())?;
+                let rows = args[1]
+                    .parse::<usize>()
+                    .map_err(|_| "Rows must be a whole number.".to_owned())?;
+                let columns = args[2]
+                    .parse::<usize>()
+                    .map_err(|_| "Columns must be a whole number.".to_owned())?;
+                if rows == 0
+                    || columns == 0
+                    || rows.checked_mul(columns).is_none_or(|count| count > 10_000)
+                {
+                    return Err(
+                        "TABLE rows and columns must define between 1 and 10,000 cells.".into(),
+                    );
+                }
+                let row_height = number(args[3])?;
+                let column_width = number(args[4])?;
+                let values: Vec<_> = args[5..]
+                    .join(" ")
+                    .split('|')
+                    .map(str::trim)
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                if values.len() > rows * columns {
+                    return Err(
+                        "TABLE has more cell values than rows multiplied by columns.".into(),
+                    );
+                }
+                let mut cells = vec![vec![String::new(); columns]; rows];
+                for (index, value) in values.into_iter().enumerate() {
+                    cells[index / columns][index % columns] = value;
+                }
+                self.add_entities(vec![Entity::Table(
+                    crate::Table::new(
+                        anchor,
+                        vec![row_height; rows],
+                        vec![column_width; columns],
+                        cells,
+                    )
+                    .map_err(|e| e.to_string())?,
+                )])?;
+                self.finish();
+                self.message("Table created.", false);
+            }
+            "HATCH" => {
+                let points = rest
+                    .split(';')
+                    .map(|v| parse_point(v.trim(), self.drawing_elevation()))
+                    .collect::<Result<Vec<_>, _>>()?;
+                self.add_entities(vec![Entity::Hatch(
+                    crate::Hatch::new(vec![points], crate::HatchPattern::Solid)
+                        .map_err(|e| e.to_string())?,
+                )])?;
+                self.finish();
+                self.message("Hatch created.", false);
+            }
             "PLINEWID" => {
                 if !rest.is_empty() {
                     self.editor
@@ -664,6 +915,75 @@ impl OpenCadApp {
                     "Unknown command '{verb}'. Use HELP for commands and shortcuts."
                 ));
             }
+        }
+        Ok(())
+    }
+
+    fn view_command(&mut self, verb: &str, rest: &str, tokens: &[&str]) -> Result<(), String> {
+        let orientation = |name: &str| match name.to_ascii_uppercase().as_str() {
+            "TOP" | "T" => Some(crate::ViewOrientation::Top),
+            "BOTTOM" | "B" => Some(crate::ViewOrientation::Bottom),
+            "FRONT" | "F" => Some(crate::ViewOrientation::Front),
+            "BACK" => Some(crate::ViewOrientation::Back),
+            "LEFT" | "L" => Some(crate::ViewOrientation::Left),
+            "RIGHT" | "R" => Some(crate::ViewOrientation::Right),
+            "SW" | "SOUTHWEST" => Some(crate::ViewOrientation::SouthWest),
+            "SE" | "SOUTHEAST" => Some(crate::ViewOrientation::SouthEast),
+            "NE" | "NORTHEAST" => Some(crate::ViewOrientation::NorthEast),
+            "NW" | "NORTHWEST" => Some(crate::ViewOrientation::NorthWest),
+            _ => None,
+        };
+        match verb {
+            "UCS" => {
+                if tokens.is_empty() || tokens[0].eq_ignore_ascii_case("WORLD") {
+                    self.ucs = crate::Ucs3::world();
+                } else if tokens.len() >= 3 {
+                    let origin = parse_point(tokens[0], self.drawing_elevation())?;
+                    let x = parse_point(tokens[1], self.drawing_elevation())?;
+                    let y = parse_point(tokens[2], self.drawing_elevation())?;
+                    self.ucs = crate::Ucs3::from_points(origin, x, y).map_err(|e| e.to_string())?;
+                } else {
+                    return Err(
+                        "UCS syntax: UCS WORLD or UCS origin x-axis-point y-axis-point.".into(),
+                    );
+                }
+                self.camera.set_ucs(self.ucs);
+                self.message("UCS updated.", false);
+            }
+            "3DORBIT" => {
+                let yaw = tokens
+                    .first()
+                    .map(|v| number(v))
+                    .transpose()?
+                    .unwrap_or(15.0)
+                    .to_radians();
+                let pitch = tokens
+                    .get(1)
+                    .map(|v| number(v))
+                    .transpose()?
+                    .unwrap_or(0.0)
+                    .to_radians();
+                self.view_camera
+                    .orbit(yaw, pitch)
+                    .map_err(|e| e.to_string())?;
+                self.camera.set_view(self.view_camera);
+                self.message("3D orbit view updated.", false);
+            }
+            "PLAN" => {
+                self.view_camera
+                    .set_orientation(crate::ViewOrientation::Top);
+                self.camera.set_view(self.view_camera);
+                self.message("Plan view restored.", false);
+            }
+            "VIEW" | "VPOINT" => {
+                let name = tokens.first().copied().unwrap_or("TOP");
+                let view = orientation(name)
+                    .ok_or("VIEW orientation: TOP, FRONT, BACK, LEFT, RIGHT, SW, SE, NE, NW.")?;
+                self.view_camera.set_orientation(view);
+                self.camera.set_view(self.view_camera);
+                self.message(format!("View set to {name}."), false);
+            }
+            _ => return Err(format!("Unsupported view command: {verb} {rest}")),
         }
         Ok(())
     }

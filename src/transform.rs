@@ -23,12 +23,19 @@ pub struct Transform {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum TransformKind {
+    Translate(f64, f64, f64),
     Rotate(f64),
     Scale(f64),
     Mirror(f64),
 }
 
 impl Transform {
+    pub fn translation(dx: f64, dy: f64, dz: f64) -> Self {
+        Self {
+            base: Point3::new(0.0, 0.0, 0.0).expect("finite origin"),
+            kind: TransformKind::Translate(dx, dy, dz),
+        }
+    }
     /// Rotate about the world Z axis through `base`, counterclockwise in radians.
     pub fn rotate_xy(base: Point3, angle: f64) -> Result<Self, GeometryError> {
         if !angle.is_finite() {
@@ -74,7 +81,9 @@ impl Transform {
     fn is_identity(self) -> bool {
         matches!(
             self.kind,
-            TransformKind::Rotate(0.0) | TransformKind::Scale(1.0)
+            TransformKind::Rotate(0.0)
+                | TransformKind::Scale(1.0)
+                | TransformKind::Translate(0.0, 0.0, 0.0)
         )
     }
 
@@ -88,6 +97,7 @@ impl Transform {
             return Err(GeometryError::NonFiniteResult);
         }
         let (x, y, z) = match self.kind {
+            TransformKind::Translate(dx, dy, dz) => (dx, dy, point.z() + dz - self.base.z()),
             TransformKind::Rotate(angle) => {
                 let (sin, cos) = sin_cos(angle);
                 (
@@ -134,6 +144,7 @@ impl Transform {
                 2.0 * angle - arc.start_angle(),
             ),
             TransformKind::Scale(_) => (arc.start_angle(), arc.end_angle()),
+            TransformKind::Translate(_, _, _) => (arc.start_angle(), arc.end_angle()),
         }
     }
 }
@@ -145,6 +156,9 @@ impl Entity {
             return Ok(self.clone());
         }
         Ok(match self {
+            Self::Point(point) => {
+                Self::Point(crate::PointEntity::new(transform.point(point.position())?))
+            }
             Self::Line(line) => Self::Line(Line3::new(
                 transform.point(line.start())?,
                 transform.point(line.end())?,
@@ -198,6 +212,34 @@ impl Entity {
                         .collect::<Result<_, _>>()?,
                 )?;
                 Self::Polyline(result)
+            }
+            Self::Ellipse(ellipse) => Self::Ellipse(ellipse.translated(
+                transform.point(ellipse.center())?.x() - ellipse.center().x(),
+                transform.point(ellipse.center())?.y() - ellipse.center().y(),
+                transform.point(ellipse.center())?.z() - ellipse.center().z(),
+            )?),
+            Self::Spline(spline) => Self::Spline(spline.translated(
+                transform.point(spline.control_points()[0])?.x() - spline.control_points()[0].x(),
+                transform.point(spline.control_points()[0])?.y() - spline.control_points()[0].y(),
+                transform.point(spline.control_points()[0])?.z() - spline.control_points()[0].z(),
+            )?),
+            Self::Text(text) => Self::Text(text.transformed(transform)?),
+            Self::MText(text) => Self::MText(text.transformed(transform)?),
+            Self::Leader(leader) => Self::Leader(leader.transformed(transform)?),
+            Self::Table(table) => Self::Table(table.transformed(transform)?),
+            Self::Dimension(dimension) => Self::Dimension(dimension.transformed(transform)?),
+            Self::Hatch(hatch) => Self::Hatch(hatch.transformed(transform)?),
+            Self::Insert(insert) => Self::Insert(insert.clone()),
+            Self::Face3(face) => {
+                let (mut vertices, count) = face.vertices();
+                for vertex in vertices.iter_mut().take(count) {
+                    *vertex = transform.point(*vertex)?;
+                }
+                Self::Face3(crate::Face3::new(
+                    vertices,
+                    count as u8,
+                    face.invisible_edges(),
+                )?)
             }
         })
     }

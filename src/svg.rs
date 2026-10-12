@@ -10,6 +10,7 @@ pub enum SvgError {
     EmptyDrawing,
     BoundsTooLarge,
     Linetype(LinetypeError),
+    UnresolvedInsert,
 }
 
 impl fmt::Display for SvgError {
@@ -18,6 +19,9 @@ impl fmt::Display for SvgError {
             Self::EmptyDrawing => write!(f, "drawing has no entities"),
             Self::BoundsTooLarge => write!(f, "drawing bounds are too large for SVG coordinates"),
             Self::Linetype(error) => error.fmt(f),
+            Self::UnresolvedInsert => {
+                write!(f, "INSERT requires a document block definition registry")
+            }
         }
     }
 }
@@ -81,6 +85,97 @@ pub(crate) fn entity_bounds(entities: &[Entity]) -> Result<[f64; 4], SvgError> {
                         ]
                     },
                 ),
+            Entity::Point(point) => [
+                point.position().x(),
+                point.position().y(),
+                point.position().x(),
+                point.position().y(),
+            ],
+            Entity::Ellipse(ellipse) => {
+                let points = (0..=64)
+                    .filter_map(|i| ellipse.point_at_fraction(i as f64 / 64.0).ok())
+                    .collect::<Vec<_>>();
+                points.iter().fold(
+                    [
+                        f64::INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::NEG_INFINITY,
+                    ],
+                    |b, p| {
+                        [
+                            b[0].min(p.x()),
+                            b[1].min(p.y()),
+                            b[2].max(p.x()),
+                            b[3].max(p.y()),
+                        ]
+                    },
+                )
+            }
+            Entity::Spline(spline) => spline
+                .tessellate(64)
+                .map_err(|_| SvgError::BoundsTooLarge)?
+                .iter()
+                .fold(
+                    [
+                        f64::INFINITY,
+                        f64::INFINITY,
+                        f64::NEG_INFINITY,
+                        f64::NEG_INFINITY,
+                    ],
+                    |b, p| {
+                        [
+                            b[0].min(p.x()),
+                            b[1].min(p.y()),
+                            b[2].max(p.x()),
+                            b[3].max(p.y()),
+                        ]
+                    },
+                ),
+            Entity::Text(text) => {
+                let b = text.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
+                [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
+            }
+            Entity::MText(text) => {
+                let b = text.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
+                [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
+            }
+            Entity::Leader(leader) => {
+                let b = leader.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
+                [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
+            }
+            Entity::Table(table) => {
+                let b = table.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
+                [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
+            }
+            Entity::Dimension(dimension) => {
+                let b = dimension.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
+                [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
+            }
+            Entity::Hatch(hatch) => {
+                let b = hatch.bounds().map_err(|_| SvgError::BoundsTooLarge)?;
+                [b.min.x(), b.min.y(), b.max.x(), b.max.y()]
+            }
+            Entity::Insert(insert) => {
+                let p = insert.insertion();
+                [p.x(), p.y(), p.x(), p.y()]
+            }
+            Entity::Face3(face) => {
+                let (points, count) = face.vertices();
+                let points = &points[..count];
+                [
+                    points.iter().map(|p| p.x()).fold(f64::INFINITY, f64::min),
+                    points.iter().map(|p| p.y()).fold(f64::INFINITY, f64::min),
+                    points
+                        .iter()
+                        .map(|p| p.x())
+                        .fold(f64::NEG_INFINITY, f64::max),
+                    points
+                        .iter()
+                        .map(|p| p.y())
+                        .fold(f64::NEG_INFINITY, f64::max),
+                ]
+            }
         };
         if extent.iter().any(|value| !value.is_finite()) {
             return Err(SvgError::BoundsTooLarge);
@@ -106,45 +201,67 @@ pub fn render_entities_svg(entities: &[Entity]) -> Result<String, SvgError> {
 
 /// Export visible document entities with resolved styles on a white background.
 pub fn render_document_svg(document: &DxfDocument) -> Result<String, SvgError> {
-    let (entities, colors): (Vec<_>, Vec<_>) = document
-        .entities()
+    let mut entities = Vec::new();
+    let mut colors = Vec::new();
+    let mut parents = Vec::new();
+    for (index, entity) in document.entities().iter().enumerate() {
+        let layer = document
+            .layer_for_entity(index)
+            .expect("entity layer exists");
+        if !layer.is_visible() {
+            continue;
+        }
+        let expanded = expand_document_entity(document, entity, 0)?;
+        let color = document
+            .entity_rgb(index, true)
+            .expect("entity style exists");
+        for child in expanded {
+            entities.push(child);
+            colors.push(color);
+            parents.push(index);
+        }
+    }
+    let patterns = entities
         .iter()
-        .enumerate()
-        .filter_map(|(index, entity)| {
-            let layer = document
-                .layer_for_entity(index)
-                .expect("entity layer exists");
-            layer.is_visible().then_some((
-                entity.clone(),
-                document
-                    .entity_rgb(index, true)
-                    .expect("entity style exists"),
-            ))
-        })
-        .unzip();
-    let patterns = document
-        .entities()
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| {
+        .zip(parents.iter())
+        .map(|(entity, index)| {
             document
-                .layer_for_entity(*index)
-                .is_some_and(crate::Layer::is_visible)
-        })
-        .map(|(index, entity)| {
-            document
-                .linetype_for_entity(index)
+                .linetype_for_entity(*index)
                 .expect("effective linetype")
                 .parts(
                     entity,
                     document
-                        .effective_linetype_scale(index)
+                        .effective_linetype_scale(*index)
                         .expect("entity style exists"),
                 )
                 .map_err(SvgError::Linetype)
         })
         .collect::<Result<Vec<_>, _>>()?;
     render_styled_entities_svg(&entities, Some(&colors), Some(&patterns))
+}
+
+fn expand_document_entity(
+    document: &DxfDocument,
+    entity: &Entity,
+    depth: usize,
+) -> Result<Vec<Entity>, SvgError> {
+    if depth >= 32 {
+        return Err(SvgError::UnresolvedInsert);
+    }
+    let Entity::Insert(insert) = entity else {
+        return Ok(vec![entity.clone()]);
+    };
+    let definition = document
+        .block(insert.block_name())
+        .ok_or(SvgError::UnresolvedInsert)?;
+    let mut result = Vec::new();
+    for child in insert
+        .explode(definition)
+        .map_err(|_| SvgError::UnresolvedInsert)?
+    {
+        result.extend(expand_document_entity(document, &child, depth + 1)?);
+    }
+    Ok(result)
 }
 
 fn render_styled_entities_svg(
@@ -189,6 +306,11 @@ fn render_styled_entities_svg(
                 }
             };
             match entity {
+                Entity::Point(point) => {
+                    let cx = point.position().x() - min_x + PADDING;
+                    let cy = max_y - point.position().y() + PADDING;
+                    writeln!(svg, "    <circle cx=\"{cx}\" cy=\"{cy}\" r=\"1\" fill=\"{color}\" stroke=\"none\" />").expect("String write");
+                }
                 Entity::Line(line) => {
                     let x1 = line.start().x() - min_x + PADDING;
                     let y1 = max_y - line.start().y() + PADDING;
@@ -324,11 +446,283 @@ fn render_styled_entities_svg(
                     )
                     .expect("String write");
                 }
+                Entity::Ellipse(ellipse) => {
+                    let points = ellipse.tessellate_for_svg();
+                    let d = points
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            format!(
+                                "{} {} {}",
+                                if i == 0 { "M" } else { "L" },
+                                p.x() - min_x + PADDING,
+                                max_y - p.y() + PADDING
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    writeln!(svg, "    <path d=\"{d}\"{style} />").expect("String write");
+                }
+                Entity::Spline(spline) => {
+                    if let Ok(points) = spline.tessellate(64) {
+                        let d = points
+                            .iter()
+                            .enumerate()
+                            .map(|(i, p)| {
+                                format!(
+                                    "{} {} {}",
+                                    if i == 0 { "M" } else { "L" },
+                                    p.x() - min_x + PADDING,
+                                    max_y - p.y() + PADDING
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        writeln!(svg, "    <path d=\"{d}\"{style} />").expect("String write");
+                    }
+                }
+                Entity::Face3(face) => {
+                    let (points, count) = face.vertices();
+                    let points = &points[..count];
+                    let mut coords = String::new();
+                    for p in points {
+                        write!(
+                            coords,
+                            "{},{} ",
+                            p.x() - min_x + PADDING,
+                            max_y - p.y() + PADDING
+                        )
+                        .expect("String write");
+                    }
+                    writeln!(svg, "    <polygon points=\"{}\" fill=\"{color}\" fill-opacity=\"0.2\"{style} />", coords.trim_end()).expect("String write");
+                }
+                Entity::Text(text) => {
+                    render_text(&mut svg, text, min_x, max_y, color.as_str(), style.as_str())
+                }
+                Entity::MText(text) => {
+                    render_mtext(&mut svg, text, min_x, max_y, color.as_str(), style.as_str())
+                }
+                Entity::Leader(leader) => {
+                    for segment in leader.segments() {
+                        render_line(&mut svg, segment, min_x, max_y, style.as_str());
+                    }
+                    if let Some(label) = leader.annotation()
+                        && let Some(point) = leader.vertices().last()
+                    {
+                        render_label(
+                            &mut svg,
+                            label,
+                            *point,
+                            min_x,
+                            max_y,
+                            2.5,
+                            0.0,
+                            color.as_str(),
+                        );
+                    }
+                }
+                Entity::Table(table) => render_table(
+                    &mut svg,
+                    table,
+                    min_x,
+                    max_y,
+                    color.as_str(),
+                    style.as_str(),
+                ),
+                Entity::Hatch(hatch) => render_hatch(
+                    &mut svg,
+                    hatch,
+                    min_x,
+                    max_y,
+                    color.as_str(),
+                    style.as_str(),
+                ),
+                Entity::Dimension(dimension) => {
+                    for primitive in dimension.geometry().map_err(|_| SvgError::BoundsTooLarge)? {
+                        match primitive {
+                            crate::DimensionPrimitive::Line(line) => {
+                                render_line(&mut svg, line, min_x, max_y, style.as_str())
+                            }
+                            crate::DimensionPrimitive::Arc(arc) => {
+                                let start =
+                                    arc.start_point().map_err(|_| SvgError::BoundsTooLarge)?;
+                                let end = arc.end_point().map_err(|_| SvgError::BoundsTooLarge)?;
+                                let x1 = start.x() - min_x + PADDING;
+                                let y1 = max_y - start.y() + PADDING;
+                                let x2 = end.x() - min_x + PADDING;
+                                let y2 = max_y - end.y() + PADDING;
+                                writeln!(svg, "    <path d=\"M {x1} {y1} A {} {} 0 {} 0 {x2} {y2}\"{style} />", arc.radius(),arc.radius(),u8::from(arc.sweep()>std::f64::consts::PI)).expect("String write");
+                            }
+                            crate::DimensionPrimitive::Text(text) => render_text(
+                                &mut svg,
+                                &text,
+                                min_x,
+                                max_y,
+                                color.as_str(),
+                                style.as_str(),
+                            ),
+                        }
+                    }
+                }
+                Entity::Insert(_) => return Err(SvgError::UnresolvedInsert),
             }
         }
     }
     svg.push_str("  </g>\n</svg>\n");
     Ok(svg)
+}
+
+fn esc(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+fn render_line(svg: &mut String, line: crate::Line3, min_x: f64, max_y: f64, style: &str) {
+    let x1 = line.start().x() - min_x + PADDING;
+    let y1 = max_y - line.start().y() + PADDING;
+    let x2 = line.end().x() - min_x + PADDING;
+    let y2 = max_y - line.end().y() + PADDING;
+    writeln!(
+        svg,
+        "    <line x1=\"{x1}\" y1=\"{y1}\" x2=\"{x2}\" y2=\"{y2}\"{style} />"
+    )
+    .expect("String write");
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_label(
+    svg: &mut String,
+    content: &str,
+    p: crate::Point3,
+    min_x: f64,
+    max_y: f64,
+    height: f64,
+    rotation: f64,
+    color: &str,
+) {
+    let x = p.x() - min_x + PADDING;
+    let y = max_y - p.y() + PADDING;
+    writeln!(svg, "    <text x=\"{x}\" y=\"{y}\" fill=\"{color}\" font-size=\"{height}\" transform=\"rotate({} {x} {y})\">{}</text>", -rotation.to_degrees(), esc(content)).expect("String write");
+}
+
+fn render_text(
+    svg: &mut String,
+    text: &crate::Text,
+    min_x: f64,
+    max_y: f64,
+    color: &str,
+    _style: &str,
+) {
+    let (h, v) = text.alignment();
+    let anchor = match h {
+        crate::HorizontalAlignment::Left => "start",
+        crate::HorizontalAlignment::Center => "middle",
+        crate::HorizontalAlignment::Right => "end",
+    };
+    let baseline = match v {
+        crate::VerticalAlignment::Bottom => "alphabetic",
+        crate::VerticalAlignment::Middle => "middle",
+        crate::VerticalAlignment::Top => "hanging",
+    };
+    let p = text.location();
+    let x = p.x() - min_x + PADDING;
+    let y = max_y - p.y() + PADDING;
+    writeln!(svg, "    <text x=\"{x}\" y=\"{y}\" fill=\"{color}\" font-size=\"{}\" text-anchor=\"{anchor}\" dominant-baseline=\"{baseline}\" transform=\"rotate({} {x} {y}) scale({} 1)\">{}</text>", text.height(), -text.rotation().to_degrees(), text.width_factor(), esc(text.content())).expect("String write");
+}
+
+fn render_mtext(
+    svg: &mut String,
+    text: &crate::MText,
+    min_x: f64,
+    max_y: f64,
+    color: &str,
+    style: &str,
+) {
+    render_text(svg, text.text(), min_x, max_y, color, style);
+}
+
+fn render_table(
+    svg: &mut String,
+    table: &crate::Table,
+    min_x: f64,
+    max_y: f64,
+    color: &str,
+    style: &str,
+) {
+    for line in table.grid_lines().unwrap_or_default() {
+        render_line(svg, line, min_x, max_y, style);
+    }
+    let mut y = table.anchor().y();
+    for (r, rh) in table.row_heights().iter().enumerate() {
+        let mut x = table.anchor().x();
+        for (c, cw) in table.column_widths().iter().enumerate() {
+            let p = crate::Point3::new(x + *cw * 0.5, y + *rh * 0.5, table.anchor().z()).unwrap();
+            render_label(
+                svg,
+                &table.cells()[r][c],
+                p,
+                min_x,
+                max_y,
+                (*rh * 0.45).max(1.0),
+                0.0,
+                color,
+            );
+            x += *cw;
+        }
+        y += *rh;
+    }
+}
+
+fn render_hatch(
+    svg: &mut String,
+    hatch: &crate::Hatch,
+    min_x: f64,
+    max_y: f64,
+    color: &str,
+    style: &str,
+) {
+    match hatch.pattern() {
+        crate::HatchPattern::Solid => {
+            let mut d = String::new();
+            for boundary in hatch.boundaries() {
+                if let Some(first) = boundary.first() {
+                    write!(
+                        d,
+                        "M {} {} ",
+                        first.x() - min_x + PADDING,
+                        max_y - first.y() + PADDING
+                    )
+                    .expect("String write");
+                    for p in &boundary[1..] {
+                        write!(
+                            d,
+                            "L {} {} ",
+                            p.x() - min_x + PADDING,
+                            max_y - p.y() + PADDING
+                        )
+                        .expect("String write");
+                    }
+                    d.push_str("Z ");
+                }
+            }
+            writeln!(
+                svg,
+                "    <path d=\"{d}\" fill=\"{color}\" fill-rule=\"evenodd\" stroke=\"none\" />"
+            )
+            .expect("String write");
+        }
+        crate::HatchPattern::Lines { .. } => {
+            for primitive in hatch.primitives().unwrap_or_default() {
+                if let crate::HatchPrimitive::Line(line) = primitive {
+                    render_line(svg, line, min_x, max_y, style);
+                }
+            }
+        }
+    }
 }
 
 /// Render a drawing as SVG, mapping Cartesian positive Y upward to SVG Y downward.

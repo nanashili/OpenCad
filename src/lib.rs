@@ -1,12 +1,15 @@
 //! Original CAD geometry, line drawing, and a limited ASCII DXF exchange path.
 
+mod annotation;
 mod arc;
+mod block;
 mod breaking;
 mod circle;
 mod color;
 mod corner;
 mod dxf;
 mod editor;
+mod ellipse;
 mod entity_style;
 mod joining;
 mod layer;
@@ -14,30 +17,44 @@ mod lengthen;
 mod line;
 mod linetype;
 mod offset;
+mod point;
 mod polyline;
 mod polyline_arc;
+pub(crate) mod solid;
+mod spline;
 mod svg;
 mod transform;
 mod trim;
+mod view;
 
 #[cfg(feature = "desktop")]
 pub mod desktop;
 
+pub use annotation::{
+    AnnotationBounds, Dimension, DimensionKind, DimensionPrimitive, Hatch, HatchPattern,
+    HatchPrimitive, HorizontalAlignment, Leader, MLeader, MText, Table, Text, VerticalAlignment,
+};
 pub use arc::Arc3;
+pub use block::{Attribute, AttributeDefinition, BlockDefinition, BlockInsert, Insert};
 pub use circle::{Circle3, Entity};
 pub use corner::{Corner, CornerParameter, LineCorner};
 pub use dxf::{DxfDocument, DxfError, DxfErrorKind, read_dxf, write_dxf};
 pub use editor::{EditError, Editor};
+pub use ellipse::Ellipse3;
 pub use entity_style::{EntityStyle, EntityStyleError};
 pub use layer::{Layer, LayerError};
 pub use lengthen::Lengthen;
 pub use line::{Bounds3, Line3, Point3};
 pub use linetype::{Linetype, LinetypeError};
 pub use offset::{Offset, OffsetLayer, OffsetOptions};
+pub use point::PointEntity;
 pub use polyline::{Polyline2, PolylineSegment, PolylineWidth};
+pub use solid::{Face3, Mesh3};
+pub use spline::Spline3;
 pub use svg::{SvgError, render_document_svg, render_entities_svg, render_svg};
 pub use transform::Transform;
 pub use trim::BoundaryMode;
+pub use view::{Camera3, Ucs3, ViewOrientation};
 
 use std::error::Error;
 use std::fmt;

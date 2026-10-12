@@ -105,6 +105,7 @@ impl Entity {
                 arc.end_angle(),
             )?)),
             Self::Polyline(_) => Err(GeometryError::UnsupportedOffsetEntity),
+            _ => Err(GeometryError::UnsupportedOffsetEntity),
         }
     }
 }
