@@ -36,6 +36,7 @@ mod point;
 mod polyline;
 mod polyline3;
 mod polyline_arc;
+mod publish_list;
 mod raster_geometry;
 mod reference;
 mod region;
@@ -113,6 +114,9 @@ pub use pdf_underlay::PdfUnderlay;
 pub use point::PointEntity;
 pub use polyline::{Polyline2, PolylineSegment, PolylineWidth};
 pub use polyline3::Polyline3;
+pub use publish_list::{
+    PublishDestination, PublishList, PublishListError, PublishSection, PublishSheet, PublishTarget,
+};
 pub use reference::{
     ExternalDxfReference, ExternalReferenceStatus, RasterImage, RasterTriangle, ReferenceManager,
 };

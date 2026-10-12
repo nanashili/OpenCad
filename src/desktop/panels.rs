@@ -7,7 +7,7 @@ fn quote_command_token(value: &str) -> String {
 
 impl OpenCadApp {
     pub(super) fn inspector_panel(&mut self, ui: &mut egui::Ui) {
-        if !self.workspace.layers && !self.workspace.properties {
+        if !self.workspace.layers && !self.workspace.properties && !self.publish_list_panel {
             return;
         }
         let selected = if self.editor.selection().len() == 1 {
@@ -78,6 +78,10 @@ impl OpenCadApp {
             ui.style_mut().text_styles.insert(egui::TextStyle::Body, egui::FontId::proportional(11.0));
             ui.style_mut().text_styles.insert(egui::TextStyle::Button, egui::FontId::proportional(11.0));
             egui::ScrollArea::vertical().id_salt("inspector_content").auto_shrink([false,false]).show(ui, |ui| {
+            if self.publish_list_panel {
+                self.publish_list_manager_panel(ui);
+                ui.separator();
+            }
             if self.block_edit_session.is_some() {
                 ui.heading("Block Editor");
                 ui.horizontal(|ui| {
@@ -341,6 +345,233 @@ impl OpenCadApp {
                     ));
                 }
             });
+        }
+    }
+
+    fn publish_list_manager_panel(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Publish List");
+        self.publish_list_file_controls(ui);
+        ui.separator();
+        self.publish_list_sheet_controls(ui);
+        ui.separator();
+        self.publish_list_add_controls(ui);
+        self.publish_list_setup_controls(ui);
+    }
+
+    fn publish_list_file_controls(&mut self, ui: &mut egui::Ui) {
+        if let Some(path) = self.publish_list_path.as_deref() {
+            ui.label(format!("DSD: {}", path.display()));
+        } else {
+            ui.label("No DSD path selected");
+        }
+        ui.horizontal(|ui| {
+            if ui.button("New").clicked() {
+                self.run_publish_list_control("PUBLISHLIST NEW".to_owned());
+            }
+            if ui.button("Load").clicked() && !self.publish_list_dsd.trim().is_empty() {
+                self.run_publish_list_control(format!(
+                    "PUBLISHLIST LOAD {}",
+                    quote_command_token(self.publish_list_dsd.trim())
+                ));
+            }
+            if ui.button("Save").clicked() {
+                let command = if self.publish_list_dsd.trim().is_empty() {
+                    "PUBLISHLIST SAVE".to_owned()
+                } else {
+                    format!(
+                        "PUBLISHLIST SAVE {}",
+                        quote_command_token(self.publish_list_dsd.trim())
+                    )
+                };
+                self.run_publish_list_control(command);
+            }
+            if ui.button("Publish").clicked() {
+                let command = if self.publish_list_output.trim().is_empty() {
+                    "PUBLISHLIST PUBLISH".to_owned()
+                } else {
+                    format!(
+                        "PUBLISHLIST PUBLISH {}",
+                        quote_command_token(self.publish_list_output.trim())
+                    )
+                };
+                self.run_publish_list_control(command);
+            }
+            if ui.button("Close").clicked() {
+                self.publish_list_panel = false;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("DSD path");
+            ui.text_edit_singleline(&mut self.publish_list_dsd);
+        });
+        ui.horizontal(|ui| {
+            ui.label("PDF output");
+            ui.text_edit_singleline(&mut self.publish_list_output);
+        });
+        if ui.button("Set PDF destination").clicked() && !self.publish_list_output.trim().is_empty()
+        {
+            self.run_publish_list_control(format!(
+                "PUBLISHLIST DESTINATION {}",
+                quote_command_token(self.publish_list_output.trim())
+            ));
+        }
+    }
+
+    fn publish_list_sheet_controls(&mut self, ui: &mut egui::Ui) {
+        let sheets = self
+            .publish_list
+            .as_ref()
+            .map(|list| {
+                list.sheets
+                    .iter()
+                    .enumerate()
+                    .map(|(index, sheet)| {
+                        (
+                            index,
+                            sheet.title.clone(),
+                            sheet.layout.clone(),
+                            sheet.drawing_path.display().to_string(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if sheets.is_empty() {
+            ui.label("Create or load a DSD to manage sheets.");
+        }
+        for (index, title, layout, drawing) in sheets {
+            let selected = self.publish_list_selected == index;
+            ui.horizontal(|ui| {
+                if ui
+                    .selectable_label(selected, format!("{} · {}", index + 1, title))
+                    .clicked()
+                {
+                    self.publish_list_selected = index;
+                }
+                ui.label(format!("{} ({})", layout, drawing));
+            });
+            if !selected {
+                continue;
+            }
+            ui.horizontal(|ui| {
+                if index > 0
+                    && ui.small_button("↑").clicked()
+                    && self.run_publish_list_control(format!(
+                        "PUBLISHLIST MOVE {} {}",
+                        index + 1,
+                        index
+                    ))
+                {
+                    self.publish_list_selected = index - 1;
+                }
+                let can_move_down = index + 1
+                    < self
+                        .publish_list
+                        .as_ref()
+                        .map_or(0, |list| list.sheets.len());
+                if can_move_down
+                    && ui.small_button("↓").clicked()
+                    && self.run_publish_list_control(format!(
+                        "PUBLISHLIST MOVE {} {}",
+                        index + 1,
+                        index + 2
+                    ))
+                {
+                    self.publish_list_selected = index + 1;
+                }
+                if ui.small_button("Remove").clicked()
+                    && self.run_publish_list_control(format!("PUBLISHLIST REMOVE {}", index + 1))
+                {
+                    self.publish_list_selected = self.publish_list_selected.saturating_sub(1);
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Rename");
+                ui.text_edit_singleline(&mut self.publish_list_rename);
+                if ui.button("Apply").clicked() && !self.publish_list_rename.trim().is_empty() {
+                    self.run_publish_list_control(format!(
+                        "PUBLISHLIST RENAME {} {}",
+                        index + 1,
+                        quote_command_token(self.publish_list_rename.trim())
+                    ));
+                }
+            });
+        }
+    }
+
+    fn publish_list_add_controls(&mut self, ui: &mut egui::Ui) {
+        ui.label("Add sheet");
+        ui.horizontal(|ui| {
+            ui.label("Drawing");
+            ui.text_edit_singleline(&mut self.publish_list_drawing);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Layout");
+            ui.text_edit_singleline(&mut self.publish_list_layout);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Title");
+            ui.text_edit_singleline(&mut self.publish_list_title);
+        });
+        if ui.button("Add sheet").clicked() {
+            let title = if self.publish_list_title.trim().is_empty() {
+                self.publish_list_layout.trim()
+            } else {
+                self.publish_list_title.trim()
+            };
+            if self.run_publish_list_control(format!(
+                "PUBLISHLIST ADD {} {} {}",
+                quote_command_token(self.publish_list_drawing.trim()),
+                quote_command_token(self.publish_list_layout.trim()),
+                quote_command_token(title)
+            )) {
+                self.publish_list_title.clear();
+            }
+        }
+    }
+
+    fn publish_list_setup_controls(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.label("Named setup");
+            ui.text_edit_singleline(&mut self.publish_list_setup);
+        });
+        ui.horizontal(|ui| {
+            ui.label("Setup source");
+            ui.text_edit_singleline(&mut self.publish_list_setup_source);
+            if ui.button("Apply setup").clicked()
+                && !self.publish_list_setup.trim().is_empty()
+                && self
+                    .publish_list
+                    .as_ref()
+                    .is_some_and(|list| self.publish_list_selected < list.sheets.len())
+            {
+                let source = self.publish_list_setup_source.trim();
+                let command = if source.is_empty() {
+                    format!(
+                        "PUBLISHLIST SETUP {} {}",
+                        self.publish_list_selected + 1,
+                        quote_command_token(self.publish_list_setup.trim())
+                    )
+                } else {
+                    format!(
+                        "PUBLISHLIST SETUP {} {} {}",
+                        self.publish_list_selected + 1,
+                        quote_command_token(self.publish_list_setup.trim()),
+                        quote_command_token(source)
+                    )
+                };
+                self.run_publish_list_control(command);
+            }
+        });
+    }
+
+    fn run_publish_list_control(&mut self, command: String) -> bool {
+        match self.command_result(&command) {
+            Ok(()) => true,
+            Err(error) => {
+                self.message(error, true);
+                false
+            }
         }
     }
 

@@ -45,7 +45,7 @@ pub use shell::{MenuItem, MenuStatus, menu_action_status, native_menus, queue_me
 use crate::{
     Arc3, BoundaryMode, Circle3, Corner, CornerParameter, DxfDocument, Editor, Entity, EntitySpace,
     EntityStyle, Lengthen, Line3, Linetype, Offset, OffsetLayer, OffsetOptions, Point3, Polyline2,
-    Transform,
+    PublishList, Transform,
 };
 use eframe::egui::{self, Color32, Key, Modifiers};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -224,6 +224,18 @@ pub struct OpenCadApp {
     references: feature_references::ReferenceWorkspace,
     current_mline_style: String,
     block_edit_session: Option<feature_block_editor::BlockEditSession>,
+    publish_list: Option<PublishList>,
+    publish_list_path: Option<PathBuf>,
+    publish_list_panel: bool,
+    publish_list_drawing: String,
+    publish_list_layout: String,
+    publish_list_title: String,
+    publish_list_rename: String,
+    publish_list_setup: String,
+    publish_list_setup_source: String,
+    publish_list_dsd: String,
+    publish_list_output: String,
+    publish_list_selected: usize,
 }
 
 impl OpenCadApp {
@@ -289,6 +301,18 @@ impl OpenCadApp {
             references: feature_references::ReferenceWorkspace::default(),
             current_mline_style: "STANDARD".into(),
             block_edit_session: None,
+            publish_list: None,
+            publish_list_path: None,
+            publish_list_panel: false,
+            publish_list_drawing: String::new(),
+            publish_list_layout: "Model".into(),
+            publish_list_title: String::new(),
+            publish_list_rename: String::new(),
+            publish_list_setup: String::new(),
+            publish_list_setup_source: String::new(),
+            publish_list_dsd: String::new(),
+            publish_list_output: String::new(),
+            publish_list_selected: 0,
         }
     }
 

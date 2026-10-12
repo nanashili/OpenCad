@@ -819,6 +819,28 @@ pub(super) fn vector_pdf_layouts(
     pdf.finish_pages(pages)
 }
 
+pub(super) fn vector_pdf_documents(
+    sheets: &[(DxfDocument, Layout, Option<PathBuf>)],
+) -> Result<Vec<u8>, String> {
+    if sheets.is_empty() {
+        return Err("PUBLISH requires at least one sheet.".into());
+    }
+    if sheets.len() > MAX_PDF_LAYOUT_PAGES {
+        return Err("PUBLISH exceeds the supported page count.".into());
+    }
+    let mut pdf = PdfWriter::new();
+    let mut pages = Vec::with_capacity(sheets.len());
+    for (document, layout, document_path) in sheets {
+        pages.push(render_pdf_page(
+            document,
+            layout,
+            document_path.as_deref(),
+            &mut pdf,
+        )?);
+    }
+    pdf.finish_pages(pages)
+}
+
 fn render_pdf_page(
     document: &DxfDocument,
     layout: &Layout,
